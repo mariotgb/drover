@@ -1,0 +1,85 @@
+{
+  "name": "drover",
+  "productName": "Drover",
+  "version": "0.1.0",
+  "description": "Desktop app for herdr: run and chat with coding agents without the terminal",
+  "license": "MIT",
+  "author": "mariotgb",
+  "homepage": "https://github.com/mariotgb/drover",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mariotgb/drover.git"
+  },
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "node --test tests/",
+    "package": "electron-vite build && node scripts/dist.mjs --dir",
+    "dist": "electron-vite build && node scripts/dist.mjs",
+    "icon": "node scripts/make-icon.mjs"
+  },
+  "build": {
+    "appId": "dev.drover.app",
+    "productName": "Drover",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "resources/Drover.icon",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "darkModeSupport": true,
+      "minimumSystemVersion": "12.0"
+    },
+    "dmg": {
+      "sign": false,
+      "title": "Drover"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
+    "clsx": "^2.1.1",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "esbuild": "^0.25.12",
+    "highlight.js": "^11.12.0",
+    "lucide-react": "^1.49.0",
+    "playwright-core": "^1.63.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "zustand": "^5.0.15"
+  }
+}

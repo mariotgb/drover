@@ -1,0 +1,244 @@
+import { useCallback, useRef, type MouseEvent } from 'react'
+import clsx from 'clsx'
+import {
+  ChevronRight,
+  FolderClosed,
+  FolderPlus,
+  LayoutList,
+  ListFilter,
+  MoreHorizontal,
+  PenSquare,
+  Plus,
+  Search,
+  Settings,
+  Columns2
+} from 'lucide-react'
+import { newAgentMenu, openNewAgent, openSettings, threadMenu, workspaceMenu } from '../actions'
+import { attentionSort, basename, shortPath, type Thread, type WorkspaceGroup } from '../model'
+import { select, toggleCollapsed, updateSettings, useModel, useStore } from '../store'
+import { openMenu, openMenuAt } from './Menu'
+import { AgentAvatar, IconButton, StatusDot } from './primitives'
+import { UsageWidget } from './Usage'
+import { t } from '../i18n'
+
+export function Sidebar() {
+  const { groups, threads } = useModel()
+  const mode = useStore((s) => s.settings.sidebarMode)
+  const connection = useStore((s) => s.connection)
+  const width = useStore((s) => s.settings.sidebarWidth)
+
+  return (
+    <aside className="sidebar" style={{ width }}>
+      <div className="sidebar-top drag">
+        <div className="traffic-space" />
+        <div className="sidebar-top-actions no-drag">
+          <IconButton title={t('Search threads (⌘K)')} onClick={() => useStore.setState({ paletteOpen: true })}>
+            <Search size={16} />
+          </IconButton>
+          <IconButton title={t('New agent (⌘N)')} onClick={() => openNewAgent({})}>
+            <PenSquare size={16} />
+          </IconButton>
+        </div>
+      </div>
+
+      <div className="sidebar-actions">
+        <button type="button" className="sidebar-new" onClick={() => openNewAgent({})} onContextMenu={(e) => openMenu(e, newAgentMenu())}>
+          <Plus size={16} />
+          <span>{t('New agent')}</span>
+          <span className="shortcut">⌘N</span>
+        </button>
+      </div>
+
+      <div className="sidebar-section-head">
+        <span>{mode === 'status' ? t('Agents') : t('Projects')}</span>
+        <div className="section-tools">
+          <IconButton
+            size="sm"
+            title={mode === 'status' ? t('Group by project') : t('Sort by attention')}
+            onClick={() => void updateSettings({ sidebarMode: mode === 'status' ? 'workspaces' : 'status' })}
+          >
+            {mode === 'status' ? <LayoutList size={14} /> : <ListFilter size={14} />}
+          </IconButton>
+          <IconButton size="sm" title={t('New project')} onClick={() => openNewAgent({ workspaceId: null, pickFolder: true })}>
+            <FolderPlus size={14} />
+          </IconButton>
+        </div>
+      </div>
+
+      <nav className="sidebar-list" aria-label="Threads">
+        {mode === 'status' ? (
+          <StatusList threads={attentionSort(threads)} />
+        ) : (
+          groups.map((g) => <WorkspaceSection key={g.workspace.workspace_id} group={g} />)
+        )}
+        {connection.status === 'connected' && !groups.length && (
+          <div className="sidebar-empty">{t('No projects yet. Create an agent to get started.')}</div>
+        )}
+      </nav>
+
+      <UsageWidget />
+      <SidebarFooter />
+      <ResizeHandle />
+    </aside>
+  )
+}
+
+function WorkspaceSection({ group }: { group: WorkspaceGroup }) {
+  const ws = group.workspace
+  const collapsed = useStore((s) => !!s.collapsed[ws.workspace_id])
+  const home = useStore((s) => s.home)
+  const attention = group.threads.filter((t) => t.status === 'blocked' || t.status === 'done').length
+  const working = group.threads.some((t) => t.status === 'working')
+  return (
+    <section className="ws">
+      <div
+        className="ws-head"
+        onClick={() => toggleCollapsed(ws.workspace_id)}
+        onContextMenu={(e) => openMenu(e, workspaceMenu(group))}
+        title={shortPath(group.cwd, home)}
+      >
+        <ChevronRight size={13} className={clsx('chev', !collapsed && 'open')} />
+        <FolderClosed size={14} className="ws-icon" />
+        <span className="ws-label">{ws.label || basename(group.cwd)}</span>
+        {collapsed && working && <StatusDot status="working" size={7} />}
+        {collapsed && attention > 0 && <span className="ws-badge">{attention}</span>}
+        {ws.worktree && <span className="ws-tag">worktree</span>}
+        <div className="ws-tools" onClick={(e) => e.stopPropagation()}>
+          <IconButton size="sm" title={t('New agent in this project')} onClick={() => openNewAgent({ workspaceId: ws.workspace_id })}>
+            <Plus size={14} />
+          </IconButton>
+          <IconButton size="sm" title={t('More')} onClick={(e) => openMenuAt(e.currentTarget as HTMLElement, workspaceMenu(group))}>
+            <MoreHorizontal size={14} />
+          </IconButton>
+        </div>
+      </div>
+      {!collapsed && (
+        <div className="ws-threads">
+          {group.tabs.map((tg) =>
+            tg.threads.length > 1 ? (
+              <div key={tg.tab.tab_id} className="tab-group">
+                <div className="tab-group-head">
+                  <Columns2 size={12} />
+                  <span>{tg.customLabel || t('Tab {n}', { n: tg.tab.number })}</span>
+                </div>
+                {tg.threads.map((t) => (
+                  <ThreadRow key={t.paneId} thread={t} nested />
+                ))}
+              </div>
+            ) : (
+              tg.threads.map((t) => <ThreadRow key={t.paneId} thread={t} />)
+            )
+          )}
+          {!group.threads.length && <div className="ws-empty">{t('No tabs')}</div>}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function StatusList({ threads }: { threads: Thread[] }) {
+  return (
+    <div className="ws-threads flat">
+      {threads.map((t) => (
+        <ThreadRow key={t.paneId} thread={t} showProject />
+      ))}
+    </div>
+  )
+}
+
+export function ThreadRow({ thread: th, nested, showProject }: { thread: Thread; nested?: boolean; showProject?: boolean }) {
+  const selected = useStore((s) => s.selectedPaneId === th.paneId)
+  const onContext = useCallback((e: MouseEvent) => {
+    e.preventDefault()
+    openMenu(e, threadMenu(th))
+  }, [th])
+  const attention = th.status === 'blocked' || th.status === 'done'
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={clsx('thread', selected && 'selected', nested && 'nested', attention && 'attention', `st-${th.status}`)}
+      onClick={() => select(th.paneId)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') select(th.paneId)
+      }}
+      onContextMenu={onContext}
+    >
+      <AgentAvatar kind={th.kind} size={20} />
+      <div className="thread-text">
+        <div className="thread-name">
+          <span className="name">{th.name}</span>
+          {th.status === 'blocked' && <span className="pill pill-blocked">{t('input')}</span>}
+        </div>
+        <div className="thread-sub">{showProject ? `${th.workspace.label} · ${th.subtitle}` : th.subtitle}</div>
+      </div>
+      <div className="thread-status">
+        {th.kind && th.status !== 'idle' && th.status !== 'unknown' && <StatusDot status={th.status} size={8} />}
+      </div>
+      <button
+        type="button"
+        className="thread-more"
+        title={t('More')}
+        onClick={(e) => {
+          e.stopPropagation()
+          openMenuAt(e.currentTarget, threadMenu(th))
+        }}
+      >
+        <MoreHorizontal size={14} />
+      </button>
+    </div>
+  )
+}
+
+function SidebarFooter() {
+  const connection = useStore((s) => s.connection)
+  const snapshot = useStore((s) => s.snapshot)
+  const label =
+    connection.status === 'connected'
+      ? `herdr ${snapshot?.version ?? connection.version ?? ''}`.trim()
+      : connection.status === 'starting-server'
+        ? t('Starting herdr…')
+        : connection.status === 'connecting'
+          ? t('Connecting…')
+          : connection.status === 'no-herdr'
+            ? t('herdr not found')
+            : t('Disconnected')
+  return (
+    <div className="sidebar-footer">
+      <button type="button" className="footer-status" onClick={() => openSettings('herdr')} title={connection.socketPath}>
+        <span className={clsx('conn-dot', connection.status === 'connected' ? 'ok' : connection.status === 'connecting' || connection.status === 'starting-server' ? 'wait' : 'bad')} />
+        <span className="footer-label">{label}</span>
+        {connection.session !== 'default' && <span className="footer-session">{connection.session}</span>}
+      </button>
+      <IconButton title={t('Settings (⌘,)')} onClick={() => openSettings()}>
+        <Settings size={16} />
+      </IconButton>
+    </div>
+  )
+}
+
+function ResizeHandle() {
+  const start = useRef<{ x: number; w: number } | null>(null)
+  return (
+    <div
+      className="sidebar-resize"
+      onMouseDown={(e) => {
+        start.current = { x: e.clientX, w: useStore.getState().settings.sidebarWidth }
+        const move = (ev: globalThis.MouseEvent) => {
+          if (!start.current) return
+          const w = Math.max(220, Math.min(460, start.current.w + ev.clientX - start.current.x))
+          document.documentElement.style.setProperty('--sidebar-width', `${w}px`)
+          useStore.setState((s) => ({ settings: { ...s.settings, sidebarWidth: w } }))
+        }
+        const up = () => {
+          window.removeEventListener('mousemove', move)
+          window.removeEventListener('mouseup', up)
+          if (start.current) void updateSettings({ sidebarWidth: useStore.getState().settings.sidebarWidth })
+          start.current = null
+        }
+        window.addEventListener('mousemove', move)
+        window.addEventListener('mouseup', up)
+      }}
+    />
+  )
+}
