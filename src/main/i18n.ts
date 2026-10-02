@@ -7,6 +7,11 @@ type Lang = 'en' | 'ru' | 'es' | 'de' | 'zh'
 
 const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
   ru: {
+    "Agents are still working": "Агенты ещё работают",
+    "Agents working right now: {n}. They will stop together with herdr.": "Сейчас работают агенты: {n}. Они остановятся вместе с herdr.",
+    "Stop herdr and quit": "Остановить herdr и выйти",
+    "Quit, keep herdr running": "Выйти, herdr оставить",
+    "Cancel": "Отмена",
     'Settings…': 'Настройки…',
     File: 'Файл',
     'New Agent…': 'Новый агент…',
@@ -33,6 +38,11 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     '{name} needs your input': '{name} ждёт вашего ответа'
   },
   es: {
+    "Agents are still working": "Los agentes siguen trabajando",
+    "Agents working right now: {n}. They will stop together with herdr.": "Agentes trabajando ahora: {n}. Se detendrán junto con herdr.",
+    "Stop herdr and quit": "Detener herdr y salir",
+    "Quit, keep herdr running": "Salir y dejar herdr en marcha",
+    "Cancel": "Cancelar",
     'Settings…': 'Ajustes…',
     File: 'Archivo',
     'New Agent…': 'Nuevo agente…',
@@ -59,6 +69,11 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     '{name} needs your input': '{name} necesita tu respuesta'
   },
   de: {
+    "Agents are still working": "Agenten arbeiten noch",
+    "Agents working right now: {n}. They will stop together with herdr.": "Gerade arbeitende Agenten: {n}. Sie werden zusammen mit herdr beendet.",
+    "Stop herdr and quit": "herdr beenden und schließen",
+    "Quit, keep herdr running": "Schließen, herdr weiterlaufen lassen",
+    "Cancel": "Abbrechen",
     'Settings…': 'Einstellungen…',
     File: 'Ablage',
     'New Agent…': 'Neuer Agent…',
@@ -85,6 +100,11 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     '{name} needs your input': '{name} braucht deine Antwort'
   },
   zh: {
+    "Agents are still working": "智能体仍在工作",
+    "Agents working right now: {n}. They will stop together with herdr.": "正在工作的智能体：{n} 个。它们会随 herdr 一起停止。",
+    "Stop herdr and quit": "停止 herdr 并退出",
+    "Quit, keep herdr running": "退出，保留 herdr 运行",
+    "Cancel": "取消",
     'Settings…': '设置…',
     File: '文件',
     'New Agent…': '新建智能体…',

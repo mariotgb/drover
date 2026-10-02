@@ -32,6 +32,7 @@ import { modelCatalog, switchAgentModel } from './models'
 import { addTask, ensureBoard, removeTask, TaskBoards, updateTask } from './tasks'
 import { loginEnv, which } from './env'
 import { HerdrService } from './herdr/service'
+import { quitPlan, stopServerSync } from './herdr/cli'
 import { LimitsService } from './limits'
 import { buildMenu } from './menu'
 import { mt, setMainLanguage } from './i18n'
@@ -516,11 +517,37 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+let quitDecided = false
+
+app.on('before-quit', (e) => {
+  // "Stop herdr when quitting": ask first if agents are still at work.
+  let stopServer = false
+  if (!quitDecided && !READONLY && service.herdrPath) {
+    const plan = quitPlan(settings.get().stopServerOnQuit, service.snapshot?.panes)
+    if (plan === 'ask') {
+      const busy = (service.snapshot?.panes ?? []).filter((p) => p.agent && (p.agent_status === 'working' || p.agent_status === 'blocked')).length
+      const ask: Electron.MessageBoxSyncOptions = {
+        type: 'warning',
+        message: mt('Agents are still working'),
+        detail: mt('Agents working right now: {n}. They will stop together with herdr.', { n: busy }),
+        buttons: [mt('Stop herdr and quit'), mt('Quit, keep herdr running'), mt('Cancel')],
+        defaultId: 0,
+        cancelId: 2
+      }
+      const choice = win && !win.isDestroyed() ? dialog.showMessageBoxSync(win, ask) : dialog.showMessageBoxSync(ask)
+      if (choice === 2) {
+        e.preventDefault()
+        return
+      }
+      stopServer = choice === 0
+    } else stopServer = plan === 'stop'
+  }
+  quitDecided = true
   saveWindowState()
   settings.flush()
   bridges.closeAll()
   transcripts.dispose()
   limits.stop()
   service.stop()
+  if (stopServer && service.herdrPath) stopServerSync(service.herdrPath, service.sessionName, service.env)
 })

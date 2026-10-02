@@ -20,6 +20,7 @@ export async function load() {
         export { installStatusline, uninstallStatusline, statuslineState, readClaudeStatusLimits, scriptContent } from './src/main/claudeStatusline'
         export { sendPrompt, createAgent } from './src/main/actions'
         export { HerdrApiError } from './src/shared/types'
+        export { quitPlan } from './src/main/herdr/cli'
         export { parseMenu, claudeMenuTarget, claudeEffortOnScreen, codexModelsFrom, switchAgentModel } from './src/main/models'
         export { modelArgs, prettyModel, CLAUDE_MODELS } from './src/shared/models'
         export { parseBoard, normalizeStatus, addTask, updateTask, removeTask, ensureBoard, ignoreInGit, TaskBoards, BOARD_FILE } from './src/main/tasks'

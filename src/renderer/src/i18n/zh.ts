@@ -1,6 +1,8 @@
 import type { Dict } from './index'
 
 export const zh: Dict = {
+  "Stop herdr when quitting Drover": "退出 Drover 时停止 herdr",
+  "Quitting Drover (⌘Q) also stops the herdr server and every agent of this session. If agents are still working, Drover asks first. Off: agents keep running and Drover picks them up when it opens again.": "退出 Drover（⌘Q）时也会停止 herdr 服务器以及此会话中的所有智能体。如果还有智能体在工作，Drover 会先询问。关闭时：智能体继续运行，Drover 下次打开时会接着显示它们。",
   "Tasks": "任务",
   "{n} blocked": "{n} 个受阻",
   "{active} in progress · {done}/{total} done": "进行中 {active} · 已完成 {done}/{total}",

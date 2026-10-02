@@ -374,6 +374,8 @@ export interface AppSettings {
   notifications: boolean
   notificationSound: boolean
   autoStartServer: boolean
+  /** Quitting Drover also stops the herdr server (and with it every agent of the session). */
+  stopServerOnQuit: boolean
   syncFocus: boolean
   defaultAgentKind: string
   terminalFontSize: number
@@ -405,6 +407,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifications: true,
   notificationSound: true,
   autoStartServer: true,
+  stopServerOnQuit: false,
   syncFocus: true,
   defaultAgentKind: 'claude',
   terminalFontSize: 13,

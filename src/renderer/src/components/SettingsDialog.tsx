@@ -208,6 +208,12 @@ function HerdrTab() {
       <Row label={t('Start server automatically')} hint={t('If no herdr server is running, start one in the background. Agents keep running after you quit the app.')}>
         <Toggle value={s.autoStartServer} onChange={(v) => void updateSettings({ autoStartServer: v })} />
       </Row>
+      <Row
+        label={t('Stop herdr when quitting Drover')}
+        hint={t('Quitting Drover (⌘Q) also stops the herdr server and every agent of this session. If agents are still working, Drover asks first. Off: agents keep running and Drover picks them up when it opens again.')}
+      >
+        <Toggle value={s.stopServerOnQuit} onChange={(v) => void updateSettings({ stopServerOnQuit: v })} />
+      </Row>
       <div className="setting-block">
         <div className="setting-block-head">
           <span>{t('Sessions')}</span>

@@ -43,7 +43,7 @@ You need [herdr](https://herdr.dev) (`curl -fsSL https://herdr.dev/install.sh | 
 
 1. Download `Drover-<version>-arm64.dmg` from [Releases](https://github.com/mariotgb/drover/releases/latest) and drag Drover to Applications.
 2. The app is not notarized by Apple, so macOS blocks the first launch. Open it once, then go to System Settings → Privacy & Security and click **Open Anyway** (or run `xattr -dr com.apple.quarantine /Applications/Drover.app`).
-3. Drover connects to the running herdr server or starts one itself — agents keep working after you close the app.
+3. Drover connects to the running herdr server or starts one itself — agents keep working after you close the app. To stop herdr together with Drover, turn on Settings → herdr → **Stop herdr when quitting Drover** (Drover asks first if agents are still working).
 
 For accurate chats and statuses, install the herdr integrations (Settings → Integrations, or `herdr integration install claude` / `codex`).
 

@@ -199,3 +199,12 @@ test('createAgent reports an agent that exits during startup', async () => {
   assert.equal(r.code, 'agent_start_failed')
   assert.equal(svc.calls.some((c) => c[0] === 'agent.prompt'), false)
 })
+
+test('quitting stops herdr only when asked to, and asks while agents work', () => {
+  const idle = [{ agent: 'claude', agent_status: 'idle' }, { agent: null, agent_status: 'unknown' }]
+  assert.equal(m.quitPlan(false, [{ agent: 'codex', agent_status: 'working' }]), 'keep')
+  assert.equal(m.quitPlan(true, idle), 'stop')
+  assert.equal(m.quitPlan(true, undefined), 'stop')
+  assert.equal(m.quitPlan(true, [...idle, { agent: 'codex', agent_status: 'working' }]), 'ask')
+  assert.equal(m.quitPlan(true, [{ agent: 'claude', agent_status: 'blocked' }]), 'ask')
+})

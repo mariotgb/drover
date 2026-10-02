@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process'
+import { execFile, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -31,6 +31,19 @@ export function herdrConfigDir(env: NodeJS.ProcessEnv): string {
 export function defaultSocketPath(session: string, env: NodeJS.ProcessEnv): string {
   const dir = herdrConfigDir(env)
   return session === 'default' ? join(dir, 'herdr.sock') : join(dir, 'sessions', session, 'herdr.sock')
+}
+
+/** What quitting Drover does to the herdr server. */
+export function quitPlan(stopOnQuit: boolean, panes: { agent?: string | null; agent_status?: string }[] | undefined): 'keep' | 'stop' | 'ask' {
+  if (!stopOnQuit) return 'keep'
+  const busy = (panes ?? []).filter((p) => p.agent && (p.agent_status === 'working' || p.agent_status === 'blocked')).length
+  return busy ? 'ask' : 'stop'
+}
+
+/** Stops the session's server; blocks for a few seconds at most (used while quitting). */
+export function stopServerSync(herdrPath: string, session: string, env: NodeJS.ProcessEnv): boolean {
+  const r = spawnSync(herdrPath, [...sessionArgs(session), 'server', 'stop'], { env, timeout: 8000, stdio: 'ignore' })
+  return r.status === 0
 }
 
 export function sessionArgs(session: string): string[] {

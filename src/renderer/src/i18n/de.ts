@@ -1,6 +1,8 @@
 import type { Dict } from './index'
 
 export const de: Dict = {
+  "Stop herdr when quitting Drover": "herdr beim Beenden von Drover stoppen",
+  "Quitting Drover (⌘Q) also stops the herdr server and every agent of this session. If agents are still working, Drover asks first. Off: agents keep running and Drover picks them up when it opens again.": "Beim Beenden von Drover (⌘Q) werden auch der herdr-Server und alle Agenten dieser Sitzung gestoppt. Arbeiten noch Agenten, fragt Drover vorher nach. Aus: Die Agenten laufen weiter, und Drover übernimmt sie beim nächsten Start.",
   "Tasks": "Aufgaben",
   "{n} blocked": "{n} blockiert",
   "{active} in progress · {done}/{total} done": "{active} in Arbeit · {done}/{total} erledigt",
