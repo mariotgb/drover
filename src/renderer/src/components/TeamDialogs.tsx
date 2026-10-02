@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import clsx from 'clsx'
 import { Check, Crown, TriangleAlert, X } from 'lucide-react'
 import { agentKindDef } from '@shared/agents'
+import { choiceFor, modelArgs, type ModelChoice } from '@shared/models'
 import type { RoleTemplate } from '@shared/types'
 import { api, humanizeError } from '../api'
 import { t, tp } from '../i18n'
@@ -10,6 +11,7 @@ import { effectiveRole, firstMessage, rolesFor, starterRoles } from '../roles'
 import { getModel, select, toast, useModel, useStore } from '../store'
 import { splitArgs } from '../util'
 import { Modal } from './Modal'
+import { ModelFields } from './ModelPicker'
 import { AgentAvatar, Spinner, StatusDot } from './primitives'
 
 type RowState = 'idle' | 'starting' | 'ready' | 'attention' | 'error' | 'running'
@@ -18,6 +20,7 @@ interface Row {
   role: RoleTemplate
   checked: boolean
   kind: string
+  model: ModelChoice
   state: RowState
   error?: string
   paneId?: string
@@ -45,7 +48,9 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
         sorted.map((r) => {
           const eff = effectiveRole(r, cwd)
           const running = live.has(eff.name)
-          return { role: eff, checked: !running, kind: eff.kind, state: running ? 'running' : 'idle' }
+          const s = useStore.getState().settings
+          const model = eff.model !== undefined || eff.effort !== undefined ? { model: eff.model || null, effort: eff.effort || null } : s.agentModels[eff.kind] ?? {}
+          return { role: eff, checked: !running, kind: eff.kind, model, state: running ? 'running' : 'idle' }
         })
       )
     })
@@ -81,7 +86,7 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
         name: role.name,
         placement: 'tab',
         tabLabel: role.label,
-        args: splitArgs(role.args),
+        args: [...modelArgs(r.kind, choiceFor(r.kind, r.model, useStore.getState().models)), ...splitArgs(role.args)],
         prompt: firstMessage(role, role.orchestrator ? { team } : {})
       })
       if (res.ok && res.paneId) {
@@ -100,7 +105,7 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
   const installed = kinds.filter((k) => k.installed)
 
   return (
-    <Modal title={t('Start a team in {project}', { project: group?.workspace.label || basename(cwd) })} onClose={close} width={640}>
+    <Modal title={t('Start a team in {project}', { project: group?.workspace.label || basename(cwd) })} onClose={close} width={780}>
       <div className="form">
         <p className="setting-hint block">
           {t('Each agent opens in its own tab and immediately gets its role instructions. The orchestrator starts last and is told who is on the team and how to give them work.')}
@@ -125,18 +130,21 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
                   </div>
                   <div className="team-role-sub">{r.role.file ?? (r.role.instructions.slice(0, 90) || t('Default instructions'))}</div>
                 </div>
-                <select
-                  className="input select"
-                  value={r.kind}
-                  disabled={busy || done || r.state === 'running'}
-                  onChange={(e) => patch(i, { kind: e.target.value })}
-                >
-                  {(installed.length ? installed : kinds).map((k) => (
-                    <option key={k.kind} value={k.kind}>
-                      {k.label}
-                    </option>
-                  ))}
-                </select>
+                <div className="team-agent">
+                  <select
+                    className="input select"
+                    value={r.kind}
+                    disabled={busy || done || r.state === 'running'}
+                    onChange={(e) => patch(i, { kind: e.target.value, model: useStore.getState().settings.agentModels[e.target.value] ?? {} })}
+                  >
+                    {(installed.length ? installed : kinds).map((k) => (
+                      <option key={k.kind} value={k.kind}>
+                        {k.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ModelFields compact kind={r.kind} value={r.model} disabled={busy || done || r.state === 'running'} onChange={(v) => patch(i, { model: v })} />
+                </div>
                 <span className="team-state" title={r.error}>
                   {r.state === 'running' && <span className="dim">{t('running')}</span>}
                   {r.state === 'starting' && <Spinner size={13} />}

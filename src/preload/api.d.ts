@@ -1,3 +1,4 @@
+import type { ModelCatalog, ModelChoice } from '../shared/models'
 import type {
   AgentKindInfo,
   AppSettings,
@@ -59,6 +60,10 @@ export interface DroverApi {
   setClaudeStatusline(enable: boolean): Promise<ClaudeStatuslineState>
   sendPrompt(req: SendPromptRequest): Promise<SendPromptResult>
   createAgent(req: NewAgentRequest): Promise<NewAgentResult>
+  /** Models each agent can run with (Codex's list comes from its local cache). */
+  modelCatalog(): Promise<ModelCatalog>
+  /** Switches a running agent's model for its current session only. */
+  setAgentModel(paneId: string, kind: string, choice: ModelChoice): Promise<{ ok: boolean; message?: string; code?: string; error?: string }>
 
   termOpen(id: string, target: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }>
   termInput(id: string, text: string): void

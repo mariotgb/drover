@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { ArrowUp, Crosshair, FileText, FolderOpen, Paperclip, Square, X } from 'lucide-react'
+import { ArrowUp, ChevronDown, Crosshair, FileText, FolderOpen, Paperclip, Square, X } from 'lucide-react'
 import { agentKindDef } from '@shared/agents'
+import { supportsModels } from '@shared/models'
 import { t } from '../i18n'
 import { api, humanizeError } from '../api'
 import { interrupt } from '../actions'
@@ -16,6 +17,8 @@ import {
   type Attachment
 } from '../store'
 import { LimitChip } from './Usage'
+import { ModelMenu, shownModel } from './ModelPicker'
+import { Spinner } from './primitives'
 import { elementBlock } from '../preview/elementContext'
 import { removeElement } from '../store'
 
@@ -76,6 +79,11 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   const [histPos, setHistPos] = useState(-1)
   const [sending, setSending] = useState(false)
   const def = agentKindDef(thread.kind)
+  const [modelOpen, setModelOpen] = useState(false)
+  const catalog = useStore((s) => s.models)
+  const picked = useStore((s) => s.modelShown[paneId])
+  const switchingModel = useStore((s) => !!s.modelSwitching[paneId])
+  const modelText = shownModel(thread, meta, picked, catalog)
   const working = thread.status === 'working'
 
   useLayoutEffect(() => {
@@ -188,7 +196,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   const send = async () => {
     const body = text.trim()
     if (!body && !attachments.length && !elements.length) return
-    if (sending) return
+    if (sending || switchingModel) return
     setSending(true)
     const images = attachments.filter((a) => a.isImage)
     // Picked preview elements: their screenshots go first, then other images,
@@ -270,7 +278,8 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
     }
   }
 
-  const canSend = !!text.trim() || attachments.length > 0 || elements.length > 0
+  // While Drover drives the agent's /model menu, typed text would land in that menu.
+  const canSend = !switchingModel && (!!text.trim() || attachments.length > 0 || elements.length > 0)
   const pct = meta?.contextTokens && meta.contextWindow ? Math.min(100, Math.round((meta.contextTokens / meta.contextWindow) * 100)) : null
   const placeholder = thread.isShell
     ? t('Run a command in this terminal…')
@@ -373,10 +382,26 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
             <button type="button" className="composer-tool" title={t('Attach images or files (⌘⇧A)')} onClick={() => void pickFiles()}>
               <Paperclip size={16} />
             </button>
-            <span className="composer-chip" title={def?.label ?? t('Terminal')}>
-              {def?.label ?? t('Terminal')}
-              {meta?.model ? <span className="chip-dim"> · {meta.model.replace(/^claude-/, '')}</span> : null}
-            </span>
+            {supportsModels(thread.kind) && !thread.isShell ? (
+              <span className="model-chip-wrap">
+                <button
+                  type="button"
+                  className={clsx('composer-chip', 'model-chip', modelOpen && 'open')}
+                  title={t('Choose the model for this chat')}
+                  onClick={() => setModelOpen((v) => !v)}
+                >
+                  {def?.label}
+                  {modelText ? <span className="chip-dim"> · {modelText}</span> : null}
+                  {switchingModel ? <Spinner size={10} /> : <ChevronDown size={11} className="chip-chev" />}
+                </button>
+                {modelOpen && <ModelMenu thread={thread} onClose={() => setModelOpen(false)} />}
+              </span>
+            ) : (
+              <span className="composer-chip" title={def?.label ?? t('Terminal')}>
+                {def?.label ?? t('Terminal')}
+                {meta?.model ? <span className="chip-dim"> · {meta.model.replace(/^claude-/, '')}</span> : null}
+              </span>
+            )}
             {thread.cwd && (
               <button type="button" className="composer-chip link" title={t('Reveal in Finder')} onClick={() => void api.openPath(thread.cwd!)}>
                 <FolderOpen size={12} /> {shortPath(thread.cwd, home).split('/').slice(-2).join('/')}

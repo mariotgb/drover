@@ -39,6 +39,12 @@ export function humanizeError(code: string | undefined, message: string | undefi
       return t('The agent did not react to the message. Check the terminal panel — the text may still be in its input box.')
     case 'agent_start_failed':
       return t('The agent exited right after starting. See the terminal panel for details.')
+    case 'agent_busy':
+      return t('The agent is busy right now. Try again when it finishes.')
+    case 'model_not_in_menu':
+      return t('This model is not in the agent’s list. Update the agent or pick another model.')
+    case 'model_menu_failed':
+      return t('The agent’s model menu did not respond as expected. Check the terminal panel and try again.')
     case 'agent_name_taken':
       return t('An agent with this name already exists. Pick another name.')
     case 'invalid_agent_name':

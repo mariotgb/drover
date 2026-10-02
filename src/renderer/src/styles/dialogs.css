@@ -1058,3 +1058,38 @@ code.path {
 .team-state .err {
   color: var(--danger);
 }
+
+/* ------------------------------------------------------------------ model fields */
+
+.model-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.model-fields.compact {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+.model-fields .input.select {
+  width: 100%;
+  min-width: 0;
+}
+.model-fields.compact .input {
+  height: 28px;
+  font-size: 12px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.team-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 260px;
+  flex: none;
+}
+.team-agent > .input.select {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  font-size: 12.5px;
+}

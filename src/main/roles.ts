@@ -53,6 +53,8 @@ export async function discoverRoles(cwd: string): Promise<RoleTemplate[]> {
         label: fm.label || fm.title || titleOf(text, base),
         kind: (fm.agent || fm.kind || '').toLowerCase(),
         args: fm.args || '',
+        model: fm.model || undefined,
+        effort: (fm.effort || fm.reasoning || '').toLowerCase() || undefined,
         instructions: '',
         source: 'project',
         file: rel,

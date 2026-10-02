@@ -16,6 +16,7 @@ import { homedir } from 'node:os'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { AGENT_KINDS } from '@shared/agents'
+import type { ModelChoice } from '@shared/models'
 import {
   HerdrApiError,
   type AgentKindInfo,
@@ -26,6 +27,7 @@ import {
 } from '@shared/types'
 import { createAgent, sendPrompt } from './actions'
 import { ATTACHMENTS_DIR, cleanupAttachments, CONVERT_EXTS, IMAGE_EXTS, saveImage, stageFile } from './attachments'
+import { modelCatalog, switchAgentModel } from './models'
 import { loginEnv, which } from './env'
 import { HerdrService } from './herdr/service'
 import { LimitsService } from './limits'
@@ -344,6 +346,11 @@ function registerIpc() {
   handle('agent:send', (_e, req: SendPromptRequest) =>
     READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } : sendPrompt(service, req)
   )
+  handle('models:catalog', () => modelCatalog(service.env))
+  handle('agent:set-model', async (_e, paneId: string, kind: string, choice: ModelChoice) => {
+    if (READONLY) return { ok: false, code: 'readonly', error: 'read-only mode' }
+    return switchAgentModel(service, paneId, kind, choice, await modelCatalog(service.env))
+  })
   handle('agent:create', async (_e, req: NewAgentRequest) => {
     if (READONLY) return { ok: false, code: 'readonly', error: 'read-only mode' }
     if (req.folder) settings.addRecentFolder(req.folder)

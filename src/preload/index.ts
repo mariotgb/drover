@@ -32,6 +32,8 @@ const api = {
   setClaudeStatusline: (enable: boolean) => ipcRenderer.invoke('claude-statusline:set', enable),
   sendPrompt: (req: unknown) => ipcRenderer.invoke('agent:send', req),
   createAgent: (req: unknown) => ipcRenderer.invoke('agent:create', req),
+  modelCatalog: () => ipcRenderer.invoke('models:catalog'),
+  setAgentModel: (paneId: string, kind: string, choice: unknown) => ipcRenderer.invoke('agent:set-model', paneId, kind, choice),
 
   termOpen: (id: string, target: string, cols: number, rows: number) =>
     ipcRenderer.invoke('term:open', id, target, cols, rows),

@@ -15,7 +15,7 @@ export class SettingsStore {
     } catch {
       /* first run */
     }
-    this.data = { ...DEFAULT_SETTINGS, ...loaded, agentArgs: { ...DEFAULT_SETTINGS.agentArgs, ...(loaded.agentArgs ?? {}) } }
+    this.data = { ...DEFAULT_SETTINGS, ...loaded, agentArgs: { ...DEFAULT_SETTINGS.agentArgs, ...(loaded.agentArgs ?? {}) }, agentModels: { ...(loaded.agentModels ?? {}) } }
     if (!loaded.appearance) {
       // Migrate the first-version theme/accent settings.
       const accents: Record<string, string | null> = { orange: null, blue: '#2f6fdf', green: '#1f8a55', violet: '#7c4ddb', graphite: '#5b5b56' }

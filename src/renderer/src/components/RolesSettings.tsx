@@ -7,6 +7,8 @@ import { t } from '../i18n'
 import { defaultInstructions, previewHint, starterRoles } from '../roles'
 import { updateSettings, useStore } from '../store'
 import { AgentAvatar } from './primitives'
+import { supportsModels } from '@shared/models'
+import { ModelFields } from './ModelPicker'
 
 export function RolesSettingsPane() {
   const roles = useStore((s) => s.settings.roles)
@@ -71,7 +73,7 @@ export function RolesSettingsPane() {
                     </div>
                     <div className="field">
                       <label>{t('Agent')}</label>
-                      <select className="input select" value={r.kind} onChange={(e) => patch(r.id, { kind: e.target.value })}>
+                      <select className="input select" value={r.kind} onChange={(e) => patch(r.id, { kind: e.target.value, model: undefined, effort: undefined })}>
                         {(installed.length ? installed : kinds).map((k) => (
                           <option key={k.kind} value={k.kind}>
                             {k.label}
@@ -80,6 +82,16 @@ export function RolesSettingsPane() {
                       </select>
                     </div>
                   </div>
+                  {supportsModels(r.kind) && (
+                    <div className="field">
+                      <label>{t('Model')}</label>
+                      <ModelFields
+                        kind={r.kind}
+                        value={{ model: r.model || null, effort: r.effort || null }}
+                        onChange={(v) => patch(r.id, { model: v.model || undefined, effort: v.effort || undefined })}
+                      />
+                    </div>
+                  )}
                   <div className="field">
                     <label>{t('Launch arguments')}</label>
                     <input className="input mono" value={r.args} onChange={(e) => patch(r.id, { args: e.target.value })} spellCheck={false} />

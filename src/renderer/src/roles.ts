@@ -45,11 +45,13 @@ export function effectiveRole(role: RoleTemplate, cwd: string | null): RoleTempl
     ...role,
     kind: agentKindDef(kind) ? kind : s.defaultAgentKind,
     args: o.args ?? role.args,
-    instructions: o.instructions ?? role.instructions
+    instructions: o.instructions ?? role.instructions,
+    model: o.model ?? role.model,
+    effort: o.effort ?? role.effort
   }
 }
 
-export function rememberRole(cwd: string | null, role: RoleTemplate, patch: Partial<Pick<RoleTemplate, 'kind' | 'args' | 'instructions'>>) {
+export function rememberRole(cwd: string | null, role: RoleTemplate, patch: Partial<Pick<RoleTemplate, 'kind' | 'args' | 'instructions' | 'model' | 'effort'>>) {
   const s = useStore.getState().settings
   const key = overrideKey(cwd, role.name)
   return { roleOverrides: { ...s.roleOverrides, [key]: { ...(s.roleOverrides[key] ?? {}), ...patch } } }

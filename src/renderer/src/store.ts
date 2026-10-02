@@ -12,8 +12,9 @@ import type {
   TranscriptMeta,
   TranscriptUpdate
 } from '@shared/types'
+import type { ModelCatalog, ModelChoice } from '@shared/models'
 import { DEFAULT_SETTINGS } from '@shared/types'
-import { api, call, errorText } from './api'
+import { api, call, errorText, humanizeError } from './api'
 import { resolveLang, setLanguage, t } from './i18n'
 import { applyAppearance } from './appearance'
 import { attentionSort, buildModel, type Thread } from './model'
@@ -90,6 +91,12 @@ interface State {
   /** Preview panel open per workspace id. */
   previewOpen: Record<string, boolean>
   servers: LocalServer[]
+  /** Models each agent can run with. */
+  models: ModelCatalog | null
+  /** A model switch is driving the agent's menu: keep the composer from typing into it. */
+  modelSwitching: Record<string, boolean>
+  /** Model picked in the chat, shown until the agent's next turn reports its model. */
+  modelShown: Record<string, { label: string; effort?: string; base: string | null }>
 }
 
 export const useStore = create<State>(() => ({
@@ -115,7 +122,10 @@ export const useStore = create<State>(() => ({
   toasts: [],
   limits: { claude: null, codex: null },
   previewOpen: loadJson('preview-open', {}),
-  servers: []
+  servers: [],
+  models: null,
+  modelSwitching: {},
+  modelShown: {}
 }))
 
 const set = useStore.setState
@@ -461,6 +471,37 @@ export async function refreshKinds() {
   }
 }
 
+export async function refreshModels() {
+  try {
+    set({ models: await api.modelCatalog() })
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Switches a running agent's model for this chat only (its defaults stay as they are). */
+export async function switchModel(thread: Thread, choice: ModelChoice, shown: { label: string; effort?: string }): Promise<boolean> {
+  const paneId = thread.paneId
+  if (!thread.kind || get().modelSwitching[paneId]) return false
+  set((s) => ({ modelSwitching: { ...s.modelSwitching, [paneId]: true } }))
+  try {
+    const r = await api.setAgentModel(paneId, thread.kind, choice)
+    if (!r.ok) {
+      toast('error', t('Could not switch the model: {error}', { error: humanizeError(r.code, r.error) }))
+      return false
+    }
+    const base = get().transcripts[paneId]?.meta?.model ?? null
+    // Claude Code confirms with the exact model behind an alias ("Set model to Opus 5.5 …").
+    const exact = r.message?.match(/^Set model to (.+?) for this session only/)?.[1]
+    if (exact && !/^default\b/i.test(exact)) shown = { ...shown, label: exact }
+    set((s) => ({ modelShown: { ...s.modelShown, [paneId]: { ...shown, base } } }))
+    toast('success', t('This chat now uses {model}', { model: shown.effort ? `${shown.label} · ${shown.effort}` : shown.label }))
+    return true
+  } finally {
+    set((s) => ({ modelSwitching: { ...s.modelSwitching, [paneId]: false } }))
+  }
+}
+
 export async function bootstrap() {
   const init = await api.init()
   setLanguage(resolveLang(init.settings.language))
@@ -483,7 +524,7 @@ export async function bootstrap() {
     const was = prev.status
     if (c.session !== prev.session) {
       // Pane ids like w1:p1 repeat across herdr sessions: drop per-pane state.
-      set({ snapshot: null, selectedPaneId: null, transcripts: {}, pending: {}, drafts: {}, viewMode: {}, drawer: {}, workingSince: {} })
+      set({ snapshot: null, selectedPaneId: null, transcripts: {}, pending: {}, drafts: {}, viewMode: {}, drawer: {}, workingSince: {}, modelSwitching: {}, modelShown: {} })
       saveJson('selected', null)
       api.setSelectedPane(null)
     }
@@ -495,6 +536,7 @@ export async function bootstrap() {
     select(id)
   })
   api.on.limits((l) => set({ limits: l }))
+  void refreshModels()
   void api.limits().then((l) => set({ limits: l }))
   api.on.windowFocus((focused) => {
     set({ windowFocused: focused })

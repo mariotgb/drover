@@ -20,6 +20,8 @@ export async function load() {
         export { installStatusline, uninstallStatusline, statuslineState, readClaudeStatusLimits, scriptContent } from './src/main/claudeStatusline'
         export { sendPrompt, createAgent } from './src/main/actions'
         export { HerdrApiError } from './src/shared/types'
+        export { parseMenu, claudeMenuTarget, claudeEffortOnScreen, codexModelsFrom, switchAgentModel } from './src/main/models'
+        export { modelArgs, prettyModel, CLAUDE_MODELS } from './src/shared/models'
       `,
       resolveDir: root,
       loader: 'ts'

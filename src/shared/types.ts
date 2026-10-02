@@ -1,5 +1,6 @@
 // Types shared between the Electron main process, preload and renderer.
 
+import type { ModelChoice } from './models'
 import { DEFAULT_APPEARANCE, type AppearanceSettings } from './themes'
 
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown'
@@ -241,6 +242,8 @@ export interface TranscriptMeta {
   path: string
   title?: string
   model?: string
+  /** Reasoning level of the last turn (Codex records it). */
+  effort?: string
   cwd?: string
   contextTokens?: number
   contextWindow?: number
@@ -354,6 +357,9 @@ export interface RoleTemplate {
   /** Role file relative to the project, for project roles. */
   file?: string
   orchestrator?: boolean
+  /** Model and reasoning level to start the agent with; empty = the agent's default. */
+  model?: string
+  effort?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -383,8 +389,10 @@ export interface AppSettings {
   language: 'system' | 'en' | 'ru' | 'es' | 'de' | 'zh'
   /** Global role templates the user defined. */
   roles: RoleTemplate[]
-  /** Per project+role tweaks (kind, args, instructions), key "<cwd>::<role name>". */
-  roleOverrides: Record<string, Partial<Pick<RoleTemplate, 'kind' | 'args' | 'instructions'>>>
+  /** Per project+role tweaks (kind, args, instructions, model), key "<cwd>::<role name>". */
+  roleOverrides: Record<string, Partial<Pick<RoleTemplate, 'kind' | 'args' | 'instructions' | 'model' | 'effort'>>>
+  /** Last model picked per agent kind in the New agent dialog. */
+  agentModels: Record<string, ModelChoice>
   /** Tell agents started with a role how to open the preview panel. */
   agentPreviewHint: boolean
   appearance: AppearanceSettings
@@ -411,6 +419,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: 'system',
   roles: [],
   roleOverrides: {},
+  agentModels: {},
   agentPreviewHint: true,
   appearance: DEFAULT_APPEARANCE
 }

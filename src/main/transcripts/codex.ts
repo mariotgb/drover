@@ -242,6 +242,7 @@ export class CodexParser implements TranscriptParser {
         return
       case 'turn_context':
         if (typeof p.model === 'string') this.meta.model = p.model
+        if (typeof p.effort === 'string') this.meta.effort = p.effort
         if (typeof p.cwd === 'string') this.meta.cwd = p.cwd
         if (typeof p.turn_id === 'string') this.turn = p.turn_id
         return

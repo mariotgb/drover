@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { ChevronDown, FolderOpen, GitBranch, Settings2, SquareTerminal, Users } from 'lucide-react'
 import { AGENT_NAME_RE, agentKindDef, toAgentName } from '@shared/agents'
+import { choiceFor, modelArgs, supportsModels, type ModelChoice } from '@shared/models'
 import type { NewAgentRequest, RoleTemplate } from '@shared/types'
 import { api, humanizeError } from '../api'
 import { openSettings } from '../actions'
@@ -11,6 +12,7 @@ import { defaultInstructions, effectiveRole, firstMessage, rememberRole, rolesFo
 import { getModel, select, setViewMode, toast, toggleDrawer, updateSettings, useModel, useStore, type DialogState } from '../store'
 import { splitArgs } from '../util'
 import { Modal } from './Modal'
+import { ModelFields } from './ModelPicker'
 import { AgentAvatar, Spinner } from './primitives'
 
 type Preset = Extract<DialogState, { type: 'new-agent' }>
@@ -35,6 +37,8 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
   const [useWorktree, setUseWorktree] = useState(false)
   const [branch, setBranch] = useState('')
   const [args, setArgs] = useState(() => (kind ? settings.agentArgs[kind] ?? '' : ''))
+  const [modelChoice, setModelChoice] = useState<ModelChoice>(() => (kind ? settings.agentModels[kind] ?? {} : {}))
+  const catalog = useStore((s) => s.models)
   const [prompt, setPrompt] = useState('')
   const [showMore, setShowMore] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -76,6 +80,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
   useEffect(() => {
     if (role) return
     setArgs(kind ? settings.agentArgs[kind] ?? '' : '')
+    setModelChoice(kind ? settings.agentModels[kind] ?? {} : {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind])
 
@@ -90,6 +95,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
     setKind(eff.kind)
     setName(eff.name)
     setArgs(eff.args)
+    setModelChoice(eff.model !== undefined || eff.effort !== undefined ? { model: eff.model || null, effort: eff.effort || null } : settings.agentModels[eff.kind] ?? {})
     setPrompt(eff.instructions.trim() || defaultInstructions(eff))
   }
 
@@ -111,13 +117,26 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
     setBusy(true)
     setError(null)
     const patch: Parameters<typeof updateSettings>[0] = {}
+    const choice = choiceFor(kind, modelChoice, catalog)
     if (kind) {
       patch.defaultAgentKind = kind
-      if (!role) patch.agentArgs = { ...settings.agentArgs, [kind]: args }
+      if (!role) {
+        patch.agentArgs = { ...settings.agentArgs, [kind]: args }
+        if (supportsModels(kind)) patch.agentModels = { ...settings.agentModels, [kind]: choice }
+      }
     }
     let message = prompt.trim()
     if (role && kind) {
-      Object.assign(patch, rememberRole(projectCwd, role, { kind, args, instructions: message === defaultInstructions(effectiveRole(role, projectCwd)) ? '' : message }))
+      Object.assign(
+        patch,
+        rememberRole(projectCwd, role, {
+          kind,
+          args,
+          instructions: message === defaultInstructions(effectiveRole(role, projectCwd)) ? '' : message,
+          model: choice.model ?? '',
+          effort: choice.effort ?? ''
+        })
+      )
       message = firstMessage({ ...role, instructions: message })
     }
     void updateSettings(patch)
@@ -130,7 +149,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
       placement: placement === 'existing' ? 'existing' : workspaceId ? placement : 'workspace-root',
       splitTarget: placement === 'existing' ? preset.paneId ?? null : splitTarget,
       tabLabel: role?.label || name || null,
-      args: splitArgs(args),
+      args: [...modelArgs(kind, choice), ...splitArgs(args)],
       prompt: message || undefined,
       worktreeBranch: useWorktree && workspaceId && branch.trim() ? branch.trim() : null
     }
@@ -278,6 +297,15 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
           {!kinds.length && <div className="hint">{t('Detecting installed agents…')}</div>}
         </div>
 
+        {supportsModels(kind) && (
+          <div className="field">
+            <label>
+              {t('Model')} <span className="dim">{t('(and how hard it thinks)')}</span>
+            </label>
+            <ModelFields kind={kind} value={choiceFor(kind, modelChoice, catalog)} onChange={setModelChoice} />
+          </div>
+        )}
+
         <div className="field-row">
           {kind && (
             <div className="field grow">
@@ -336,7 +364,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
               <input
                 className="input mono"
                 value={args}
-                placeholder={kind === 'claude' ? '--model opus' : kind === 'codex' ? '-m gpt-5-codex' : ''}
+                placeholder={kind === 'claude' ? '--permission-mode plan' : kind === 'codex' ? '--search' : ''}
                 onChange={(e) => setArgs(e.target.value)}
                 spellCheck={false}
               />
