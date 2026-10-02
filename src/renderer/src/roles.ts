@@ -76,8 +76,19 @@ export function previewHint(): string {
 export function teamNote(members: { name: string; kind: string; label: string }[]): string {
   const list = members.map((m) => `${m.name} (${m.label}, ${agentKindDef(m.kind)?.label ?? m.kind})`).join(', ')
   return t(
-    'Your team runs in herdr: {list}. Give them work with `herdr agent prompt <name> "<task>" --wait` and read their answers with `herdr agent read <name> --source recent-unwrapped --lines 120`. Follow the herdr skill for details.',
+    'Your team runs in herdr: {list}. They work in parallel: give each free agent its task with `herdr agent prompt <name> "<task>" --wait --timeout 3600000`, running several of these commands at once in the background so you are not blocked, and when one finishes read the answer with `herdr agent read <name> --source recent-unwrapped --lines 120`. `herdr agent list` shows who is busy. Give an agent its next task only after it has finished the current one. Follow the herdr skill for details.',
     { list }
+  )
+}
+
+export const BOARD_FILE = '.drover/tasks.json'
+const BOARD_FORMAT = '{"tasks":[{"id":"short-id","title":"…","assignee":"agent name","status":"todo|in_progress|review|done|blocked","notes":"one short line"}]}'
+
+/** How an orchestrator keeps the task board the user sees in Drover. */
+export function boardNote(): string {
+  return t(
+    'Keep the team’s task board in {file} — the user sees it in Drover. Format: {format}. Add every task as you plan it, set the assignee when you hand it out and change the status as soon as it changes. The user can add tasks there too (status todo): pick them up.',
+    { file: BOARD_FILE, format: BOARD_FORMAT }
   )
 }
 
@@ -85,6 +96,7 @@ export function teamNote(members: { name: string; kind: string; label: string }[
 export function firstMessage(role: RoleTemplate, opts: { team?: { name: string; kind: string; label: string }[] } = {}): string {
   const parts = [role.instructions.trim() || defaultInstructions(role)]
   if (opts.team?.length) parts.push(teamNote(opts.team))
+  if (role.orchestrator) parts.push(boardNote())
   if (useStore.getState().settings.agentPreviewHint) parts.push(previewHint())
   return parts.join('\n\n')
 }

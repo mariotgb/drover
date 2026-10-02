@@ -439,6 +439,29 @@ export interface SendPromptResult {
   code?: string
 }
 
+// Task board (<project>/.drover/tasks.json)
+
+export type TaskStatus = 'todo' | 'in_progress' | 'review' | 'done' | 'blocked'
+
+export interface BoardTask {
+  id: string
+  title: string
+  status: TaskStatus
+  /** herdr agent name */
+  assignee?: string
+  notes?: string
+  /** When the task got its current status (as far as Drover saw). */
+  since?: number
+}
+
+export interface TaskBoard {
+  cwd: string
+  exists: boolean
+  tasks: BoardTask[]
+  /** The file is not valid right now; tasks are the last good copy. */
+  error?: string
+}
+
 export interface NewAgentRequest {
   workspaceId: string | null
   folder: string | null

@@ -59,6 +59,21 @@ test('claude: slash commands and interruptions', () => {
   assert.equal(ev.variant, 'interrupted')
 })
 
+test('claude: a message sent while Claude was busy shows up as the user’s', () => {
+  const p = new m.ClaudeParser()
+  p.feed([
+    J({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'first task' } }),
+    J({ type: 'queue-operation', operation: 'enqueue', content: 'second task' }),
+    J({ type: 'queue-operation', operation: 'dequeue', content: 'second task' }),
+    J({ type: 'attachment', uuid: 'q1', attachment: { type: 'queued_command', prompt: 'second task', commandMode: 'prompt', origin: { kind: 'human' }, humanTurn: true, timestamp: '2026-10-02T09:23:03.573Z' } }),
+    J({ type: 'attachment', uuid: 'q2', attachment: { type: 'queued_command', prompt: 'done', origin: { kind: 'task-notification' } } }),
+    J({ type: 'attachment', uuid: 'q3', attachment: { type: 'hook_success', content: 'ok' } })
+  ])
+  const users = p.store.items.filter((i) => i.kind === 'user')
+  assert.deepEqual(users.map((u) => u.text), ['first task', 'second task'])
+  assert.equal(users[1].ts, Date.parse('2026-10-02T09:23:03.573Z'))
+})
+
 test('codex: filters injected context, dedupes user turns, pairs exec calls', () => {
   const p = new m.CodexParser()
   const meta = { turn_id: 'T1' }

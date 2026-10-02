@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  TaskBoard,
   AgentKindInfo,
   AgentStatus,
   AppSettings,
@@ -97,6 +98,10 @@ interface State {
   modelSwitching: Record<string, boolean>
   /** Model picked in the chat, shown until the agent's next turn reports its model. */
   modelShown: Record<string, { label: string; effort?: string; base: string | null }>
+  /** Task boards by project folder. */
+  boards: Record<string, TaskBoard>
+  /** Workspace whose task board fills the main area. */
+  boardWorkspace: string | null
 }
 
 export const useStore = create<State>(() => ({
@@ -125,7 +130,9 @@ export const useStore = create<State>(() => ({
   servers: [],
   models: null,
   modelSwitching: {},
-  modelShown: {}
+  modelShown: {},
+  boards: {},
+  boardWorkspace: null
 }))
 
 const set = useStore.setState
@@ -221,6 +228,7 @@ export function viewModeFor(paneId: string): ViewMode {
 }
 
 export function select(paneId: string | null) {
+  if (get().boardWorkspace) set({ boardWorkspace: null })
   if (paneId === get().selectedPaneId) return
   set({ selectedPaneId: paneId })
   saveJson('selected', paneId)
@@ -471,6 +479,38 @@ export async function refreshKinds() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// task boards
+
+const boardRefs = new Map<string, number>()
+
+/** Follows a project's task board while something on screen shows it. */
+export function watchBoard(cwd: string): () => void {
+  const n = boardRefs.get(cwd) ?? 0
+  boardRefs.set(cwd, n + 1)
+  if (n === 0) {
+    void api.watchTasks(cwd).then((b) => {
+      if (b) set((s) => ({ boards: { ...s.boards, [cwd]: b } }))
+    })
+  }
+  return () => {
+    const left = (boardRefs.get(cwd) ?? 1) - 1
+    if (left > 0) boardRefs.set(cwd, left)
+    else {
+      boardRefs.delete(cwd)
+      api.unwatchTasks(cwd)
+    }
+  }
+}
+
+export function openBoard(workspaceId: string) {
+  set({ boardWorkspace: workspaceId })
+}
+
+export function closeBoard() {
+  set({ boardWorkspace: null })
+}
+
 export async function refreshModels() {
   try {
     set({ models: await api.modelCatalog() })
@@ -524,7 +564,7 @@ export async function bootstrap() {
     const was = prev.status
     if (c.session !== prev.session) {
       // Pane ids like w1:p1 repeat across herdr sessions: drop per-pane state.
-      set({ snapshot: null, selectedPaneId: null, transcripts: {}, pending: {}, drafts: {}, viewMode: {}, drawer: {}, workingSince: {}, modelSwitching: {}, modelShown: {} })
+      set({ snapshot: null, selectedPaneId: null, transcripts: {}, pending: {}, drafts: {}, viewMode: {}, drawer: {}, workingSince: {}, modelSwitching: {}, modelShown: {}, boardWorkspace: null })
       saveJson('selected', null)
       api.setSelectedPane(null)
     }
@@ -537,6 +577,7 @@ export async function bootstrap() {
   })
   api.on.limits((l) => set({ limits: l }))
   void refreshModels()
+  api.on.tasks((b) => set((s) => ({ boards: { ...s.boards, [b.cwd]: b } })))
   void api.limits().then((l) => set({ limits: l }))
   api.on.windowFocus((focused) => {
     set({ windowFocused: focused })

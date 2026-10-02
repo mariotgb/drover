@@ -1,5 +1,7 @@
 import type { ModelCatalog, ModelChoice } from '../shared/models'
 import type {
+  BoardTask,
+  TaskBoard,
   AgentKindInfo,
   AppSettings,
   ClaudeStatuslineState,
@@ -37,6 +39,12 @@ export interface CliResult {
 
 type Unsub = () => void
 
+export interface BoardWriteResult<T = unknown> {
+  ok: boolean
+  result?: T
+  error?: string
+}
+
 export interface DroverApi {
   init(): Promise<InitPayload>
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
@@ -62,6 +70,13 @@ export interface DroverApi {
   createAgent(req: NewAgentRequest): Promise<NewAgentResult>
   /** Models each agent can run with (Codex's list comes from its local cache). */
   modelCatalog(): Promise<ModelCatalog>
+  /** Starts following a project's task board (.drover/tasks.json); null for a bad folder. */
+  watchTasks(cwd: string): Promise<TaskBoard | null>
+  unwatchTasks(cwd: string): void
+  ensureBoard(cwd: string): Promise<BoardWriteResult>
+  addTask(cwd: string, title: string, assignee?: string): Promise<BoardWriteResult<BoardTask>>
+  updateTask(cwd: string, id: string, patch: Partial<Pick<BoardTask, 'status' | 'assignee' | 'title' | 'notes'>>): Promise<BoardWriteResult>
+  removeTask(cwd: string, id: string): Promise<BoardWriteResult>
   /** Switches a running agent's model for its current session only. */
   setAgentModel(paneId: string, kind: string, choice: ModelChoice): Promise<{ ok: boolean; message?: string; code?: string; error?: string }>
 
@@ -94,6 +109,7 @@ export interface DroverApi {
     termFrames(fn: (id: string, frames: TerminalFrame[]) => void): Unsub
     termClosed(fn: (id: string, reason: string) => void): Unsub
     transcript(fn: (u: TranscriptUpdate) => void): Unsub
+    tasks(fn: (b: TaskBoard) => void): Unsub
     selectPane(fn: (paneId: string) => void): Unsub
     command(fn: (cmd: string) => void): Unsub
     windowFocus(fn: (focused: boolean) => void): Unsub

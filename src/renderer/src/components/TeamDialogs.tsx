@@ -75,6 +75,7 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
       if (th.agent?.name && th.kind) team.push({ name: th.agent.name, kind: th.kind, label: th.name })
     }
     let firstPane: string | null = null
+    if (cwd && leads.length) await api.ensureBoard(cwd).catch(() => undefined)
     for (const i of [...members, ...leads]) {
       const r = rows[i]
       patch(i, { state: 'starting', error: undefined })

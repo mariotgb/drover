@@ -200,6 +200,8 @@ export class ClaudeParser implements TranscriptParser {
         return this.assistant(o, ts)
       case 'system':
         return this.system(o, ts)
+      case 'attachment':
+        return this.queued(o, ts)
       case 'ai-title':
         if (typeof o.aiTitle === 'string') this.meta.title = o.aiTitle
         return
@@ -244,6 +246,33 @@ export class ClaudeParser implements TranscriptParser {
     }
     if (o.isMeta) return
     if (texts.length || images.length) this.userText(id, texts.join('\n\n'), images, ts)
+  }
+
+  /**
+   * A message typed while Claude was busy is delivered later as a queued
+   * command attachment (the queue-operation records around it are bookkeeping).
+   */
+  private queued(o: Json, ts?: number) {
+    const a = o.attachment
+    if (o.isSidechain || a?.type !== 'queued_command') return
+    if (a.commandMode && a.commandMode !== 'prompt') return
+    if (a.origin?.kind && a.origin.kind !== 'human') return
+    const at = parseTs(a.timestamp) ?? ts
+    if (typeof a.prompt === 'string') {
+      this.userText(this.id(o), a.prompt, [], at)
+      return
+    }
+    if (!Array.isArray(a.prompt)) return
+    const texts: string[] = []
+    const images: ImageRef[] = []
+    for (const b of a.prompt as Json[]) {
+      if (b?.type === 'text') texts.push(str(b.text))
+      else if (b?.type === 'image' && b.source?.type === 'base64') {
+        const img = dataUrl(b.source.media_type, b.source.data)
+        if (img) images.push(img)
+      }
+    }
+    if (texts.length || images.length) this.userText(this.id(o), texts.join('\n\n'), images, at)
   }
 
   private userText(id: string, text: string, images: ImageRef[], ts?: number) {

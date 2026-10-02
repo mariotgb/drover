@@ -22,6 +22,7 @@ export async function load() {
         export { HerdrApiError } from './src/shared/types'
         export { parseMenu, claudeMenuTarget, claudeEffortOnScreen, codexModelsFrom, switchAgentModel } from './src/main/models'
         export { modelArgs, prettyModel, CLAUDE_MODELS } from './src/shared/models'
+        export { parseBoard, normalizeStatus, addTask, updateTask, removeTask, ensureBoard, ignoreInGit, TaskBoards, BOARD_FILE } from './src/main/tasks'
       `,
       resolveDir: root,
       loader: 'ts'

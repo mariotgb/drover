@@ -31,6 +31,7 @@ import { SettingsDialog } from './SettingsDialog'
 import { Sidebar } from './Sidebar'
 import { ThreadView } from './ThreadView'
 import { PreviewPanel } from './PreviewPanel'
+import { TaskBoardView } from './TaskBoardView'
 import { BroadcastDialog, TeamDialog } from './TeamDialogs'
 import appIcon from '../assets/app-icon.png'
 
@@ -109,6 +110,7 @@ export function App() {
   const connection = useStore((s) => s.connection)
   useModel()
   const thread = useStore((s) => (s.selectedPaneId ? getModel().byPane.get(s.selectedPaneId) ?? null : null))
+  const boardGroup = useStore((s) => (s.boardWorkspace ? getModel().groups.find((g) => g.workspace.workspace_id === s.boardWorkspace) ?? null : null))
   const previewOpen = useStore((s) => (thread ? !!s.previewOpen[thread.workspaceId] : false))
   const previewGroup = previewOpen && thread ? getModel().groups.find((g) => g.workspace.workspace_id === thread.workspaceId) ?? null : null
 
@@ -130,6 +132,8 @@ export function App() {
       <main className="main">
         {!connected ? (
           <ConnectionScreen />
+        ) : boardGroup ? (
+          <TaskBoardView key={boardGroup.workspace.workspace_id} group={boardGroup} />
         ) : thread ? (
           <ThreadView key={thread.paneId} thread={thread} />
         ) : (

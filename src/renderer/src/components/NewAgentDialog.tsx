@@ -153,6 +153,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
       prompt: message || undefined,
       worktreeBranch: useWorktree && workspaceId && branch.trim() ? branch.trim() : null
     }
+    if (role?.orchestrator && projectCwd) await api.ensureBoard(projectCwd).catch(() => undefined)
     const res = await api.createAgent(req)
     setBusy(false)
     if (!res.ok || !res.paneId) {

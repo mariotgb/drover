@@ -23,11 +23,13 @@ import {
   type AppSettings,
   type NewAgentRequest,
   type SendPromptRequest,
+  type TaskBoard,
   type TranscriptUpdate
 } from '@shared/types'
 import { createAgent, sendPrompt } from './actions'
 import { ATTACHMENTS_DIR, cleanupAttachments, CONVERT_EXTS, IMAGE_EXTS, saveImage, stageFile } from './attachments'
 import { modelCatalog, switchAgentModel } from './models'
+import { addTask, ensureBoard, removeTask, TaskBoards, updateTask } from './tasks'
 import { loginEnv, which } from './env'
 import { HerdrService } from './herdr/service'
 import { LimitsService } from './limits'
@@ -89,6 +91,7 @@ const transcripts = new TranscriptManager(service, (u: TranscriptUpdate) => {
   }
 })
 
+const boards = new TaskBoards((b: TaskBoard) => send('tasks:changed', b))
 const limits = new LimitsService({
   env: () => loginEnv(),
   enabled: () => settings.get().showLimits
@@ -346,6 +349,34 @@ function registerIpc() {
   handle('agent:send', (_e, req: SendPromptRequest) =>
     READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } : sendPrompt(service, req)
   )
+  handle('tasks:watch', (_e, cwd: string) => (TaskBoards.valid(cwd) ? boards.watch(cwd) : null))
+  ipcMain.on('tasks:unwatch', (_e, cwd: string) => TaskBoards.valid(cwd) && boards.unwatch(cwd))
+  const boardWrite = async (cwd: unknown, fn: (cwd: string) => Promise<unknown>) => {
+    if (READONLY) return { ok: false, error: 'read-only mode' }
+    if (!TaskBoards.valid(cwd)) return { ok: false, error: 'bad project folder' }
+    try {
+      const result = await fn(cwd)
+      await boards.refresh(cwd)
+      return { ok: true, result }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  }
+  handle('tasks:ensure', (_e, cwd: string) => boardWrite(cwd, (c) => ensureBoard(c)))
+  handle('tasks:add', (_e, cwd: string, title: string, assignee?: string) =>
+    typeof title === 'string' && title.trim() ? boardWrite(cwd, (c) => addTask(c, title.slice(0, 500), typeof assignee === 'string' ? assignee : undefined)) : { ok: false, error: 'empty task' }
+  )
+  handle('tasks:update', (_e, cwd: string, id: string, patch: Record<string, string>) =>
+    boardWrite(cwd, (c) =>
+      updateTask(c, String(id), {
+        status: patch?.status as never,
+        assignee: typeof patch?.assignee === 'string' ? patch.assignee : undefined,
+        title: typeof patch?.title === 'string' ? patch.title : undefined,
+        notes: typeof patch?.notes === 'string' ? patch.notes : undefined
+      })
+    )
+  )
+  handle('tasks:remove', (_e, cwd: string, id: string) => boardWrite(cwd, (c) => removeTask(c, String(id))))
   handle('models:catalog', () => modelCatalog(service.env))
   handle('agent:set-model', async (_e, paneId: string, kind: string, choice: ModelChoice) => {
     if (READONLY) return { ok: false, code: 'readonly', error: 'read-only mode' }

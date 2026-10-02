@@ -5,6 +5,7 @@ import {
   FolderClosed,
   FolderPlus,
   LayoutList,
+  ListChecks,
   ListFilter,
   MoreHorizontal,
   PenSquare,
@@ -15,7 +16,8 @@ import {
 } from 'lucide-react'
 import { newAgentMenu, openNewAgent, openSettings, threadMenu, workspaceMenu } from '../actions'
 import { attentionSort, basename, shortPath, type Thread, type WorkspaceGroup } from '../model'
-import { select, toggleCollapsed, updateSettings, useModel, useStore } from '../store'
+import { openBoard, select, toggleCollapsed, updateSettings, useModel, useStore } from '../store'
+import { useBoard } from './TaskBoardView'
 import { openMenu, openMenuAt } from './Menu'
 import { AgentAvatar, IconButton, StatusDot } from './primitives'
 import { UsageWidget } from './Usage'
@@ -114,6 +116,7 @@ function WorkspaceSection({ group }: { group: WorkspaceGroup }) {
       </div>
       {!collapsed && (
         <div className="ws-threads">
+          <BoardRow group={group} />
           {group.tabs.map((tg) =>
             tg.threads.length > 1 ? (
               <div key={tg.tab.tab_id} className="tab-group">
@@ -136,6 +139,42 @@ function WorkspaceSection({ group }: { group: WorkspaceGroup }) {
   )
 }
 
+/** The project's task board: shown once there are tasks or a team. */
+function BoardRow({ group }: { group: WorkspaceGroup }) {
+  const board = useBoard(group.cwd)
+  const open = useStore((s) => s.boardWorkspace === group.workspace.workspace_id)
+  const tasks = board?.tasks ?? []
+  const agents = group.threads.filter((th) => th.kind).length
+  if (!group.cwd || (!tasks.length && agents < 2 && !open)) return null
+  const active = tasks.filter((x) => x.status === 'in_progress' || x.status === 'review').length
+  const blocked = tasks.filter((x) => x.status === 'blocked').length
+  const done = tasks.filter((x) => x.status === 'done').length
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={clsx('thread board-row', open && 'selected')}
+      onClick={() => openBoard(group.workspace.workspace_id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') openBoard(group.workspace.workspace_id)
+      }}
+    >
+      <span className="board-row-icon">
+        <ListChecks size={14} />
+      </span>
+      <div className="thread-text">
+        <div className="thread-name">
+          <span className="name">{t('Tasks')}</span>
+          {blocked > 0 && <span className="pill pill-blocked">{t('{n} blocked', { n: blocked })}</span>}
+        </div>
+        <div className="thread-sub">
+          {tasks.length ? t('{active} in progress · {done}/{total} done', { active, done, total: tasks.length }) : t('What the agents are doing')}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StatusList({ threads }: { threads: Thread[] }) {
   return (
     <div className="ws-threads flat">
@@ -147,7 +186,7 @@ function StatusList({ threads }: { threads: Thread[] }) {
 }
 
 export function ThreadRow({ thread: th, nested, showProject }: { thread: Thread; nested?: boolean; showProject?: boolean }) {
-  const selected = useStore((s) => s.selectedPaneId === th.paneId)
+  const selected = useStore((s) => s.selectedPaneId === th.paneId && !s.boardWorkspace)
   const onContext = useCallback((e: MouseEvent) => {
     e.preventDefault()
     openMenu(e, threadMenu(th))
