@@ -33,6 +33,7 @@ const api = {
   sendPrompt: (req: unknown) => ipcRenderer.invoke('agent:send', req),
   createAgent: (req: unknown) => ipcRenderer.invoke('agent:create', req),
   modelCatalog: () => ipcRenderer.invoke('models:catalog'),
+  pickPreviewFile: (defaultPath?: string) => ipcRenderer.invoke('preview:pick-file', defaultPath),
   watchTasks: (cwd: string) => ipcRenderer.invoke('tasks:watch', cwd),
   unwatchTasks: (cwd: string) => ipcRenderer.send('tasks:unwatch', cwd),
   ensureBoard: (cwd: string) => ipcRenderer.invoke('tasks:ensure', cwd),

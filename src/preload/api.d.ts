@@ -70,6 +70,8 @@ export interface DroverApi {
   createAgent(req: NewAgentRequest): Promise<NewAgentResult>
   /** Models each agent can run with (Codex's list comes from its local cache). */
   modelCatalog(): Promise<ModelCatalog>
+  /** Lets the user pick a local page for the preview; null if cancelled. */
+  pickPreviewFile(defaultPath?: string): Promise<string | null>
   /** Starts following a project's task board (.drover/tasks.json); null for a bad folder. */
   watchTasks(cwd: string): Promise<TaskBoard | null>
   unwatchTasks(cwd: string): void

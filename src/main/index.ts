@@ -417,6 +417,18 @@ function registerIpc() {
     })
     return res.canceled ? [] : res.filePaths
   })
+  handle('preview:pick-file', async (_e, defaultPath?: string) => {
+    const opts: Electron.OpenDialogOptions = {
+      properties: ['openFile'],
+      defaultPath: typeof defaultPath === 'string' && defaultPath.startsWith('/') ? defaultPath : homedir(),
+      filters: [
+        { name: 'Web pages', extensions: ['html', 'htm', 'xhtml', 'svg'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    }
+    const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return res.canceled ? null : res.filePaths[0] ?? null
+  })
   handle('dialog:pick-folder', async (_e, defaultPath?: string) => {
     const res = await dialog.showOpenDialog(win!, {
       properties: ['openDirectory', 'createDirectory'],
@@ -470,8 +482,9 @@ app.on('web-contents-created', (_e, contents) => {
     prefs.nodeIntegrationInSubFrames = false
     prefs.contextIsolation = true
     prefs.sandbox = true
+    // The preview shows web pages and local files (an HTML file of the project).
     const src = params.src || 'about:blank'
-    if (src !== 'about:blank' && !/^https?:/i.test(src)) event.preventDefault()
+    if (src !== 'about:blank' && !/^(https?|file):/i.test(src)) event.preventDefault()
   })
   if (contents.getType() === 'webview') {
     contents.setWindowOpenHandler(({ url }) => {
@@ -479,7 +492,7 @@ app.on('web-contents-created', (_e, contents) => {
       return { action: 'deny' }
     })
     contents.on('will-navigate', (e, url) => {
-      if (!/^(https?:|about:blank)/i.test(url)) e.preventDefault()
+      if (!/^(https?:|file:|about:blank)/i.test(url)) e.preventDefault()
     })
   }
 })

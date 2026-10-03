@@ -119,7 +119,7 @@ function PreviewButton({ thread }: { thread: Thread }) {
   const servers = useStore((s) => s.servers)
   const project = getModel().groups.find((g) => g.workspace.workspace_id === thread.workspaceId)
   const key = project?.cwd ?? thread.workspaceId
-  const hasUrl = useStore((s) => !!s.settings.previewUrls[key])
+  const hasUrl = useStore((s) => !!s.previewUrl[key])
   const running = serversFor(servers, project?.cwd ?? null)
   if (!open && !hasUrl && running.length) {
     const s = running[0]

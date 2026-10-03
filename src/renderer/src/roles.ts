@@ -69,7 +69,7 @@ export function defaultInstructions(role: RoleTemplate): string {
 
 export function previewHint(): string {
   return t(
-    'Tip: the user works in Drover. To show them a page in its built-in preview, run: herdr pane report-metadata "$HERDR_PANE_ID" --source drover --token preview=<url>'
+    'Tip: the user works in Drover. To show them a local page in its built-in preview, run: herdr pane report-metadata "$HERDR_PANE_ID" --source drover --token preview=<a localhost URL or the path of an HTML file relative to your folder>, at most 80 characters. Do not send pages on the internet there.'
   )
 }
 

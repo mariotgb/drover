@@ -199,3 +199,10 @@ test('a working or blocked agent is not interrupted', async () => {
   const b = await m.switchAgentModel(pane(claudeTui(), 'blocked'), 'w1:p2', 'claude', { model: 'opus' }, catalog)
   assert.deepEqual([b.ok, b.code], [false, 'agent_blocked'])
 })
+
+test('skipping permission prompts maps to each agent’s own flag', () => {
+  assert.deepEqual(m.bypassArgs('claude', true), ['--dangerously-skip-permissions'])
+  assert.deepEqual(m.bypassArgs('codex', true), ['--dangerously-bypass-approvals-and-sandbox'])
+  assert.deepEqual(m.bypassArgs('claude', false), [])
+  assert.deepEqual(m.bypassArgs('gemini', true), [])
+})

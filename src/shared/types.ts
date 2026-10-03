@@ -386,8 +386,8 @@ export interface AppSettings {
   sidebarMode: 'workspaces' | 'status'
   agentArgs: Record<string, string>
   showLimits: boolean
-  /** Preview URL per project directory. */
-  previewUrls: Record<string, string>
+  /** Pages recently opened in the preview, per project directory (newest first). */
+  previewRecent: Record<string, string[]>
   language: 'system' | 'en' | 'ru' | 'es' | 'de' | 'zh'
   /** Global role templates the user defined. */
   roles: RoleTemplate[]
@@ -395,6 +395,10 @@ export interface AppSettings {
   roleOverrides: Record<string, Partial<Pick<RoleTemplate, 'kind' | 'args' | 'instructions' | 'model' | 'effort'>>>
   /** Last model picked per agent kind in the New agent dialog. */
   agentModels: Record<string, ModelChoice>
+  /** Start agents without permission prompts, last choice per agent kind. */
+  agentBypass: Record<string, boolean>
+  /** Same for "Start team". */
+  teamBypass: boolean
   /** Tell agents started with a role how to open the preview panel. */
   agentPreviewHint: boolean
   appearance: AppearanceSettings
@@ -418,11 +422,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sidebarMode: 'workspaces',
   agentArgs: {},
   showLimits: true,
-  previewUrls: {},
+  previewRecent: {},
   language: 'system',
   roles: [],
   roleOverrides: {},
   agentModels: {},
+  agentBypass: {},
+  teamBypass: false,
   agentPreviewHint: true,
   appearance: DEFAULT_APPEARANCE
 }

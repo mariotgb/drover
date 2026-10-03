@@ -61,6 +61,19 @@ export function modelArgs(kind: string | null | undefined, choice: ModelChoice |
   return []
 }
 
+/** Agents that can be started without permission prompts. */
+export function supportsBypass(kind: string | null | undefined): boolean {
+  return kind === 'claude' || kind === 'codex'
+}
+
+/** Flags that let the agent run commands and edit files without asking. */
+export function bypassArgs(kind: string | null | undefined, on: boolean | undefined): string[] {
+  if (!on) return []
+  if (kind === 'claude') return ['--dangerously-skip-permissions']
+  if (kind === 'codex') return ['--dangerously-bypass-approvals-and-sandbox']
+  return []
+}
+
 /** Short name for a model id as agents report it, e.g. claude-sonnet-5-5 → Sonnet 5.5. */
 export function prettyModel(id: string | null | undefined): string {
   if (!id) return ''

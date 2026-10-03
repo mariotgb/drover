@@ -1093,3 +1093,10 @@ code.path {
   height: 28px;
   font-size: 12.5px;
 }
+
+label.check.danger {
+  color: var(--danger);
+}
+label.check.danger svg {
+  color: var(--danger);
+}

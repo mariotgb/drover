@@ -1799,3 +1799,22 @@ select {
   color: var(--text-4);
   text-align: center;
 }
+
+.preview-stage.dropping::after {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.preview-empty-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-4);
+  padding: 2px 2px 0;
+  text-align: left;
+}

@@ -16,6 +16,12 @@ export class SettingsStore {
       /* first run */
     }
     this.data = { ...DEFAULT_SETTINGS, ...loaded, agentArgs: { ...DEFAULT_SETTINGS.agentArgs, ...(loaded.agentArgs ?? {}) }, agentModels: { ...(loaded.agentModels ?? {}) } }
+    // The preview used to reopen the last URL on its own; it now starts empty and lists it as recent.
+    const legacy = (loaded as { previewUrls?: Record<string, string> }).previewUrls
+    if (legacy && !loaded.previewRecent) {
+      this.data.previewRecent = Object.fromEntries(Object.entries(legacy).filter(([, u]) => typeof u === 'string').map(([k, u]) => [k, [u]]))
+    }
+    delete (this.data as { previewUrls?: unknown }).previewUrls
     if (!loaded.appearance) {
       // Migrate the first-version theme/accent settings.
       const accents: Record<string, string | null> = { orange: null, blue: '#2f6fdf', green: '#1f8a55', violet: '#7c4ddb', graphite: '#5b5b56' }

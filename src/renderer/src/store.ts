@@ -18,6 +18,7 @@ import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, call, errorText, humanizeError } from './api'
 import { resolveLang, setLanguage, t } from './i18n'
 import { applyAppearance } from './appearance'
+import { displayTarget, isLocalTarget, previewTarget } from './preview/target'
 import { attentionSort, buildModel, type Thread } from './model'
 
 export interface Attachment {
@@ -89,8 +90,10 @@ interface State {
   paletteOpen: boolean
   toasts: Toast[]
   limits: LimitsState
-  /** Preview panel open per workspace id. */
+  /** Preview panel open per workspace id (this run only: nothing opens by itself at launch). */
   previewOpen: Record<string, boolean>
+  /** Page shown in each project's preview (this run only). */
+  previewUrl: Record<string, string>
   servers: LocalServer[]
   /** Models each agent can run with. */
   models: ModelCatalog | null
@@ -126,7 +129,8 @@ export const useStore = create<State>(() => ({
   paletteOpen: false,
   toasts: [],
   limits: { claude: null, codex: null },
-  previewOpen: loadJson('preview-open', {}),
+  previewOpen: {},
+  previewUrl: {},
   servers: [],
   models: null,
   modelSwitching: {},
@@ -410,17 +414,17 @@ function neighborAfterClose(prev: HerdrSnapshot, closed: string, threads: Thread
 // preview panel
 
 export function togglePreview(workspaceId: string, open?: boolean) {
-  set((s) => {
-    const previewOpen = { ...s.previewOpen, [workspaceId]: open ?? !s.previewOpen[workspaceId] }
-    saveJson('preview-open', previewOpen)
-    return { previewOpen }
-  })
+  set((s) => ({ previewOpen: { ...s.previewOpen, [workspaceId]: open ?? !s.previewOpen[workspaceId] } }))
 }
 
+/** Shows a page in a project's preview and remembers it among the recent ones. */
 export function setPreviewUrl(projectKey: string, url: string) {
-  const cur = get().settings.previewUrls
-  if (cur[projectKey] === url) return
-  void updateSettings({ previewUrls: { ...cur, [projectKey]: url } })
+  if (get().previewUrl[projectKey] === url) return
+  set((s) => ({ previewUrl: { ...s.previewUrl, [projectKey]: url } }))
+  const recent = get().settings.previewRecent[projectKey] ?? []
+  if (recent[0] === url) return
+  const next = [url, ...recent.filter((u) => u !== url)].slice(0, 8)
+  void updateSettings({ previewRecent: { ...get().settings.previewRecent, [projectKey]: next } })
 }
 
 export function addElement(paneId: string, el: PickedElement) {
@@ -456,12 +460,30 @@ function previewTokens(prevSnap: HerdrSnapshot | null, snap: HerdrSnapshot) {
     if (!url || before.get(p.pane_id) === url || !prevSnap) continue
     const group = getModel().groups.find((g) => g.workspace.workspace_id === p.workspace_id)
     if (!group) continue
-    const target = /^\d{2,5}$/.test(url) ? `http://localhost:${url}` : /^[a-z]+:\/\//i.test(url) ? url : `http://${url}`
-    if (!/^https?:\/\//i.test(target)) continue
-    setPreviewUrl(group.cwd ?? group.workspace.workspace_id, target)
-    togglePreview(p.workspace_id, true)
     const who = getModel().byPane.get(p.pane_id)?.name ?? p.pane_id
-    toast('info', t('{agent} opened {url} in the preview', { agent: who, url: target.replace(/^https?:\/\//, '') }), {
+    // herdr keeps 80 characters of a token: a longer path arrives cut off.
+    if ([...url].length >= 80 && !/^https?:\/\//i.test(url)) {
+      toast('info', t('{agent} sent a path that is too long for herdr (80 characters at most). Ask it for a path relative to its folder.', { agent: who }))
+      continue
+    }
+    const target = previewTarget(url, { cwd: p.foreground_cwd ?? p.cwd ?? group.cwd, home: get().home })
+    if (!target) continue
+    const shown = displayTarget(target).replace(/^https?:\/\//, '')
+    const key = group.cwd ?? group.workspace.workspace_id
+    // Local dev servers and files open right away; pages on the internet only on request.
+    if (!isLocalTarget(target)) {
+      toast('info', t('{agent} wants to show {url}', { agent: who, url: shown }), {
+        label: t('Open'),
+        run: () => {
+          setPreviewUrl(key, target)
+          togglePreview(p.workspace_id, true)
+        }
+      })
+      continue
+    }
+    setPreviewUrl(key, target)
+    togglePreview(p.workspace_id, true)
+    toast('info', t('{agent} opened {url} in the preview', { agent: who, url: shown }), {
       label: t('Show'),
       run: () => select(p.pane_id)
     })

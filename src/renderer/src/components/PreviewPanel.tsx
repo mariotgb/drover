@@ -6,6 +6,8 @@ import {
   Bug,
   Crosshair,
   ExternalLink,
+  FileCode,
+  FolderOpen,
   Globe,
   Laptop,
   Monitor,
@@ -20,9 +22,11 @@ import { t } from '../i18n'
 import { basename, type WorkspaceGroup } from '../model'
 import { addElement, getModel, selectedThread, setPreviewUrl, toast, togglePreview, useStore } from '../store'
 import pickerSource from '../preview/picker.js?raw'
+import { displayTarget, previewTarget } from '../preview/target'
 import { IconButton, Spinner } from './primitives'
 
 const MARK = '__HERDR_PICK__'
+const NO_RECENT: string[] = []
 
 type Device = 'fill' | 'desktop' | 'tablet' | 'phone'
 const DEVICE_WIDTH: Record<Device, number | null> = { fill: null, desktop: 1280, tablet: 768, phone: 390 }
@@ -41,18 +45,6 @@ interface WebviewEl extends HTMLElement {
   openDevTools(): void
 }
 
-export function normalizeUrl(raw: string): string | null {
-  let s = raw.trim()
-  if (!s) return null
-  if (/^\d{2,5}$/.test(s)) s = `localhost:${s}`
-  if (!/^[a-z]+:\/\//i.test(s)) s = `http://${s}`
-  try {
-    const u = new URL(s)
-    return /^https?:$/.test(u.protocol) ? u.toString() : null
-  } catch {
-    return null
-  }
-}
 
 function accentColor(): string {
   return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#d97757'
@@ -66,13 +58,16 @@ export function serversFor(servers: LocalServer[], cwd: string | null): LocalSer
 
 export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
   const cwd = group.cwd ?? group.workspace.workspace_id
-  const url = useStore((s) => s.settings.previewUrls[cwd] ?? '')
+  const url = useStore((s) => s.previewUrl[cwd] ?? '')
+  const recent = useStore((s) => s.settings.previewRecent[cwd] ?? NO_RECENT)
+  const home = useStore((s) => s.home)
+  const [dropping, setDropping] = useState(false)
   const servers = useStore((s) => s.servers)
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<WebviewEl | null>(null)
   const pickRef = useRef(false)
   const [picking, setPicking] = useState(false)
-  const [address, setAddress] = useState(url)
+  const [address, setAddress] = useState(displayTarget(url))
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const [nav, setNav] = useState({ back: false, forward: false })
@@ -136,9 +131,10 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
     wv.setAttribute('partition', 'persist:drover-preview')
     wv.setAttribute('webpreferences', 'contextIsolation=yes,sandbox=yes')
     wv.className = 'webview'
-    const initial = normalizeUrl(useStore.getState().settings.previewUrls[cwd] ?? '')
-    wv.setAttribute('src', initial ?? 'about:blank')
-    lastNavigated.current = initial ?? ''
+    // Nothing loads by default: only a page asked for in this run.
+    const initial = useStore.getState().previewUrl[cwd] || ''
+    wv.setAttribute('src', initial || 'about:blank')
+    lastNavigated.current = initial
     host.appendChild(wv)
     viewRef.current = wv
 
@@ -153,7 +149,7 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
       const u = (e as Event & { url: string }).url
       if (!u || u === 'about:blank') return
       lastNavigated.current = u
-      setAddress(u)
+      setAddress(displayTarget(u))
       setPreviewUrl(cwd, u)
       setFailed(null)
       updateNav()
@@ -202,9 +198,9 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
 
   // Follow URL changes coming from outside (address bar elsewhere, agents).
   useEffect(() => {
-    setAddress(url)
+    setAddress(displayTarget(url))
     const wv = viewRef.current
-    const target = normalizeUrl(url)
+    const target = url || null
     if (!wv || !target || target === lastNavigated.current) return
     lastNavigated.current = target
     setFailed(null)
@@ -218,16 +214,29 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
   }, [setPick])
 
   const go = (raw: string) => {
-    const target = normalizeUrl(raw)
+    const target = previewTarget(raw, { cwd: group.cwd, home })
     if (!target) {
-      toast('error', t('Enter an http(s) address, e.g. localhost:5173'))
+      toast('error', t('Enter an address (localhost:5173) or the path to an HTML file'))
       return
     }
     setPreviewUrl(cwd, target)
   }
 
+  const openFile = async () => {
+    const path = await api.pickPreviewFile(group.cwd ?? undefined)
+    if (path) go(path)
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDropping(false)
+    const file = e.dataTransfer.files[0]
+    const path = file ? api.pathForFile(file) : ''
+    if (path) go(path)
+  }
+
   const deviceWidth = DEVICE_WIDTH[device]
-  const noUrl = !normalizeUrl(url)
+  const noUrl = !url
 
   return (
     <aside className="preview" style={{ width }}>
@@ -266,12 +275,12 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
         <input
           className="preview-url"
           value={address}
-          placeholder="localhost:5173"
+          placeholder={t('localhost:5173 or a path to an .html file')}
           spellCheck={false}
           onChange={(e) => setAddress(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') go(address)
-            if (e.key === 'Escape') setAddress(url)
+            if (e.key === 'Escape') setAddress(displayTarget(url))
           }}
           onFocus={(e) => e.currentTarget.select()}
         />
@@ -311,7 +320,12 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
         <IconButton size="sm" title={t('Developer tools')} disabled={noUrl} onClick={() => viewRef.current?.openDevTools()}>
           <Bug size={13} />
         </IconButton>
-        <IconButton size="sm" title={t('Open in browser')} disabled={noUrl} onClick={() => void api.openExternal(normalizeUrl(url) ?? '')}>
+        <IconButton
+          size="sm"
+          title={t('Open in browser')}
+          disabled={noUrl}
+          onClick={() => void (url.startsWith('file:') ? api.openPath(displayTarget(url)) : api.openExternal(url))}
+        >
           <ExternalLink size={13} />
         </IconButton>
         <IconButton size="sm" title={t('Close preview (⌘⇧P)')} onClick={() => togglePreview(group.workspace.workspace_id, false)}>
@@ -319,7 +333,16 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
         </IconButton>
       </div>
       {picking && <div className="pick-hint">{t('Click an element to add it to the chat · ⇧-click to pick several · Esc to stop')}</div>}
-      <div className={clsx('preview-stage', deviceWidth && 'framed')}>
+      <div
+        className={clsx('preview-stage', deviceWidth && 'framed', dropping && 'dropping')}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes('Files')) return
+          e.preventDefault()
+          setDropping(true)
+        }}
+        onDragLeave={() => setDropping(false)}
+        onDrop={onDrop}
+      >
         <div className="preview-frame" style={deviceWidth ? { width: deviceWidth } : undefined}>
           <div ref={hostRef} className="webview-host" />
         </div>
@@ -327,11 +350,18 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
           <div className="preview-empty">
             <Globe size={26} strokeWidth={1.5} />
             <div className="preview-empty-title">
-              {failed ? t('Can’t reach {url}', { url: failed.replace(/^https?:\/\//, '').replace(/\/$/, '') }) : t('Preview your app')}
+              {failed ? t('Can’t reach {url}', { url: displayTarget(failed).replace(/^https?:\/\//, '').replace(/\/$/, '') }) : t('Nothing open yet')}
             </div>
             <div className="preview-empty-sub">
-              {failed ? t('Is the dev server running? Start it in a terminal or ask an agent to.') : t('Open a local site of {project} and pick elements to send to an agent.', { project: group.workspace.label || basename(group.cwd) })}
+              {failed
+                ? t('Is the dev server running? Start it in a terminal or ask an agent to.')
+                : t('Open a local HTML file or a dev server of {project}, then pick elements to send to an agent.', { project: group.workspace.label || basename(group.cwd) })}
             </div>
+            {!failed && (
+              <button type="button" className="btn btn-sm" onClick={() => void openFile()}>
+                <FolderOpen size={13} /> {t('Open HTML file…')}
+              </button>
+            )}
             {projectServers.length > 0 && (
               <div className="server-list">
                 {projectServers.map((s) => (
@@ -348,7 +378,19 @@ export function PreviewPanel({ group }: { group: WorkspaceGroup }) {
                 <RotateCw size={13} /> {t('Retry')}
               </button>
             )}
-            {!projectServers.length && noUrl && <div className="preview-empty-hint">{t('Type an address above, e.g. localhost:3000')}</div>}
+            {noUrl && recent.length > 0 && (
+              <div className="server-list">
+                <div className="preview-empty-label">{t('Recent')}</div>
+                {recent.slice(0, 5).map((u) => (
+                  <button key={u} type="button" className="server-opt" title={displayTarget(u)} onClick={() => go(u)}>
+                    {u.startsWith('file:') ? <FileCode size={13} /> : <Globe size={13} />}
+                    <span className="server-url">{u.startsWith('file:') ? basename(displayTarget(u)) : displayTarget(u).replace(/^https?:\/\//, '')}</span>
+                    {u.startsWith('file:') && <span className="server-cmd">{displayTarget(u).split('/').slice(-2, -1)[0]}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {noUrl && <div className="preview-empty-hint">{t('…or drop an HTML file here, or type an address or a path above')}</div>}
           </div>
         )}
       </div>

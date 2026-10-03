@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { ChevronDown, FolderOpen, GitBranch, Settings2, SquareTerminal, Users } from 'lucide-react'
+import { ChevronDown, FolderOpen, GitBranch, Settings2, ShieldOff, SquareTerminal, Users } from 'lucide-react'
 import { AGENT_NAME_RE, agentKindDef, toAgentName } from '@shared/agents'
-import { choiceFor, modelArgs, supportsModels, type ModelChoice } from '@shared/models'
+import { bypassArgs, choiceFor, modelArgs, supportsBypass, supportsModels, type ModelChoice } from '@shared/models'
 import type { NewAgentRequest, RoleTemplate } from '@shared/types'
 import { api, humanizeError } from '../api'
 import { openSettings } from '../actions'
@@ -39,6 +39,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
   const [args, setArgs] = useState(() => (kind ? settings.agentArgs[kind] ?? '' : ''))
   const [modelChoice, setModelChoice] = useState<ModelChoice>(() => (kind ? settings.agentModels[kind] ?? {} : {}))
   const catalog = useStore((s) => s.models)
+  const [bypass, setBypass] = useState(() => !!(kind && settings.agentBypass[kind]))
   const [prompt, setPrompt] = useState('')
   const [showMore, setShowMore] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -81,6 +82,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
     if (role) return
     setArgs(kind ? settings.agentArgs[kind] ?? '' : '')
     setModelChoice(kind ? settings.agentModels[kind] ?? {} : {})
+    setBypass(!!(kind && settings.agentBypass[kind]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind])
 
@@ -120,6 +122,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
     const choice = choiceFor(kind, modelChoice, catalog)
     if (kind) {
       patch.defaultAgentKind = kind
+      if (supportsBypass(kind)) patch.agentBypass = { ...settings.agentBypass, [kind]: bypass }
       if (!role) {
         patch.agentArgs = { ...settings.agentArgs, [kind]: args }
         if (supportsModels(kind)) patch.agentModels = { ...settings.agentModels, [kind]: choice }
@@ -149,7 +152,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
       placement: placement === 'existing' ? 'existing' : workspaceId ? placement : 'workspace-root',
       splitTarget: placement === 'existing' ? preset.paneId ?? null : splitTarget,
       tabLabel: role?.label || name || null,
-      args: [...modelArgs(kind, choice), ...splitArgs(args)],
+      args: [...modelArgs(kind, choice), ...bypassArgs(kind, bypass && supportsBypass(kind)), ...splitArgs(args)],
       prompt: message || undefined,
       worktreeBranch: useWorktree && workspaceId && branch.trim() ? branch.trim() : null
     }
@@ -304,6 +307,18 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
               {t('Model')} <span className="dim">{t('(and how hard it thinks)')}</span>
             </label>
             <ModelFields kind={kind} value={choiceFor(kind, modelChoice, catalog)} onChange={setModelChoice} />
+          </div>
+        )}
+
+        {supportsBypass(kind) && (
+          <div className="field">
+            <label className={clsx('check', bypass && 'danger')}>
+              <input type="checkbox" checked={bypass} onChange={(e) => setBypass(e.target.checked)} />
+              <ShieldOff size={13} /> {t('Skip permission prompts (bypass)')}
+            </label>
+            {bypass && (
+              <div className="field-hint warn">{t('The agent runs commands and edits files without asking. Use it only in projects you trust.')}</div>
+            )}
           </div>
         )}
 

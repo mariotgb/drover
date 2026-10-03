@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import clsx from 'clsx'
-import { Check, Crown, TriangleAlert, X } from 'lucide-react'
+import { Check, Crown, ShieldOff, TriangleAlert, X } from 'lucide-react'
 import { agentKindDef } from '@shared/agents'
-import { choiceFor, modelArgs, type ModelChoice } from '@shared/models'
+import { bypassArgs, choiceFor, modelArgs, type ModelChoice } from '@shared/models'
 import type { RoleTemplate } from '@shared/types'
 import { api, humanizeError } from '../api'
 import { t, tp } from '../i18n'
 import { basename } from '../model'
 import { effectiveRole, firstMessage, rolesFor, starterRoles } from '../roles'
-import { getModel, select, toast, useModel, useStore } from '../store'
+import { getModel, select, toast, updateSettings, useModel, useStore } from '../store'
 import { splitArgs } from '../util'
 import { Modal } from './Modal'
 import { ModelFields } from './ModelPicker'
@@ -87,7 +87,11 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
         name: role.name,
         placement: 'tab',
         tabLabel: role.label,
-        args: [...modelArgs(r.kind, choiceFor(r.kind, r.model, useStore.getState().models)), ...splitArgs(role.args)],
+        args: [
+          ...modelArgs(r.kind, choiceFor(r.kind, r.model, useStore.getState().models)),
+          ...bypassArgs(r.kind, useStore.getState().settings.teamBypass),
+          ...splitArgs(role.args)
+        ],
         prompt: firstMessage(role, role.orchestrator ? { team } : {})
       })
       if (res.ok && res.paneId) {
@@ -157,6 +161,7 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
             ))}
           </div>
         )}
+        {rows && !done && <TeamBypass disabled={busy} />}
         {rows?.some((r) => r.state === 'attention') && (
           <div className="field-hint warn">{t('Some agents ask something on startup (for example folder trust). Open them and answer in the terminal panel.')}</div>
         )}
@@ -251,5 +256,18 @@ export function BroadcastDialog({ workspaceId }: { workspaceId: string }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+function TeamBypass({ disabled }: { disabled?: boolean }) {
+  const on = useStore((s) => s.settings.teamBypass)
+  return (
+    <div className="field">
+      <label className={clsx('check', on && 'danger')}>
+        <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => void updateSettings({ teamBypass: e.target.checked })} />
+        <ShieldOff size={13} /> {t('Skip permission prompts for the whole team (bypass)')}
+      </label>
+      {on && <div className="field-hint warn">{t('The agent runs commands and edits files without asking. Use it only in projects you trust.')}</div>}
+    </div>
   )
 }
