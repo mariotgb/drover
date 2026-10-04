@@ -6,7 +6,7 @@ import { join, delimiter } from 'node:path'
 // Apps launched from Finder/Dock get a minimal launchd environment (PATH is
 // /usr/bin:/bin:...). herdr, claude and codex usually live in user-managed
 // locations, and the herdr server passes its environment on to every pane.
-// Resolve the user's login shell environment once, the way terminals do.
+// Resolve the user's login shell environment; explicit reconnect refreshes it.
 
 let resolved: Promise<NodeJS.ProcessEnv> | null = null
 
@@ -152,7 +152,8 @@ function resolveFromShell(): Promise<NodeJS.ProcessEnv> {
   })
 }
 
-export function loginEnv(): Promise<NodeJS.ProcessEnv> {
+export function loginEnv(refresh = false): Promise<NodeJS.ProcessEnv> {
+  if (refresh) resolved = null
   if (!resolved) resolved = resolveFromShell()
   return resolved
 }

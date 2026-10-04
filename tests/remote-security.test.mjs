@@ -97,7 +97,7 @@ test('RPC rejects malformed types/ranges/fields before invoking handlers or chan
  ]
  for (const [method, args] of cases) assert.equal((await m.dispatchRemoteRpc(h, c, call(method, args))).ok, false, method)
  assert.equal(invoked, 0); assert.equal(c.terminals.size, 0); assert.equal(c.terminalTargets.size, 0); assert.equal(c.tasks.size, 0); assert.equal(c.transcripts.size, 0)
- assert.equal((await m.dispatchRemoteRpc(h, c, call('setSettings', [{ language: 'ru', appearance: m.DEFAULT_SETTINGS.appearance }]))).ok, true)
+ assert.equal((await m.dispatchRemoteRpc(h, c, call('setSettings', [{ language: 'ru', appearance: { theme: 'dark', glass: 0.8 } }]))).ok, true)
  assert.equal(invoked, 1)
 })
 

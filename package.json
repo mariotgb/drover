@@ -1,7 +1,7 @@
 {
   "name": "drover",
   "productName": "Drover",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Desktop app for herdr: run and chat with coding agents without the terminal",
   "license": "MIT",
   "author": "mariotgb",
@@ -49,7 +49,7 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "darkModeSupport": true,
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "13.0"
     },
     "dmg": {
       "sign": false,
@@ -88,6 +88,7 @@
   "dependencies": {
     "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.3",
+    "es-module-lexer": "1.7.0",
     "qrcode": "^1.5.4",
     "web-push": "^3.6.7",
     "ws": "^8.22.0"

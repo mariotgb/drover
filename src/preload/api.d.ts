@@ -18,6 +18,7 @@ import type {
   TerminalFrame,
   TranscriptUpdate
 } from '../shared/types'
+import type { TranscriptCursor } from '../shared/types'
 
 export type ApiResult<T> = { ok: true; result: T } | { ok: false; code: string; error: string }
 
@@ -89,7 +90,7 @@ export interface DroverApi {
   termScroll(id: string, dir: 'up' | 'down', lines: number, source?: 'wheel' | 'page_key'): void
   termClose(id: string): void
 
-  transcriptSubscribe(paneId: string): Promise<TranscriptUpdate>
+  transcriptSubscribe(paneId: string, cursor?: TranscriptCursor): Promise<TranscriptUpdate>
   transcriptUnsubscribe(paneId: string): void
 
   setSelectedPane(paneId: string | null): void
@@ -116,6 +117,8 @@ export interface DroverApi {
     command(fn: (cmd: string) => void): Unsub
     windowFocus(fn: (focused: boolean) => void): Unsub
     limits(fn: (s: LimitsState) => void): Unsub
+    /** Settings saved from any window, including a phone. */
+    settings(fn: (s: AppSettings) => void): Unsub
   }
 }
 

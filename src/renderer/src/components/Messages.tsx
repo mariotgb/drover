@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from 'react'
-import { t, tp } from '../i18n'
+import { useMobileWeb } from '../mobile'
+import { t, tp, locale } from '../i18n'
 import clsx from 'clsx'
 import {
   AlertTriangle,
@@ -87,6 +88,7 @@ function ElementChips({ elements }: { elements: ParsedElement[] }) {
 }
 
 export const UserMessage = memo(function UserMessage({ item, pending }: { item: TranscriptUser; pending?: 'sending' | 'queued' | 'error' }) {
+  const mobileWeb = useMobileWeb()
   const { elements, rest } = useMemo(() => splitElementBlocks(item.text), [item.text])
   if (item.command) {
     return (
@@ -102,6 +104,7 @@ export const UserMessage = memo(function UserMessage({ item, pending }: { item: 
         {elements.length > 0 && <ElementChips elements={elements} />}
         {rest && <div className="bubble-text">{rest}</div>}
       </div>
+      {mobileWeb && item.ts && !pending && <time className="mobile-message-time">{new Date(item.ts).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' })}</time>}
       {pending && (
         <div className="pending-state">
           {pending === 'sending' ? t('Sending…') : pending === 'queued' ? t('Queued — the agent will read it next') : t('Not delivered')}

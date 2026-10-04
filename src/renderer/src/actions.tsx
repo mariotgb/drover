@@ -1,6 +1,7 @@
 import {
   Bot,
   Columns2,
+  Crown,
   Globe,
   Megaphone,
   Users,
@@ -24,7 +25,8 @@ import { t } from './i18n'
 import type { MenuItem } from './components/Menu'
 import type { Thread, WorkspaceGroup } from './model'
 import { basename } from './model'
-import { getModel, guard, select, setViewMode, toast, togglePreview, useStore } from './store'
+import { getModel, guard, select, setViewMode, toast, togglePreview, updateSettings, useStore } from './store'
+import { agentName, projectKey, projectLead } from './leads'
 
 const set = useStore.setState
 
@@ -52,7 +54,17 @@ export function renameAgent(th: Thread) {
     placeholder: t('reviewer'),
     validate: (v) => (v === '' || AGENT_NAME_RE.test(v) ? null : t('Try “{name}”', { name: toAgentName(v) })),
     onSubmit: async (v) => {
+      const group = getModel().groups.find((g) => g.workspace.workspace_id === th.workspaceId)
+      const key = group && projectKey(group)
+      const previousName = agentName(th)
       await call('agent.rename', v ? { target: th.paneId, name: v } : { target: th.paneId, name: null })
+      const leads = useStore.getState().settings.projectLeads
+      if (key && leads[key] === previousName) {
+        const projectLeads = { ...leads }
+        if (v) projectLeads[key] = v
+        else delete projectLeads[key]
+        await updateSettings({ projectLeads })
+      }
     }
   })
 }
@@ -198,9 +210,24 @@ export function newWorktree(group: WorkspaceGroup) {
   })
 }
 
+/** "Make project lead", unless it already is (or the project has one agent). */
+export function leadMenuItem(th: Thread, iconSize = 14): MenuItem | null {
+  const group = getModel().groups.find((g) => g.workspace.workspace_id === th.workspaceId)
+  if (!th.kind || !group || group.threads.filter((x) => x.kind).length < 2) return null
+  const leads = useStore.getState().settings.projectLeads
+  if (projectLead(group, leads)?.paneId === th.paneId) return null
+  return {
+    label: t('Make project lead'),
+    icon: <Crown size={iconSize} />,
+    onClick: () => void updateSettings({ projectLeads: { ...useStore.getState().settings.projectLeads, [projectKey(group)]: agentName(th) } })
+  }
+}
+
 export function threadMenu(th: Thread): MenuItem[] {
   const items: MenuItem[] = []
   if (th.kind) items.push({ label: t('Rename agent…'), icon: <Pencil size={14} />, onClick: () => renameAgent(th) })
+  const lead = leadMenuItem(th)
+  if (lead) items.push(lead)
   items.push({ label: th.tabPaneCount > 1 ? t('Rename tab…') : t('Rename…'), icon: <Pencil size={14} />, onClick: () => renameTab(th) })
   if (th.tabPaneCount > 1) items.push({ label: t('Rename pane…'), icon: <Pencil size={14} />, onClick: () => renamePane(th) })
   items.push('separator')

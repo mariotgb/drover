@@ -1,4 +1,8 @@
+import { mergeTranscript, type TranscriptState } from './transcript-state'
+export type { TranscriptState } from './transcript-state'
 import { create } from 'zustand'
+import { useShallow } from 'zustand/react/shallow'
+import { structuralShare } from './structural-share'
 import type {
   TaskBoard,
   AgentKindInfo,
@@ -9,8 +13,6 @@ import type {
   LimitsState,
   LocalServer,
   PickedElement,
-  TranscriptItem,
-  TranscriptMeta,
   TranscriptUpdate
 } from '@shared/types'
 import type { ModelCatalog, ModelChoice } from '@shared/models'
@@ -19,7 +21,7 @@ import { api, call, errorText, humanizeError } from './api'
 import { resolveLang, setLanguage, t } from './i18n'
 import { applyAppearance } from './appearance'
 import { displayTarget, isLocalTarget, previewTarget } from './preview/target'
-import { attentionSort, buildModel, type Thread } from './model'
+import { attentionSort, buildModel, type Thread, type ThreadModel } from './model'
 
 export interface Attachment {
   id: string
@@ -44,12 +46,6 @@ export interface PendingMessage {
   error?: string
 }
 
-export interface TranscriptState {
-  meta: TranscriptMeta | null
-  items: TranscriptItem[]
-  error?: string
-  loaded: boolean
-}
 
 export interface Toast {
   id: number
@@ -71,6 +67,12 @@ export type ViewMode = 'chat' | 'terminal'
 interface State {
   ready: boolean
   mobileScreen: 'list' | 'detail'
+  /** Phone web layout: left drawer, terminal sheet (pane id) and settings screen. */
+  mobileDrawer: boolean
+  mobileTerminal: string | null
+  mobileSettings: boolean
+  /** Preview sheet: the agent whose page is shown (or one of its project's recent pages). */
+  mobilePreview: { paneId: string; recentId?: string } | null
   settings: AppSettings
   connection: ConnectionState
   snapshot: HerdrSnapshot | null
@@ -111,6 +113,10 @@ interface State {
 export const useStore = create<State>(() => ({
   ready: false,
   mobileScreen: 'list',
+  mobileDrawer: false,
+  mobileTerminal: null,
+  mobileSettings: false,
+  mobilePreview: null,
   settings: DEFAULT_SETTINGS,
   connection: { status: 'connecting', session: 'default' },
   snapshot: null,
@@ -165,15 +171,22 @@ function saveJson(key: string, value: unknown) {
 // derived model (memoized on snapshot identity)
 
 let modelCache: { snap: HerdrSnapshot | null; model: ReturnType<typeof buildModel> } | null = null
-export function getModel() {
-  const snap = get().snapshot
-  if (!modelCache || modelCache.snap !== snap) modelCache = { snap, model: buildModel(snap) }
+function modelFor(snap: HerdrSnapshot | null) {
+  if (!modelCache || modelCache.snap !== snap) modelCache = { snap, model: buildModel(snap, modelCache?.model) }
   return modelCache.model
 }
-export function useModel() {
-  useStore((s) => s.snapshot)
-  return getModel()
+export function getModel() { return modelFor(get().snapshot) }
+const wholeModel = (model: ThreadModel) => model
+export function useModel<T = ThreadModel>(selector: (model: ThreadModel) => T = wholeModel as (model: ThreadModel) => T): T {
+  return useStore(useShallow((s) => selector(modelFor(s.snapshot))))
 }
+/** Pane-scoped subscriptions: another agent's snapshot keeps this value stable. */
+export function useThread(paneId: string | null) { return useModel(model => paneId ? model.byPane.get(paneId) ?? null : null) }
+export function useSelectedThread() { return useStore(s => s.selectedPaneId ? modelFor(s.snapshot).byPane.get(s.selectedPaneId) ?? null : null) }
+export function useWorkspace(workspaceId: string | null) { return useModel(model => workspaceId ? model.groups.find(g => g.workspace.workspace_id === workspaceId) ?? null : null) }
+const emptyModel = buildModel(null)
+/** Closed/hidden consumers need no model updates; opening reads the latest model. */
+export function useVisibleModel(visible: boolean) { return useStore(s => visible ? modelFor(s.snapshot) : emptyModel) }
 
 export function selectedThread(): Thread | null {
   const id = get().selectedPaneId
@@ -207,8 +220,12 @@ export async function guard<T>(p: Promise<T>, success?: string): Promise<T | und
 // ---------------------------------------------------------------------------
 // settings & theme
 
+// Our own writes answer with the saved settings; their echoes must not undo a newer optimistic value.
+let settingsWrites = 0
+
 export async function updateSettings(patch: Partial<AppSettings>) {
   const previous = get().settings
+  settingsWrites++
   try {
     if (patch.language) {
       setLanguage(resolveLang(patch.language))
@@ -225,7 +242,21 @@ export async function updateSettings(patch: Partial<AppSettings>) {
     setLanguage(resolveLang(previous.language))
     applyAppearance(previous)
     toast('error', t('Could not save settings: {error}', { error: error instanceof Error ? error.message : String(error) }))
+  } finally {
+    settingsWrites--
   }
+}
+
+/** Settings saved by another window (the Mac or a phone). */
+function onSettingsChanged(next: AppSettings) {
+  if (settingsWrites > 0) return
+  const prev = get().settings
+  if (next.language !== prev.language) {
+    setLanguage(resolveLang(next.language))
+    modelCache = null
+  }
+  set({ settings: next })
+  applyAppearance(next)
 }
 
 // ---------------------------------------------------------------------------
@@ -347,30 +378,11 @@ function reconcilePending(paneId: string, newUserTexts: string[], reset = false)
 // ---------------------------------------------------------------------------
 // transcripts
 
-function mergeTranscript(prev: TranscriptState | undefined, u: TranscriptUpdate): { next: TranscriptState; newUsers: string[] } {
-  if (u.reset || !prev) {
-    // A brand-new conversation arrives as a reset: still settle pending bubbles.
-    const users = u.items.filter((i) => i.kind === 'user').map((i) => (i.kind === 'user' ? i.text : ''))
-    return { next: { meta: u.meta, items: u.items, error: u.error, loaded: true }, newUsers: users }
-  }
-  if (!u.items.length) return { next: { ...prev, meta: u.meta ?? prev.meta, error: u.error }, newUsers: [] }
-  const items = prev.items.slice()
-  const index = new Map<string, number>()
-  items.forEach((it, i) => index.set(it.id, i))
-  const newUsers: string[] = []
-  for (const it of u.items) {
-    const i = index.get(it.id)
-    if (i === undefined) {
-      index.set(it.id, items.length)
-      items.push(it)
-      if (it.kind === 'user') newUsers.push(it.text)
-    } else items[i] = it
-  }
-  return { next: { meta: u.meta ?? prev.meta, items, error: u.error, loaded: true }, newUsers }
-}
 
 export function applyTranscript(u: TranscriptUpdate) {
-  const { next, newUsers } = mergeTranscript(get().transcripts[u.paneId], u)
+  const previous = get().transcripts[u.paneId]
+  const { next, newUsers } = mergeTranscript(previous, u)
+  if (next === previous) return
   set((s) => ({ transcripts: { ...s.transcripts, [u.paneId]: next } }))
   reconcilePending(u.paneId, newUsers, u.reset)
 }
@@ -379,6 +391,7 @@ export function applyTranscript(u: TranscriptUpdate) {
 // snapshot bookkeeping
 
 function onSnapshot(snap: HerdrSnapshot) {
+  snap = structuralShare(get().snapshot ?? undefined, snap)
   const prev = get().workingSince
   const workingSince: Record<string, number> = {}
   const now = Date.now()
@@ -386,7 +399,7 @@ function onSnapshot(snap: HerdrSnapshot) {
     if (p.agent_status === 'working') workingSince[p.pane_id] = prev[p.pane_id] ?? now
   }
   const prevSnap = get().snapshot
-  set({ snapshot: snap, workingSince })
+  set({ snapshot: snap, workingSince: structuralShare(prev, workingSince) })
   previewTokens(prevSnap, snap)
 
   const selected = get().selectedPaneId
@@ -602,13 +615,14 @@ export async function bootstrap() {
       api.setSelectedPane(null)
     }
     set({ connection: c })
-    if (c.status === 'connected' && was !== 'connected') void refreshKinds()
+    if (c.status !== was && c.status !== 'connecting' && c.status !== 'starting-server') void refreshKinds()
   })
   api.on.transcript((u) => applyTranscript(u))
   api.on.selectPane((id) => {
     select(id)
   })
   api.on.limits((l) => set({ limits: l }))
+  api.on.settings((next) => onSettingsChanged(next))
   void refreshModels()
   api.on.tasks((b) => set((s) => ({ boards: { ...s.boards, [b.cwd]: b } })))
   void api.limits().then((l) => set({ limits: l }))

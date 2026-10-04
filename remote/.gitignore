@@ -1,0 +1,9 @@
+# Generated local configuration and credentials must stay private.
+bridge/mac-ssh-config
+keys/
+screens/
+machine-pc/setup/
+*.pub
+known_hosts
+*ed25519*
+__pycache__/

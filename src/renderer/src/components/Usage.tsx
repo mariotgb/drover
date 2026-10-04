@@ -190,3 +190,69 @@ export function LimitChip({ kind }: { kind: string | null }) {
     </span>
   )
 }
+
+/** Phone drawer: the sidebar's limit rows in the same look; a tap shows reset times. */
+export function MobileUsage() {
+  const limits = useStore((s) => s.limits)
+  const show = useStore((s) => s.settings.showLimits)
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  useTicker(30_000, show)
+  if (!show) return null
+  const list = [limits.claude, limits.codex].filter((x): x is ProviderLimits => !!x)
+  const now = Date.now()
+  return (
+    <div className="usage mw-usage">
+      <button type="button" className="usage-btn" aria-expanded={open} title={t('Plan usage limits')} onClick={() => setOpen(!open)}>
+        {list.map((l) => <ProviderRow key={l.provider} lim={l} />)}
+        {!limits.claude && (
+          <div className="usage-row usage-missing">
+            <AgentAvatar kind="claude" size={16} />
+            <span className="usage-name">Claude</span>
+            <span className="usage-hint">{t('Turn on the status line bridge on the Mac')}</span>
+          </div>
+        )}
+      </button>
+      {open && (
+        <div className="mw-usage-detail">
+          {list.map((l) => (
+            <div key={l.provider} className="usage-provider">
+              <div className="usage-provider-head">
+                <AgentAvatar kind={l.provider} size={18} />
+                <span className="usage-provider-name">{NAMES[l.provider]}</span>
+                {l.plan && <span className="usage-plan">{l.plan}</span>}
+                {l.reached && <span className="usage-reached">{t('limit reached')}</span>}
+              </div>
+              {l.windows.map((w) => {
+                const p = effectivePercent(w, now)
+                return (
+                  <div key={w.label} className="usage-detail">
+                    <div className="usage-detail-top">
+                      <span>{t(LABELS[w.label] ?? w.label)}</span>
+                      <span className={clsx('usage-pct', `lv-${level(p)}`)}>{t('{n}% used', { n: Math.round(p) })}</span>
+                    </div>
+                    <Bar pct={p} />
+                    <div className="usage-detail-sub">{formatReset(w.resetsAt, now)}</div>
+                  </div>
+                )
+              })}
+              {l.error && <div className="usage-error">{l.error}</div>}
+              <div className="usage-updated">
+                {l.provider === 'codex' ? t('From your latest Codex session · {when}', { when: ago(l.observedAt, now) }) : t('From Claude Code’s status line · {when}', { when: ago(l.observedAt, now) })}
+              </div>
+            </div>
+          ))}
+          {!limits.claude && (
+            <p className="usage-detail-sub">{t('Claude Code limits appear once the status line bridge is on in Drover on your Mac: Settings → General. It reads local files only — no tokens, no network.')}</p>
+          )}
+          <button type="button" className="btn mw-usage-refresh" disabled={busy} onClick={async () => {
+            setBusy(true)
+            try { useStore.setState({ limits: await api.refreshLimits() }) } finally { setBusy(false) }
+          }}>
+            <RefreshCw size={15} className={clsx(busy && 'spin')} />{t('Refresh')}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -1,4 +1,4 @@
-import { useCallback, useRef, type MouseEvent } from 'react'
+import { memo, useCallback, useRef, type MouseEvent } from 'react'
 import clsx from 'clsx'
 import {
   ChevronRight,
@@ -12,7 +12,8 @@ import {
   Plus,
   Search,
   Settings,
-  Columns2
+  Columns2,
+  Crown
 } from 'lucide-react'
 import { newAgentMenu, openNewAgent, openSettings, threadMenu, workspaceMenu } from '../actions'
 import { attentionSort, basename, shortPath, type Thread, type WorkspaceGroup } from '../model'
@@ -21,7 +22,8 @@ import { useBoard } from './TaskBoardView'
 import { openMenu, openMenuAt } from './Menu'
 import { AgentAvatar, IconButton, StatusDot } from './primitives'
 import { UsageWidget } from './Usage'
-import { t } from '../i18n'
+import { t, tp } from '../i18n'
+import { splitByLead, projectKey } from '../leads'
 
 export function Sidebar() {
   const { groups, threads } = useModel()
@@ -91,6 +93,7 @@ function WorkspaceSection({ group }: { group: WorkspaceGroup }) {
   const home = useStore((s) => s.home)
   const attention = group.threads.filter((t) => t.status === 'blocked' || t.status === 'done').length
   const working = group.threads.some((t) => t.status === 'working')
+  const leadOnly = useStore((s) => s.settings.leadOnly)
   return (
     <section className="ws">
       <div
@@ -114,7 +117,8 @@ function WorkspaceSection({ group }: { group: WorkspaceGroup }) {
           </IconButton>
         </div>
       </div>
-      {!collapsed && (
+      {!collapsed && leadOnly && <LeadThreads group={group} />}
+      {!collapsed && !leadOnly && (
         <div className="ws-threads">
           <BoardRow group={group} />
           {group.tabs.map((tg) =>
@@ -139,8 +143,43 @@ function WorkspaceSection({ group }: { group: WorkspaceGroup }) {
   )
 }
 
+/** "Show only the project lead": the lead, agents that wait for an answer and the open one; the rest fold away. */
+function LeadThreads({ group }: { group: WorkspaceGroup }) {
+  const leads = useStore((s) => s.settings.projectLeads)
+  const selected = useStore((s) => s.selectedPaneId)
+  const key = projectKey(group)
+  const expanded = useStore((s) => !!s.collapsed[`lead-more:${key}`])
+  const { lead, shown, hidden } = splitByLead(group, leads, (th) => th.paneId === selected)
+  return (
+    <div className="ws-threads">
+      <BoardRow group={group} />
+      {shown.map((th) => <ThreadRow key={th.paneId} thread={th} lead={th === lead && hidden.length > 0} />)}
+      {hidden.length > 0 && <MoreAgentsRow hidden={hidden} expanded={expanded} onToggle={() => toggleCollapsed(`lead-more:${key}`)} />}
+      {expanded && hidden.map((th) => <ThreadRow key={th.paneId} thread={th} nested />)}
+      {!group.threads.length && <div className="ws-empty">{t('No tabs')}</div>}
+    </div>
+  )
+}
+
+/** "3 more agents" with their status dots; opens the folded list. */
+export function MoreAgentsRow({ hidden, expanded, onToggle }: { hidden: Thread[]; expanded: boolean; onToggle: () => void }) {
+  const agents = hidden.filter((th) => th.kind).length
+  const terminals = hidden.length - agents
+  const label = [agents ? tp({ one: '{n} more agent', other: '{n} more agents' }, agents) : '', terminals ? tp({ one: '{n} terminal', other: '{n} terminals' }, terminals) : ''].filter(Boolean).join(' · ')
+  return (
+    <div role="button" tabIndex={0} aria-expanded={expanded} className={clsx('more-row', expanded && 'open')} onClick={onToggle}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() } }}>
+      <span className="more-row-icon"><ChevronRight size={14} /></span>
+      <span className="more-row-label">{label}</span>
+      <span className="more-row-dots" aria-hidden>
+        {hidden.filter((th) => th.kind).slice(0, 6).map((th) => <StatusDot key={th.paneId} status={th.status} size={7} />)}
+      </span>
+    </div>
+  )
+}
+
 /** The project's task board: shown once there are tasks or a team. */
-function BoardRow({ group }: { group: WorkspaceGroup }) {
+export function BoardRow({ group }: { group: WorkspaceGroup }) {
   const board = useBoard(group.cwd)
   const open = useStore((s) => s.boardWorkspace === group.workspace.workspace_id)
   const tasks = board?.tasks ?? []
@@ -185,7 +224,7 @@ function StatusList({ threads }: { threads: Thread[] }) {
   )
 }
 
-export function ThreadRow({ thread: th, nested, showProject }: { thread: Thread; nested?: boolean; showProject?: boolean }) {
+export const ThreadRow = memo(function ThreadRow({ thread: th, nested, showProject, lead }: { thread: Thread; nested?: boolean; showProject?: boolean; lead?: boolean }) {
   const selected = useStore((s) => s.selectedPaneId === th.paneId && !s.boardWorkspace)
   const onContext = useCallback((e: MouseEvent) => {
     e.preventDefault()
@@ -207,6 +246,7 @@ export function ThreadRow({ thread: th, nested, showProject }: { thread: Thread;
       <div className="thread-text">
         <div className="thread-name">
           <span className="name">{th.name}</span>
+          {lead && <Crown size={12} className="lead-crown" aria-label={t('Project lead')} />}
           {th.status === 'blocked' && <span className="pill pill-blocked">{t('input')}</span>}
         </div>
         <div className="thread-sub">{showProject ? `${th.workspace.label} · ${th.subtitle}` : th.subtitle}</div>
@@ -227,7 +267,7 @@ export function ThreadRow({ thread: th, nested, showProject }: { thread: Thread;
       </button>
     </div>
   )
-}
+})
 
 function SidebarFooter() {
   const connection = useStore((s) => s.connection)

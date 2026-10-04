@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { ArrowUp, Camera, ChevronDown, ClipboardPaste, Crosshair, FileText, FolderOpen, ImagePlus, Paperclip, Square, X } from 'lucide-react'
+import { ArrowUp, Camera, ChevronDown, ClipboardPaste, Crosshair, FileText, FolderOpen, ImagePlus, Paperclip, Plus, Square, X } from 'lucide-react'
 import { REMOTE_ATTACHMENT_ACCEPT } from '@shared/remote'
 import { remoteAttachmentUrl, uploadAttachment } from '../attachments'
 import { agentKindDef } from '@shared/agents'
 import { supportsModels } from '@shared/models'
 import { t } from '../i18n'
+import { useMobileWeb } from '../mobile'
 import { useRemoteConnection } from '../remote-api'
 import { api, humanizeError, isRemote } from '../api'
 import { interrupt } from '../actions'
@@ -69,6 +70,7 @@ function fileUrl(path: string) {
 
 export function Composer({ thread, compact }: { thread: Thread; compact?: boolean }) {
   const remoteConnection = useRemoteConnection()
+  const mobileWeb = useMobileWeb()
   const paneId = thread.paneId
   const draft = useStore((s) => s.drafts[paneId])
   const sendWithEnter = useStore((s) => s.settings.sendWithEnter)
@@ -187,11 +189,14 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   useEffect(() => {
     const onAttach = () => void pickFiles()
     const onFocus = () => taRef.current?.focus()
+    const onModel = () => setModelOpen(true)
     window.addEventListener('composer:attach', onAttach)
     window.addEventListener('composer:focus', onFocus)
+    window.addEventListener('composer:model', onModel)
     return () => {
       window.removeEventListener('composer:attach', onAttach)
       window.removeEventListener('composer:focus', onFocus)
+      window.removeEventListener('composer:model', onModel)
     }
   }, [pickFiles])
 
@@ -271,7 +276,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
         return
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey && (sendWithEnter || e.metaKey || e.ctrlKey)) {
+    if (e.key === 'Enter' && !e.shiftKey && ((!mobileWeb && sendWithEnter) || e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       void send()
       return
@@ -303,7 +308,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   // While Drover drives the agent's /model menu, typed text would land in that menu.
   const canSend = (!isRemote || remoteConnection === 'connected') && !uploading && !switchingModel && (!!text.trim() || attachments.length > 0 || elements.length > 0)
   const pct = meta?.contextTokens && meta.contextWindow ? Math.min(100, Math.round((meta.contextTokens / meta.contextWindow) * 100)) : null
-  const placeholder = thread.isShell
+  const placeholder = mobileWeb ? (thread.isShell ? t('Command…') : t('Message…')) : thread.isShell
     ? t('Run a command in this terminal…')
     : thread.status === 'blocked'
       ? t('Agent is waiting for an answer — use the buttons above or the terminal')
@@ -428,7 +433,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
         <div className="composer-bar">
           <div className="composer-left">
             <button type="button" className="composer-tool" title={isRemote ? t('Attach images or files') : t('Attach images or files (⌘⇧A)')} aria-expanded={isRemote ? attachOpen : undefined} disabled={isRemote && (remoteConnection !== 'connected' || !!uploading)} onClick={() => void pickFiles()}>
-              <Paperclip size={16} />
+              {mobileWeb ? <Plus size={22} /> : <Paperclip size={16} />}
             </button>
             {supportsModels(thread.kind) && !thread.isShell ? (
               <span className="model-chip-wrap">
@@ -438,8 +443,8 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
                   title={t('Choose the model for this chat')}
                   onClick={() => setModelOpen((v) => !v)}
                 >
-                  {def?.label}
-                  {modelText ? <span className="chip-dim"> · {modelText}</span> : null}
+                  {mobileWeb && modelText ? modelText : def?.label}
+                  {modelText && !mobileWeb ? <span className="chip-dim"> · {modelText}</span> : null}
                   {switchingModel ? <Spinner size={10} /> : <ChevronDown size={11} className="chip-chev" />}
                 </button>
                 {modelOpen && <ModelMenu thread={thread} onClose={() => setModelOpen(false)} />}
@@ -476,7 +481,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
                 <Square size={11} fill="currentColor" />
               </button>
             )}
-            <button type="button" className={clsx('send-btn', canSend && 'ready')} disabled={!canSend || sending} title={t('Send (Enter)')} onClick={() => void send()}>
+            <button type="button" className={clsx('send-btn', canSend && 'ready')} disabled={!canSend || sending} title={mobileWeb ? t('Send') : t('Send (Enter)')} onClick={() => void send()}>
               <ArrowUp size={16} strokeWidth={2.4} />
             </button>
           </div>

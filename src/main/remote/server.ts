@@ -1,18 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs'
 import { extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
+import { pipeline } from 'node:stream'
+import { RemoteTransfers, type Transfer } from './transfers'
 import { WebSocket, WebSocketServer } from 'ws'
 import {
-  REMOTE_AUTH_ENTRY, REMOTE_AUTH_ROUTES, REMOTE_EVENT_CHANNELS, REMOTE_WEB_ENTRY, REMOTE_WS_PATH, REMOTE_PUSH_ROUTES, REMOTE_ATTACHMENT_ROUTES, remoteUsesProxy,
-  type RemoteAccessSettings, type RemotePairingCode, type RemoteStatus, type RemotePushPreferences, type RemotePushStatus
+  REMOTE_AUTH_ENTRY, REMOTE_AUTH_ROUTES, REMOTE_EVENT_CHANNELS, REMOTE_WEB_ENTRY, REMOTE_WS_PATH, REMOTE_PUSH_ROUTES, REMOTE_ATTACHMENT_ROUTES, REMOTE_APPEARANCE_ROUTES, remoteUsesProxy,
+  remoteRpcDeadline, type RemoteAccessSettings, type RemotePairingCode, type RemoteStatus, type RemotePushPreferences, type RemotePushStatus
 } from '@shared/remote'
 import { RemoteAuth } from './auth'
 import { RemoteAuthStore, sessionCookie, sessionToken, poisonAuthStore } from './store'
 import { allowedOrigin, AttemptLimiter, RemoteFailure, remoteIdentity, visitorAddress } from './security'
 import { dispatchRemoteRpc, releaseRemoteRpc, RemoteRpcConnection, type RpcHandlers } from './rpc'
 import { PushNotifications } from './push'
+import { RemoteLog } from './log'
+import { RemoteRpcQueue } from './queue'
+import { RemotePreviews, type PreviewSource } from './preview'
 import { attachmentStorage, attachmentType, readAttachment, readAttachmentBody, saveAttachment } from './attachments'
 import type { HerdrSnapshot } from '@shared/types'
 import type { StatusChange } from '../herdr/service'
@@ -27,14 +32,23 @@ interface Host {
   persistenceWarning?: (error: string, poisonSaved: boolean) => void
   pushTitle?: (name: string, kind: 'finished' | 'blocked') => string
   attachmentsDir?: string
+  /** Current image/video background: its file and the folder it must live in. */
+  background?: () => { path: string; dir: string } | null
   /** Test override of the configured loopback proxy; empty string disables trust. */
   trustedProxy?: string
+  /** An agent's `preview` token for phone previews (see ./preview). */
+  previewSource?: (paneId: string) => PreviewSource | null
+  home?: string
 }
-interface Client { ws: WebSocket; rpc: RemoteRpcConnection; token: string; alive: boolean; pending: number; queue: Promise<void> }
+interface Client { ws: WebSocket; rpc: RemoteRpcConnection; token: string; alive: boolean; pending: number; stateRevision: number; queue: RemoteRpcQueue; calls: Map<string, { method: unknown; timedOut: boolean }> }
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
   '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf'
+}
+const BACKGROUND_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif',
+  '.heic': 'image/heic', '.heif': 'image/heif', '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm'
 }
 const wireJson = (value: unknown): string => JSON.stringify(value, (_key, v) => v instanceof Uint8Array ? Array.from(v) : v)
 
@@ -51,6 +65,8 @@ export function validateRemoteSettings(patch: Partial<RemoteAccessSettings>, cur
 }
 
 export class RemoteServer {
+  private backgrounds = new RemoteTransfers(8)
+  private backgroundConnections = new Map<Transfer, string>()
   private uploads = 0
   private server: Server | null = null
   private wss: WebSocketServer | null = null
@@ -66,7 +82,12 @@ export class RemoteServer {
   private error: string | undefined
   private changing = Promise.resolve()
   private push: PushNotifications
+  private log: RemoteLog
+  private previews: RemotePreviews
   constructor(private host: Host) {
+    this.previews = new RemotePreviews({ source: (paneId) => host.previewSource?.(paneId) ?? null, home: host.home ?? '/',
+      deviceActive: (id) => !!this.authInstance && this.auth.store.devices().some((d) => d.id === id) })
+    this.log = new RemoteLog(host.userData)
     this.push = new PushNotifications({ userData: host.userData, store: () => this.auth.store,
       settings: host.settings, enabled: () => !!this.server?.listening, title: host.pushTitle })
   }
@@ -135,6 +156,7 @@ export class RemoteServer {
     this.requireNoPoisonFailure()
     try { this.auth.store.revoke(id) }
     catch (error) { await this.persistenceFailed(error, true); throw error }
+    this.previews.revoke(id)
     this.expireClients(); this.emitStatus()
   }
   async persistenceFailed(error: unknown, invalidateAuth = false): Promise<void> {
@@ -158,6 +180,7 @@ export class RemoteServer {
     if (warn) this.host.persistenceWarning?.(this.error, poisonSaved)
   }
   pushPublicKey(): string { return this.push.publicKey() }
+  previewLink(deviceId: string | undefined, request: unknown) { return this.previews.link(deviceId, request) }
   private pushDevice(deviceId?: string): string {
     if (!deviceId) throw new RemoteFailure('unauthorized', 'Push settings require an authenticated browser device', 401)
     return deviceId
@@ -176,7 +199,9 @@ export class RemoteServer {
     return this.push.statusChanged(change, snapshot, session)
   }
   private expireClients(): void {
+    this.previews.expire()
     const origin = remoteIdentity(this.host.settings()).origin
+    for (const [transfer, token] of this.backgroundConnections) if (!this.auth.store.session(token, origin)) transfer.close()
     for (const client of this.clients) if (!this.auth.store.session(client.token, origin)) client.ws.close(4001, 'Session expired or revoked')
   }
   private async start(): Promise<void> {
@@ -189,7 +214,8 @@ export class RemoteServer {
     this.server = server
     this.wss = wss
     server.on('upgrade', (req, socket, head) => {
-      const reject = (status: number) => { socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`) }
+      if (this.validHost(req) && this.previews.upgrade(req, socket, head)) return
+      const reject = (status: number) => { socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`, () => socket.destroy()) }
       if (req.url !== REMOTE_WS_PATH || !this.validHost(req) || !allowedOrigin(req.headers.origin, this.host.settings())) return reject(403)
       const token = sessionToken(req.headers.cookie)
       if (!token || !this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)) return reject(401)
@@ -214,15 +240,25 @@ export class RemoteServer {
   async stop(): Promise<void> {
     attachmentStorage(this.host.attachmentsDir).stopCleanup()
     this.authInstance?.clearPending()
+    this.previews.clear()
+    this.backgrounds.clear()
+    this.backgroundConnections.clear()
     if (this.heartbeat) clearInterval(this.heartbeat)
     this.heartbeat = null
-    for (const client of this.clients) { releaseRemoteRpc(this.host.handlers, client.rpc); client.ws.terminate() }
+    const closed = [...this.clients].map(client => new Promise<void>(done => {
+      releaseRemoteRpc(this.host.handlers, client.rpc)
+      if (client.ws.readyState === WebSocket.CLOSED) { done(); return }
+      client.ws.once('close', () => done())
+      client.ws.terminate()
+    }))
     this.clients.clear()
     this.wss?.close()
     this.wss = null
     const server = this.server
     this.server = null
     if (server) await new Promise<void>((done) => { server.close(() => done()); server.closeAllConnections() })
+    await Promise.all(closed)
+    await this.log.flush()
   }
   private validHost(req: IncomingMessage): boolean {
     const identity = remoteIdentity(this.host.settings())
@@ -230,22 +266,54 @@ export class RemoteServer {
   }
   private connect(ws: WebSocket, token: string): void {
     const deviceId = this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)!.device.id
-    const client: Client = { ws, token, rpc: new RemoteRpcConnection(randomUUID(), deviceId), alive: true, pending: 0, queue: Promise.resolve() }
+    const client: Client = { ws, token, rpc: new RemoteRpcConnection(randomUUID(), deviceId), alive: true, pending: 0, stateRevision: 0, queue: new RemoteRpcQueue(), calls: new Map() }
     this.clients.add(client)
-    ws.on('error', () => ws.terminate())
+    this.log.write('ws_connect', client.rpc.id)
+    ws.on('error', () => { this.log.write('ws_error', client.rpc.id); ws.terminate() })
     ws.on('pong', () => { client.alive = true })
-    ws.on('close', () => { releaseRemoteRpc(this.host.handlers, client.rpc); this.clients.delete(client); this.emitStatus() })
+    ws.on('close', (code) => {
+      this.log.write('ws_disconnect', client.rpc.id, undefined, code)
+      releaseRemoteRpc(this.host.handlers, client.rpc); this.clients.delete(client); this.emitStatus()
+    })
     ws.on('message', (data, binary) => {
-      if (binary || ++client.pending > 32) { ws.close(1008, 'Invalid or excessive RPC calls'); return }
-      // Ordered per connection: terminal close/input cannot overtake terminal open.
-      client.queue = client.queue.then(async () => {
+      if (binary) { ws.close(1008, 'Invalid RPC frame'); return }
+      let message: unknown
+      try { message = JSON.parse(data.toString()) } catch { ws.close(1008, 'Invalid JSON'); return }
+      const call = message as { t?: unknown; id?: unknown; method?: unknown; args?: unknown } | null
+      if (call?.t === 'timeout') {
+        const active = typeof call.id === 'string' ? client.calls.get(call.id) : undefined
+        if (active && !active.timedOut) { active.timedOut = true; this.log.write('rpc_timeout', client.rpc.id, active.method) }
+        return
+      }
+      // Reject a burst without dropping every subscription on this connection.
+      if (client.pending >= 128) {
+        this.log.write('rpc_error', client.rpc.id, call?.method)
+        this.write(client, { t: 'result', id: typeof call?.id === 'string' ? call.id.slice(0, 128) : '', ok: false,
+          error: { code: 'busy', message: 'Too many pending calls; try again' } })
+        return
+      }
+      client.pending++
+      const id = typeof call?.id === 'string' ? call.id.slice(0, 128) : ''
+      const active = { method: call?.method, timedOut: false }
+      if (id) client.calls.set(id, active)
+      const timer = setTimeout(() => {
+        if (!active.timedOut) { active.timedOut = true; this.log.write('rpc_timeout', client.rpc.id, active.method) }
+      }, remoteRpcDeadline(call?.method, call?.args))
+      timer.unref()
+      void client.queue.run(message, async () => {
         if (ws.readyState !== WebSocket.OPEN) return
         if (!this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)) { ws.close(4001, 'Unauthorized'); return }
-        let message: unknown
-        try { message = JSON.parse(data.toString()) } catch { ws.close(1008, 'Invalid JSON'); return }
+        const stateRevision = client.stateRevision
         const result = await dispatchRemoteRpc(this.host.handlers, client.rpc, message)
-        this.write(client, result)
-      }).catch(() => ws.close(1011, 'RPC transport failed')).finally(() => { client.pending-- })
+        if (!result.ok || (result.value && typeof result.value === 'object' && 'ok' in result.value && result.value.ok === false)) {
+          this.log.write('rpc_error', client.rpc.id, call?.method)
+          if (result.ok && 'code' in (result.value as object) && (result.value as {code: unknown}).code === 'timeout') this.log.write('rpc_timeout', client.rpc.id, call?.method)
+        }
+        this.write(client, call?.method === 'init' ? { ...result, stateRevision } : result)
+      }).catch(() => { this.log.write('rpc_error', client.rpc.id, call?.method); ws.close(1011, 'RPC transport failed') }).finally(() => {
+        clearTimeout(timer); client.pending--
+        if (client.calls.get(id) === active) client.calls.delete(id)
+      })
     })
     this.emitStatus()
   }
@@ -265,7 +333,7 @@ export class RemoteServer {
         eventArgs = [entry[0], ...args.slice(1)]
       }
       if (channel === 'transcript:update' && !client.rpc.transcripts.has((args[0] as { paneId?: string })?.paneId ?? '')) continue
-      this.write(client, { t: 'event', channel, args: eventArgs })
+      this.write(client, { t: 'event', channel, args: eventArgs, stateRevision: ++client.stateRevision })
     }
   }
   private json(res: ServerResponse, status: number, body: unknown): void {
@@ -308,6 +376,43 @@ export class RemoteServer {
     res.writeHead(200, { 'Content-Type': MIME[extname(actual)] })
     res.end(head ? undefined : readFileSync(actual))
   }
+  /** Safari plays video only with byte-range responses. */
+  private background(req: IncomingMessage, res: ServerResponse, token: string, expiresAt: number): void {
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return }
+    if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) { res.writeHead(413, { Connection: 'close' }); res.end(); return }
+    const current = this.host.background?.()
+    if (!current) throw new RemoteFailure('not_found', 'Not found', 404)
+    let file: string, size: number
+    try {
+      const dir = realpathSync(current.dir)
+      file = realpathSync(current.path)
+      const st = statSync(file)
+      if (!file.startsWith(dir + sep) || !st.isFile()) throw new Error('outside')
+      size = st.size
+    } catch { throw new RemoteFailure('not_found', 'Not found', 404) }
+    const mime = BACKGROUND_MIME[extname(file).toLowerCase()]
+    if (!mime) throw new RemoteFailure('not_found', 'Not found', 404)
+    const headers = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" }
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ''))
+    let start = 0, end = size - 1, status = 200
+    if (range && (range[1] || range[2]) && size > 0) {
+      start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]))
+      end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1
+      if (start > end || start >= size) {
+        res.writeHead(416, { 'Content-Range': `bytes */${size}` })
+        res.end()
+        return
+      }
+      status = 206
+    }
+    const transfer = this.backgrounds.open(req, res, () => { if (transfer) this.backgroundConnections.delete(transfer) })
+    if (!transfer) { res.writeHead(429); res.end(); return }
+    this.backgroundConnections.set(transfer, token)
+    transfer.after(expiresAt - Date.now())
+    res.writeHead(status, { ...headers, 'Content-Length': String(size ? end - start + 1 : 0), ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}) })
+    if (req.method === 'HEAD' || !size) { res.end(); return }
+    pipeline(transfer.own(createReadStream(file, { start, end })), res, () => transfer.close())
+  }
   private async http(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.setHeader('Cache-Control', 'no-store')
     res.setHeader('Referrer-Policy', 'no-referrer')
@@ -323,6 +428,8 @@ export class RemoteServer {
     try { path = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname) }
     catch { throw new RemoteFailure('invalid_path', 'Invalid path') }
     if (path.includes('\0') || path.includes('\\') || path.split('/').includes('..')) throw new RemoteFailure('not_found', 'Not found', 404)
+    // Capability links only: never the cookie, never the Drover API.
+    if (await this.previews.http(req, res)) return
     const token = sessionToken(req.headers.cookie)
     const session = this.auth.store.session(token, identity.origin)
     if (req.method === 'POST') {
@@ -398,6 +505,7 @@ export class RemoteServer {
       if (path === '/') { res.writeHead(302, { Location: '/login' }); res.end(); return }
       throw new RemoteFailure('unauthorized', 'Login required', 401)
     }
+    if (path === REMOTE_APPEARANCE_ROUTES.background) { this.background(req, res, String(token), session.session.expiresAt); return }
     if (path.startsWith(REMOTE_ATTACHMENT_ROUTES.previewPrefix)) {
       const attachment = await readAttachment(path.slice(REMOTE_ATTACHMENT_ROUTES.previewPrefix.length), this.host.attachmentsDir)
       res.writeHead(200, { 'Content-Type': attachment.mime, 'Content-Security-Policy': "default-src 'none'; sandbox" })

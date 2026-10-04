@@ -1,4 +1,5 @@
-import type { HerdrSnapshot, PaneInfo, TranscriptMeta, TranscriptUpdate } from '@shared/types'
+import { randomUUID } from 'node:crypto'
+import type { HerdrSnapshot, PaneInfo, TranscriptCursor, TranscriptMeta, TranscriptUpdate } from '@shared/types'
 import type { HerdrService } from '../herdr/service'
 import { ClaudeParser } from './claude'
 import { CodexParser } from './codex'
@@ -11,6 +12,7 @@ import {
 } from './locate'
 import type { TranscriptParser } from './store'
 import { FileTailer } from './tail'
+import { TranscriptRevisions } from './revisions'
 
 type Kind = 'claude' | 'codex'
 
@@ -25,7 +27,10 @@ interface Sub {
   tailer: FileTailer | null
   retry: NodeJS.Timeout | null
   teardown: NodeJS.Timeout | null
-  locating: boolean
+  loading: Promise<void> | null
+  generation: number
+  revision: number
+  history: TranscriptRevisions
   again: boolean
   error?: string
   processStart?: number | null
@@ -35,6 +40,8 @@ const SUPPORTED: Kind[] = ['claude', 'codex']
 
 export class TranscriptManager {
   private subs = new Map<string, Sub>()
+  private stream = randomUUID()
+  private revision = 0
 
   constructor(
     private service: HerdrService,
@@ -45,15 +52,16 @@ export class TranscriptManager {
     return this.service.snapshot?.panes.find((p) => p.pane_id === paneId)
   }
 
-  async subscribe(paneId: string): Promise<TranscriptUpdate> {
+  async subscribe(paneId: string, retain = true, cursor?: TranscriptCursor): Promise<TranscriptUpdate> {
     let sub = this.subs.get(paneId)
     if (sub) {
-      sub.refs++
+      if (retain) sub.refs++
       if (sub.teardown) {
         clearTimeout(sub.teardown)
         sub.teardown = null
       }
-      return this.full(sub)
+      await sub.loading
+      return sub.history.resume(this.full(sub), cursor)
     }
     sub = {
       paneId,
@@ -66,7 +74,10 @@ export class TranscriptManager {
       tailer: null,
       retry: null,
       teardown: null,
-      locating: false,
+      loading: null,
+      generation: 0,
+      revision: ++this.revision,
+      history: new TranscriptRevisions(),
       again: false
     }
     this.subs.set(paneId, sub)
@@ -110,6 +121,9 @@ export class TranscriptManager {
   }
 
   private reset(sub: Sub) {
+    sub.generation++
+    sub.revision = ++this.revision
+    sub.history.clear()
     sub.tailer?.stop()
     sub.tailer = null
     sub.parser = null
@@ -139,11 +153,18 @@ export class TranscriptManager {
   private full(sub: Sub): TranscriptUpdate {
     return {
       paneId: sub.paneId,
+      stream: this.stream,
+      revision: sub.revision,
       reset: true,
       meta: this.meta(sub),
-      items: sub.parser ? sub.parser.store.items : [],
+      items: sub.parser ? sub.parser.store.items.slice() : [],
       error: sub.path ? undefined : sub.error
     }
+  }
+
+  private publish(sub: Sub, update: TranscriptUpdate) {
+    sub.history.record(update)
+    this.send(update)
   }
 
   private claimedIds(except: string): Set<string> {
@@ -157,96 +178,99 @@ export class TranscriptManager {
     return ids
   }
 
-  private async locate(sub: Sub): Promise<void> {
-    if (!this.subs.has(sub.paneId)) return
-    if (sub.locating) {
-      sub.again = true
-      return
-    }
-    sub.locating = true
+  private locate(sub: Sub): Promise<void> {
+    if (this.subs.get(sub.paneId) !== sub) return Promise.resolve()
+    if (sub.loading) { sub.again = true; return sub.loading }
+    const load = this.locateOnce(sub).finally(async () => {
+      sub.loading = null
+      if (sub.again) { sub.again = false; await this.locate(sub) }
+    })
+    sub.loading = load
+    return load
+  }
+
+  private async locateOnce(sub: Sub): Promise<void> {
+    const generation = sub.generation
     if (sub.retry) {
       clearTimeout(sub.retry)
       sub.retry = null
     }
-    try {
-      const pane = this.pane(sub.paneId)
-      const kind = normalizeKind(pane?.agent)
-      sub.kind = kind
-      if (!pane) {
-        sub.error = 'pane-closed'
-        return
-      }
-      if (!kind) {
-        sub.error = pane.agent ? 'unsupported-agent' : 'no-agent'
-        return
-      }
-      const env = this.service.env
-      const exactId = pane.agent_session?.value ?? null
-      let path: string | null = null
-      let sessionId: string | null = null
-      let located: 'exact' | 'heuristic' = 'exact'
-      if (exactId) {
-        path = kind === 'claude' ? await findClaudeTranscript(env, exactId, pane.cwd) : await findCodexRollout(env, exactId)
-        sessionId = exactId
-      }
-      if (!path && !exactId) {
-        const start = await this.agentStart(sub)
-        if (start) {
-          const cwds = [...new Set([pane.foreground_cwd, pane.cwd].filter((c): c is string => !!c))]
-          const claimed = this.claimedIds(sub.paneId)
-          const guess =
-            kind === 'claude'
-              ? await guessClaudeTranscript(env, cwds, start, claimed)
-              : await guessCodexRollout(env, cwds, start, claimed)
-          if (guess) {
-            path = guess.path
-            sessionId = guess.sessionId
-            located = 'heuristic'
-          }
+    const pane = this.pane(sub.paneId)
+    const kind = normalizeKind(pane?.agent)
+    sub.kind = kind
+    if (!pane) {
+      sub.error = 'pane-closed'
+      this.publish(sub, this.full(sub))
+      return
+    }
+    if (!kind) {
+      sub.error = pane.agent ? 'unsupported-agent' : 'no-agent'
+      this.publish(sub, this.full(sub))
+      return
+    }
+    const env = this.service.env
+    const exactId = pane.agent_session?.value ?? null
+    sub.sessionId = exactId
+    let path: string | null = null
+    let sessionId: string | null = null
+    let located: 'exact' | 'heuristic' = 'exact'
+    if (exactId) {
+      path = kind === 'claude' ? await findClaudeTranscript(env, exactId, pane.cwd) : await findCodexRollout(env, exactId)
+      sessionId = exactId
+    }
+    if (!path && !exactId) {
+      const start = await this.agentStart(sub)
+      if (start) {
+        const cwds = [...new Set([pane.foreground_cwd, pane.cwd].filter((c): c is string => !!c))]
+        const claimed = this.claimedIds(sub.paneId)
+        const guess =
+          kind === 'claude'
+            ? await guessClaudeTranscript(env, cwds, start, claimed)
+            : await guessCodexRollout(env, cwds, start, claimed)
+        if (guess) {
+          path = guess.path
+          sessionId = guess.sessionId
+          located = 'heuristic'
         }
-      }
-      if (!this.subs.has(sub.paneId)) return
-      if (!path) {
-        sub.error = 'not-found'
-        this.send(this.full(sub))
-        this.scheduleRetry(sub)
-        return
-      }
-      if (path === sub.path) return
-      sub.tailer?.stop()
-      sub.path = path
-      sub.sessionId = sessionId
-      sub.located = located
-      sub.error = undefined
-      sub.parser = kind === 'claude' ? new ClaudeParser() : new CodexParser()
-      const tailer = new FileTailer(
-        path,
-        (lines, reset) => {
-          if (sub.tailer !== tailer) return
-          if (reset) sub.parser = kind === 'claude' ? new ClaudeParser() : new CodexParser()
-          const parser = sub.parser!
-          parser.feed(lines)
-          if (reset) {
-            parser.store.clearChanges()
-            this.send({ paneId: sub.paneId, reset: true, meta: this.meta(sub), items: parser.store.items })
-          } else {
-            const items = parser.store.takeChanges()
-            this.send({ paneId: sub.paneId, reset: false, meta: this.meta(sub), items })
-          }
-        },
-        () => {
-          /* transient read errors are retried by the poll */
-        }
-      )
-      sub.tailer = tailer
-      await tailer.start()
-    } finally {
-      sub.locating = false
-      if (sub.again) {
-        sub.again = false
-        void this.locate(sub)
       }
     }
+    if (this.subs.get(sub.paneId) !== sub || generation !== sub.generation) return
+    if (!path) {
+      sub.error = 'not-found'
+      sub.revision = ++this.revision
+      this.publish(sub, this.full(sub))
+      this.scheduleRetry(sub)
+      return
+    }
+    if (path === sub.path) return
+    sub.tailer?.stop()
+    sub.path = path
+    sub.sessionId = sessionId
+    sub.located = located
+    sub.error = undefined
+    sub.parser = kind === 'claude' ? new ClaudeParser() : new CodexParser()
+    const tailer = new FileTailer(
+      path,
+      (lines, reset) => {
+        if (sub.tailer !== tailer) return
+        if (reset) sub.parser = kind === 'claude' ? new ClaudeParser() : new CodexParser()
+        const parser = sub.parser!
+        parser.feed(lines)
+        sub.revision = ++this.revision
+        if (reset) {
+          parser.store.clearChanges()
+          this.publish(sub, this.full(sub))
+        } else {
+          const items = parser.store.takeChanges()
+          this.publish(sub, { paneId: sub.paneId, stream: this.stream, revision: sub.revision, reset: false, meta: this.meta(sub), items })
+        }
+      },
+      () => {
+        /* transient read errors are retried by the poll */
+      }
+    )
+    sub.tailer = tailer
+    await tailer.start()
   }
 
   private async agentStart(sub: Sub): Promise<number | null> {

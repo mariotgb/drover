@@ -9,8 +9,9 @@ import { openSettings } from '../actions'
 import { t } from '../i18n'
 import { basename, shortPath } from '../model'
 import { defaultInstructions, effectiveRole, firstMessage, rememberRole, rolesFor } from '../roles'
-import { getModel, select, setViewMode, toast, toggleDrawer, updateSettings, useModel, useStore, type DialogState } from '../store'
+import { getModel, refreshKinds, select, setViewMode, toast, toggleDrawer, updateSettings, useModel, useStore, type DialogState } from '../store'
 import { splitArgs } from '../util'
+import { agentInstallationGuide, installedDefaultAgent } from '../new-agent-kind'
 import { Modal } from './Modal'
 import { ModelFields } from './ModelPicker'
 import { AgentAvatar, Spinner } from './primitives'
@@ -31,7 +32,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
       : (selectedPaneId && getModel().byPane.get(selectedPaneId)?.workspaceId) || groups[0]?.workspace.workspace_id || null
   const [workspaceId, setWorkspaceId] = useState<string | null>(existingPane ? existingPane.workspaceId : initialWs)
   const [folder, setFolder] = useState<string | null>(preset.folder ?? null)
-  const [kind, setKind] = useState<string | null>(preset.kind === undefined ? settings.defaultAgentKind : preset.kind)
+  const [kind, setKind] = useState<string | null>(() => preset.kind === undefined ? installedDefaultAgent(settings.defaultAgentKind, kinds) : preset.kind)
   const [name, setName] = useState('')
   const [placement, setPlacement] = useState<NewAgentRequest['placement']>(existingPane ? 'existing' : 'tab')
   const [useWorktree, setUseWorktree] = useState(false)
@@ -47,6 +48,13 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
   const [roles, setRoles] = useState<{ project: RoleTemplate[]; custom: RoleTemplate[] }>({ project: [], custom: [] })
   const [role, setRole] = useState<RoleTemplate | null>(null)
   const pickedOnce = useRef(false)
+  const pickedKind = useRef(preset.kind !== undefined)
+  const [checkingKinds, setCheckingKinds] = useState(false)
+  const chooseKind = (next: string | null) => { pickedKind.current = true; setKind(next) }
+  // Discovery can finish after the dialog opens. Preserve explicit choices.
+  useEffect(() => {
+    if (!pickedKind.current && !role) setKind(installedDefaultAgent(settings.defaultAgentKind, kinds))
+  }, [kinds, settings.defaultAgentKind, role])
 
   const close = () => useStore.setState({ dialog: null })
   const group = groups.find((g) => g.workspace.workspace_id === workspaceId) ?? null
@@ -94,7 +102,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
       return
     }
     const eff = effectiveRole(r, projectCwd)
-    setKind(eff.kind)
+    chooseKind(eff.kind)
     setName(eff.name)
     setArgs(eff.args)
     setModelChoice(eff.model !== undefined || eff.effort !== undefined ? { model: eff.model || null, effort: eff.effort || null } : settings.agentModels[eff.kind] ?? {})
@@ -103,11 +111,20 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
 
   const installed = kinds.filter((k) => k.installed)
   const others = kinds.filter((k) => !k.installed)
+  const missingKind = !!kind && kinds.length > 0 && !installed.some(k => k.kind === kind)
+  const installGuide = kind ? agentInstallationGuide(kind) : undefined
+  const checkKinds = async () => {
+    setCheckingKinds(true)
+    try { await api.reconnect(); await refreshKinds() }
+    catch { setError(t('Could not refresh installed agents. Try again.')) }
+    finally { setCheckingKinds(false) }
+  }
   const splitTarget = selectedPaneId && getModel().byPane.get(selectedPaneId)?.workspaceId === workspaceId ? selectedPaneId : null
   const nameValid = !name || AGENT_NAME_RE.test(name)
   const allRoles = [...roles.project, ...roles.custom]
 
   const submit = async () => {
+    if (missingKind || checkingKinds) return
     if (!workspaceId && !folder) {
       setError(t('Choose a project or a folder'))
       return
@@ -265,13 +282,13 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
           <label>{t('Agent')}</label>
           <div className="kind-grid">
             {installed.map((k) => (
-              <button key={k.kind} type="button" className={clsx('kind-opt', kind === k.kind && 'active')} onClick={() => setKind(k.kind)}>
+              <button key={k.kind} type="button" className={clsx('kind-opt', kind === k.kind && 'active')} onClick={() => chooseKind(k.kind)}>
                 <AgentAvatar kind={k.kind} size={24} />
                 <span>{k.label}</span>
               </button>
             ))}
             {!existingPane && !role && (
-              <button type="button" className={clsx('kind-opt', kind === null && 'active')} onClick={() => setKind(null)}>
+              <button type="button" className={clsx('kind-opt', kind === null && 'active')} onClick={() => chooseKind(null)}>
                 <AgentAvatar kind={null} size={24} />
                 <span>{t('Terminal only')}</span>
               </button>
@@ -289,7 +306,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
                   key={k.kind}
                   type="button"
                   className={clsx('kind-opt', kind === k.kind && 'active')}
-                  onClick={() => setKind(k.kind)}
+                  onClick={() => chooseKind(k.kind)}
                   title={t('{binary} not found in PATH', { binary: k.binary })}
                 >
                   <AgentAvatar kind={k.kind} size={24} />
@@ -298,6 +315,11 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
               ))}
             </div>
           )}
+          {missingKind && <div className="field-hint" role="status">
+            <p>{t('Install {agent} on your Mac and make sure {binary} is in your shell PATH. Then check again.', { agent: agentKindDef(kind)?.label ?? kind!, binary: kinds.find(k => k.kind === kind)?.binary ?? agentKindDef(kind)?.binaries[0] ?? kind! })}</p>
+            {installGuide && <button type="button" className="link-btn" onClick={() => void api.openExternal(installGuide)}>{t('Installation guide')}</button>}
+            {' '}<button type="button" className="link-btn" disabled={checkingKinds} onClick={() => void checkKinds()}>{checkingKinds ? t('Please wait…') : t('Check again')}</button>
+          </div>}
           {!kinds.length && <div className="hint">{t('Detecting installed agents…')}</div>}
         </div>
 
@@ -416,7 +438,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
           <button type="button" className="btn" onClick={close}>
             {t('Cancel')}
           </button>
-          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void submit()}>
+          <button type="button" className="btn btn-primary" disabled={busy || checkingKinds || missingKind} onClick={() => void submit()}>
             {busy ? <Spinner size={13} /> : null}
             {busy ? t('Starting…') : kind ? t('Start {agent}', { agent: agentKindDef(kind)?.label ?? kind }) : t('Open terminal')}
           </button>

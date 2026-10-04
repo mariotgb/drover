@@ -12,19 +12,21 @@ import type {
 } from '@shared/types'
 import { agentKindDef } from '@shared/agents'
 import { api } from '../api'
+import { useMobileWeb } from '../mobile'
+import { watchMobileTranscript } from '../mobile-transcripts'
 import { sendKeys } from '../actions'
 import { formatDuration, type Thread } from '../model'
 import { applyTranscript, toggleDrawer, useStore } from '../store'
 import { AssistantMessage, EventRow, ToolGroup, UserMessage } from './Messages'
 import { Spinner, useTicker } from './primitives'
 
-type Block =
+export type Block =
   | { type: 'user'; id: string; item: TranscriptUser }
   | { type: 'assistant'; id: string; item: TranscriptAssistant }
   | { type: 'event'; id: string; item: TranscriptEvent }
   | { type: 'tools'; id: string; items: (TranscriptTool | TranscriptThinking)[] }
 
-function toBlocks(items: TranscriptItem[]): Block[] {
+export function toBlocks(items: TranscriptItem[]): Block[] {
   const blocks: Block[] = []
   let group: Extract<Block, { type: 'tools' }> | null = null
   for (const it of items) {
@@ -47,6 +49,7 @@ function toBlocks(items: TranscriptItem[]): Block[] {
 const PAGE = 120
 
 export function ChatView({ thread }: { thread: Thread }) {
+  const mobileWeb = useMobileWeb()
   const paneId = thread.paneId
   const ts = useStore((s) => s.transcripts[paneId])
   const pending = useStore((s) => s.pending[paneId])
@@ -61,6 +64,7 @@ export function ChatView({ thread }: { thread: Thread }) {
     let alive = true
     setLimit(PAGE)
     atBottomRef.current = true
+    if (mobileWeb) return watchMobileTranscript(paneId, applyTranscript)
     void api.transcriptSubscribe(paneId).then((u) => {
       if (alive) applyTranscript(u)
     })
@@ -68,7 +72,7 @@ export function ChatView({ thread }: { thread: Thread }) {
       alive = false
       api.transcriptUnsubscribe(paneId)
     }
-  }, [paneId])
+  }, [paneId, mobileWeb])
 
   const blocks = useMemo(() => toBlocks(ts?.items ?? []), [ts?.items])
   const hidden = Math.max(0, blocks.length - limit)
@@ -195,7 +199,7 @@ export function ChatView({ thread }: { thread: Thread }) {
   )
 }
 
-function WorkingIndicator({ thread }: { thread: Thread }) {
+export function WorkingIndicator({ thread }: { thread: Thread }) {
   const since = useStore((s) => s.workingSince[thread.paneId])
   useTicker(1000)
   const title = thread.pane.terminal_title_stripped || thread.pane.title || ''

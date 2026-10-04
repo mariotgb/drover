@@ -40,7 +40,7 @@ A desktop app for [herdr](https://herdr.dev) in the spirit of the Claude Code an
 
 ## Install
 
-You need [herdr](https://herdr.dev) (`curl -fsSL https://herdr.dev/install.sh | sh`) and the agents you want to use (`claude`, `codex`, …). The app is built for macOS on Apple Silicon.
+You need [herdr](https://herdr.dev) (`curl -fsSL https://herdr.dev/install.sh | sh`) and the agents you want to use (`claude`, `codex`, …). The app requires macOS 13.0 or later on Apple Silicon.
 
 1. Download `Drover-<version>-arm64.dmg` from [Releases](https://github.com/mariotgb/drover/releases/latest) and drag Drover to Applications.
 2. The app is not notarized by Apple, so macOS blocks the first launch. Open it once, then go to System Settings → Privacy & Security and click **Open Anyway** (or run `xattr -dr com.apple.quarantine /Applications/Drover.app`).
@@ -54,6 +54,10 @@ Drover never uses your tokens and never calls the Anthropic or OpenAI APIs — l
 
 - **Codex** writes a snapshot of its limits into every session file (`~/.codex/sessions/…`); Drover takes the newest one.
 - **Claude Code** receives the limits with every reply and officially passes them to the status-line command (`statusLine`). Settings → General → Claude Code limits → **Turn on** plugs a small local script, `~/.drover/claude-statusline.sh`, into `~/.claude/settings.json` (a copy of the file is kept next to it as `settings.json.drover-backup`). The script saves what Claude Code passes it to `~/.drover/claude-status/` and prints "5h 42% · wk 6%" in Claude's status line. If you already had a status line, it keeps working. **Turn off** puts everything back.
+
+## Remote access
+
+Drover 0.5.0+ can serve its interface in your browser: Settings → **Remote access**. Pair an iPhone by QR code and sign in with a passkey. Your Mac must stay awake with Drover running; HTTPS access from outside uses a proxy. Follow the [setup guide](docs/remote-access.md) for the VPS, Mac tunnel, Home Screen app, notifications and troubleshooting. Optional scripts are in [remote/](remote/README.md).
 
 ## Keyboard shortcuts
 

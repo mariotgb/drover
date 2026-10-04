@@ -93,7 +93,7 @@ export class HerdrService extends EventEmitter<Events> {
     this.emit('connection', this.connection)
   }
 
-  async start(session: string): Promise<void> {
+  async start(session: string, refreshEnv = false): Promise<void> {
     this.stop()
     const gen = ++this.generation
     this.session = session || 'default'
@@ -101,8 +101,9 @@ export class HerdrService extends EventEmitter<Events> {
     this.lastSnapshotJson = ''
     this.setConnection({ status: 'connecting', error: undefined, version: undefined })
 
-    this.env = await loginEnv()
+    const env = await loginEnv(refreshEnv)
     if (gen !== this.generation) return
+    this.env = env
     this.herdrPath = findHerdr(this.env)
     if (!this.herdrPath) {
       this.setConnection({ status: 'no-herdr', error: 'herdr binary not found in PATH' })

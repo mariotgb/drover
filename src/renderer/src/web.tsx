@@ -11,6 +11,7 @@ import './styles/chat.css'
 import './styles/dialogs.css'
 import './styles/remote.css'
 import './styles/mobile.css'
+import './styles/mobile-design.css'
 import { trackMobileViewport } from './mobile'
 
 // Install before loading any module that captures the API singleton.
@@ -48,6 +49,8 @@ async function start() {
       if (!getModel().byPane.has(paneId)) return
       pendingPane = null
       select(paneId)
+      // On the phone the agent from a notification comes to the front of every panel.
+      useStore.setState({ mobileDrawer: false, mobileTerminal: null, mobileSettings: false })
       const url = new URL(location.href)
       url.searchParams.delete('pane')
       history.replaceState(null, '', url)

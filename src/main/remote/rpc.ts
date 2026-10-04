@@ -2,7 +2,7 @@ import { REMOTE_METHOD_CHANNELS, type RemoteCall, type RemoteResult } from '@sha
 import { RemoteFailure } from './security'
 import { validateRpcArgs } from './validation'
 
-export interface RpcContext { remote?: RemoteRpcConnection }
+export interface RpcContext { remote?: RemoteRpcConnection; existingSubscription?: boolean }
 // Existing IPC handlers use typed arguments; the boundary validates envelopes.
 export type RpcHandler = (context: RpcContext, ...args: any[]) => unknown // eslint-disable-line @typescript-eslint/no-explicit-any
 export class RpcHandlers {
@@ -29,7 +29,7 @@ export class RemoteRpcConnection {
 function identifier(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !value || value.length > 200) throw new RemoteFailure('invalid_args', 'Invalid identifier')
 }
-const optionalArgs: Partial<Record<string, number>> = { request: 2, termScroll: 3, addTask: 2, deletePushSubscription: 0 }
+const optionalArgs: Partial<Record<string, number>> = { request: 2, termScroll: 3, addTask: 2, deletePushSubscription: 0, transcriptSubscribe: 1 }
 export async function dispatchRemoteRpc(handlers: RpcHandlers, connection: RemoteRpcConnection, message: unknown): Promise<RemoteResult> {
   const call = message as Partial<RemoteCall> | null
   const id = typeof call?.id === 'string' ? call.id.slice(0, 128) : ''
@@ -68,21 +68,22 @@ export async function dispatchRemoteRpc(handlers: RpcHandlers, connection: Remot
       args[0] = internalId
     }
     const subscription = method.startsWith('transcript') ? connection.transcripts : method === 'watchTasks' || method === 'unwatchTasks' ? connection.tasks : null
+    let existingSubscription = false
     if (subscription) {
       identifier(args[0])
       const subscribing = method === 'transcriptSubscribe' || method === 'watchTasks'
-      if (subscribing && subscription.has(args[0])) throw new RemoteFailure('already_subscribed', 'Already subscribed')
+      existingSubscription = subscribing && subscription.has(args[0])
       if (!subscribing && !subscription.has(args[0])) return { t: 'result', id, ok: true, value: null }
-      if (subscribing) {
+      if (subscribing && !existingSubscription) {
         const key = args[0]
         subscription.add(key)
         rollback = () => {
           if (subscription.delete(key)) handlers.invoke(method === 'watchTasks' ? 'tasks:unwatch' : 'transcript:unsubscribe', {}, [key])
         }
       }
-      else subscription.delete(args[0])
+      else if (!subscribing) subscription.delete(args[0])
     }
-    const value = await handlers.invoke(REMOTE_METHOD_CHANNELS[method], { remote: connection }, args)
+    const value = await handlers.invoke(REMOTE_METHOD_CHANNELS[method], { remote: connection, existingSubscription }, args)
     if (method === 'termClose') { connection.terminals.delete(call.args[0] as string); connection.terminalTargets.delete(call.args[0] as string) }
     if (method === 'termOpen') {
       if (connection.closed) { handlers.invoke('term:close', {}, [args[0]]); throw new RemoteFailure('unauthorized', 'Connection closed', 401) }

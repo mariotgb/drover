@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.drover.bridge</string>
+
+  <!-- Plain ssh, no autossh: launchd restarts it when it exits. -F /dev/null keeps
+       the live ~/.ssh/config (other hosts, ControlMaster, ...) out of this tunnel.
+       Two reverse forwards on the VPS loopback: 2222 -> this Mac's sshd,
+       8780 -> the Drover site on 127.0.0.1:7780. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-F</string>
+    <string>/dev/null</string>
+    <string>-N</string>
+    <string>-R</string>
+    <string>127.0.0.1:2222:localhost:22</string>
+    <string>-R</string>
+    <string>127.0.0.1:8780:127.0.0.1:7780</string>
+    <string>-p</string>
+    <string>__VPS_PORT__</string>
+    <string>-i</string>
+    <string>__HOME__/.ssh/mac_bridge_ed25519</string>
+    <string>-o</string><string>IdentitiesOnly=yes</string>
+    <string>-o</string><string>BatchMode=yes</string>
+    <string>-o</string><string>ServerAliveInterval=30</string>
+    <string>-o</string><string>ServerAliveCountMax=3</string>
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <string>-o</string><string>StrictHostKeyChecking=yes</string>
+    <string>-o</string><string>UserKnownHostsFile=__HOME__/.ssh/mac_bridge_known_hosts</string>
+    <string>-o</string><string>LogLevel=ERROR</string>
+    <string>__VPS_USER__@__VPS_HOST__</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/dev.drover.bridge.log</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/dev.drover.bridge.log</string>
+</dict>
+</plist>

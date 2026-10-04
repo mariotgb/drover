@@ -378,3 +378,51 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   await server.configure({ remoteEnabled: false })
   assert.equal(server.status().running, false)
 })
+
+test('the Mac background is served only with a session, only from the backgrounds folder, with byte ranges', async (t) => {
+  const dir = temp(t), port = await freePort(), origin = `http://localhost:${port}`
+  const web = join(dir, 'web'), backgrounds = join(dir, 'backgrounds')
+  mkdirSync(web)
+  mkdirSync(backgrounds)
+  writeFileSync(join(web, 'index.html'), '<html>app</html>')
+  writeFileSync(join(backgrounds, 'bg-1.mp4'), Buffer.from('0123456789'))
+  writeFileSync(join(dir, 'secret.png'), 'secret')
+  symlinkSync(join(dir, 'secret.png'), join(backgrounds, 'bg-link.png'))
+  const store = new m.RemoteAuthStore(join(dir, 'remote-auth.json'))
+  const token = store.issueSession(device(store).id, origin).token
+  let background = { path: join(backgrounds, 'bg-1.mp4'), dir: backgrounds }
+  const settings = { ...m.DEFAULT_REMOTE_SETTINGS, remoteEnabled: true, remotePort: port }
+  const server = new m.RemoteServer({ webRoot: web, userData: dir, attachmentsDir: join(dir, 'attachments'), handlers: new m.RpcHandlers(),
+    settings: () => settings, saveSettings: () => {}, statusChanged: () => {}, background: () => background })
+  t.after(() => server.stop())
+  await server.sync()
+  const get = (headers = {}, auth = true) => new Promise((done, reject) => {
+    const req = httpRequest({ hostname: '127.0.0.1', port, path: m.REMOTE_APPEARANCE_ROUTES.background,
+      headers: { Host: `localhost:${port}`, ...(auth ? { Cookie: `drover_session=${token}` } : {}), ...headers } }, (res) => {
+      const chunks = []
+      res.on('data', (data) => chunks.push(data))
+      res.on('end', () => done({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+  assert.equal((await get({}, false)).status, 401)
+  const full = await get()
+  assert.equal(full.status, 200)
+  assert.equal(full.headers['content-type'], 'video/mp4')
+  assert.equal(full.headers['accept-ranges'], 'bytes')
+  assert.equal(full.body, '0123456789')
+  const part = await get({ Range: 'bytes=2-5' })
+  assert.equal(part.status, 206)
+  assert.equal(part.headers['content-range'], 'bytes 2-5/10')
+  assert.equal(part.body, '2345')
+  assert.equal((await get({ Range: 'bytes=-3' })).body, '789')
+  assert.equal((await get({ Range: 'bytes=20-' })).status, 416)
+  // A symlink out of the folder, a file elsewhere or a gradient background is never served.
+  background = { path: join(backgrounds, 'bg-link.png'), dir: backgrounds }
+  assert.equal((await get()).status, 404)
+  background = { path: join(dir, 'secret.png'), dir: backgrounds }
+  assert.equal((await get()).status, 404)
+  background = null
+  assert.equal((await get()).status, 404)
+})

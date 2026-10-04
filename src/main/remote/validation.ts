@@ -1,5 +1,7 @@
-import { isAbsolute } from 'node:path'
-import { DEFAULT_SETTINGS } from '@shared/types'
+import { realpathSync, statSync } from 'node:fs'
+import { isAbsolute, resolve, sep } from 'node:path'
+import { DEFAULT_SETTINGS, type AppSettings } from '@shared/types'
+import { GRADIENTS, MONO_FONTS, THEMES } from '@shared/themes'
 import { RemoteFailure } from './security'
 import { validatePushPreferences, validatePushSubscription } from './push-subscription'
 
@@ -41,12 +43,46 @@ const settingsFields: Record<string, Check> = {
   language: oneOf('system', 'en', 'ru', 'es', 'de', 'zh'), roles: array(shape(roleFields, ['id', 'name', 'label', 'kind', 'args', 'instructions', 'source'])),
   roleOverrides: record(shape({ kind, args: str(8192), instructions: str(256 * 1024), model: str(200), effort: str(64) })),
   agentModels: record(model), agentBypass: record(bool), teamBypass: bool, agentPreviewHint: bool, appearance,
+  leadOnly: bool, projectLeads: record(str(200, 1), 500),
   remoteEnabled: bool, remotePort: number(1024, 65535), remotePublicUrl: str(2048), remoteBehindProxy: bool
+}
+/** Phone settings only. Never derive this list from the desktop schema. */
+const remoteSettingsFields: Record<string, Check> = {
+  notifications: bool, notificationSound: bool,
+  terminalFontSize: number(10, 22), chatFontSize: number(12, 20),
+  language: oneOf('system', 'en', 'ru', 'es', 'de', 'zh'),
+  leadOnly: bool, projectLeads: record(str(200, 1), 500),
+  appearance: shape({
+    theme: str(100, 1), accent: nullable(hex),
+    background: shape({ kind: oneOf('none', 'gradient', 'image', 'video'), gradient: oneOf(...GRADIENTS.map(g => g.id)), path, blur: number(0, 40), dim: number(0, 90), fit: oneOf('cover', 'contain') }),
+    glass: number(0.3, 1, false), radius: oneOf('sharp', 'default', 'round'), density: oneOf('comfortable', 'compact'),
+    uiFont: oneOf('system', 'rounded', 'serif', 'mono'), monoFont: oneOf(...MONO_FONTS)
+  })
 }
 export function validateSettingsPatch(patch: unknown, remote = false): void {
   if (!plain(patch)) return invalid()
-  if (remote && Object.keys(patch).some(k => k.startsWith('remote') || ['session', 'stopServerOnQuit'].includes(k))) throw new RemoteFailure('not_available_remotely', 'These settings are desktop-only')
-  if (!shape(settingsFields)(patch)) invalid()
+  if (remote && Object.keys(patch).some(k => !Object.hasOwn(remoteSettingsFields, k))) throw new RemoteFailure('not_available_remotely', 'These settings are desktop-only')
+  if (!shape(remote ? remoteSettingsFields : settingsFields)(patch)) invalid()
+}
+
+/** Merge only validated phone fields; resolve file selections on the Mac. */
+export function remoteSettingsPatch(patch: unknown, current: AppSettings, backgroundsDir: string): Partial<AppSettings> {
+  validateSettingsPatch(patch, true)
+  const next = patch as Partial<AppSettings>
+  if (!next.appearance) return next
+  const selected = next.appearance
+  const background = { ...current.appearance.background, ...selected.background }
+  if (selected.theme !== undefined && selected.theme !== 'system' &&
+      !THEMES.some(t => t.id === selected.theme) && !current.appearance.customThemes.some(t => t.id === selected.theme)) invalid()
+  if (selected.background && (selected.background.path !== undefined || background.kind === 'image' || background.kind === 'video')) {
+    try {
+      const file = background.path
+      if (!file || !resolve(file).startsWith(resolve(backgroundsDir) + sep) ||
+          !realpathSync(file).startsWith(realpathSync(backgroundsDir) + sep) || !statSync(file).isFile()) throw new Error('outside backgrounds')
+    } catch { throw new RemoteFailure('not_available_remotely', 'Select an existing Drover background') }
+  }
+  return { ...next, appearance: { ...current.appearance, ...selected,
+    background } }
 }
 /** Discard corrupt persisted fields before the renderer/native theme sees them. */
 export function validStoredSettings(value: unknown): Record<string, unknown> {
@@ -94,7 +130,8 @@ export function validateRpcArgs(method: string, args: unknown[]): void {
     case 'termResize': positional(args, [terminalId, number(1, 1000), number(1, 500)]); return
     case 'termScroll': positional(args, [terminalId, oneOf('up', 'down'), number(1, 10000), optional(oneOf('wheel', 'page_key'))], 3); return
     case 'termClose': positional(args, [terminalId]); return
-    case 'transcriptSubscribe': case 'transcriptUnsubscribe': positional(args, [id]); return
+    case 'transcriptSubscribe': positional(args, [id, optional(shape({ stream: str(100, 1), revision: number(0, Number.MAX_SAFE_INTEGER) }, ['stream', 'revision']))], 1); return
+    case 'transcriptUnsubscribe': positional(args, [id]); return
     case 'setSelectedPane': positional(args, [nullable(id)]); return
     case 'discoverRoles': case 'watchTasks': case 'unwatchTasks': case 'ensureBoard': positional(args, [path]); return
     case 'addTask': positional(args, [path, str(4096, 1), optional(str(200))], 2); return
@@ -106,6 +143,7 @@ export function validateRpcArgs(method: string, args: unknown[]): void {
     case 'savePushSubscription': positional(args, [v => plain(v)]); validatePushSubscription(args[0]); return
     case 'deletePushSubscription': positional(args, [optional(str(4096, 1))], 0); return
     case 'setPushPreferences': positional(args, [v => plain(v)]); validatePushPreferences(args[0]); return
+    case 'previewLink': positional(args, [shape({ paneId: id, recentId: v => str(64, 1)(v) && /^[A-Za-z0-9_-]+$/.test(v as string) })]); if (Object.keys(args[0] as object).length !== 1) invalid(); return
     case 'init': case 'sessions': case 'startServer': case 'reconnect': case 'herdrVersion': case 'agentKinds': case 'limits': case 'refreshLimits': case 'previewServers': case 'modelCatalog': case 'remoteStatus': case 'pushPublicKey': case 'pushStatus': positional(args, []); return
     default: throw new RemoteFailure('not_available_remotely', 'Method not available remotely')
   }

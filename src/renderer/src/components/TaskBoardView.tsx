@@ -4,9 +4,12 @@ import { CircleAlert, Crown, ListChecks, MoreHorizontal, Plus, Users, X } from '
 import { agentKindDef } from '@shared/agents'
 import type { BoardTask, TaskBoard, TaskStatus, TranscriptItem } from '@shared/types'
 import { api, humanizeError } from '../api'
+import { useMobileWeb } from '../mobile'
+import { watchMobileTranscript } from '../mobile-transcripts'
 import { t } from '../i18n'
 import { basename, formatDuration, statusLabel, type Thread, type WorkspaceGroup } from '../model'
 import { BOARD_FILE } from '../roles'
+import { isLead } from '../leads'
 import { applyTranscript, closeBoard, select, toast, useStore, watchBoard } from '../store'
 import { openMenuAt, type MenuItem } from './Menu'
 import { AgentAvatar, IconButton, Spinner, StatusDot } from './primitives'
@@ -18,9 +21,7 @@ export function useBoard(cwd: string | null): TaskBoard | null {
   return board
 }
 
-export function isLead(th: Thread): boolean {
-  return /orchestr|lead|boss|manager|coordinator|оркестр|тимлид/i.test(th.agent?.name ?? th.name)
-}
+export { isLead }
 
 function useNow(ms: number) {
   const [now, setNow] = useState(Date.now())
@@ -82,7 +83,12 @@ function activity(items: TranscriptItem[] | undefined): { ask: string | null; pl
 function useTranscripts(agents: Thread[]) {
   const ids = agents.filter((a) => agentKindDef(a.kind)?.transcript).map((a) => a.paneId)
   const key = ids.join(',')
+  const mobileWeb = useMobileWeb()
   useEffect(() => {
+    if (mobileWeb) {
+      const release = ids.map(id => watchMobileTranscript(id, applyTranscript))
+      return () => release.forEach(off => off())
+    }
     let alive = true
     for (const id of ids) {
       void api.transcriptSubscribe(id).then((u) => {
@@ -94,7 +100,7 @@ function useTranscripts(agents: Thread[]) {
       for (const id of ids) api.transcriptUnsubscribe(id)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+  }, [key, mobileWeb])
 }
 
 async function tell(th: Thread, text: string): Promise<boolean> {
@@ -104,6 +110,10 @@ async function tell(th: Thread, text: string): Promise<boolean> {
 }
 
 export function TaskBoardView({ group }: { group: WorkspaceGroup }) {
+  const mobileWeb = useMobileWeb()
+  const [column, setColumn] = useState(1)
+  const [addOpen, setAddOpen] = useState(false)
+  const AgentSection = mobileWeb ? 'details' : 'section'
   const cwd = group.cwd
   const board = useBoard(cwd)
   const agents = useMemo(() => group.threads.filter((th) => !!th.kind), [group.threads])
@@ -180,23 +190,25 @@ export function TaskBoardView({ group }: { group: WorkspaceGroup }) {
           {tasks.length > 0 && <span className="board-count">{t('{active} in progress · {done}/{total} done', { active, done, total: tasks.length })}</span>}
         </div>
         <div className="board-actions no-drag">
-          {!lead && (
+          {!mobileWeb && !lead && (
             <button type="button" className="btn btn-sm" onClick={() => useStore.setState({ dialog: { type: 'team', workspaceId: group.workspace.workspace_id } })}>
               <Users size={13} /> {t('Start team…')}
             </button>
           )}
-          <IconButton title={t('Close')} onClick={() => closeBoard()}>
-            <X size={16} />
-          </IconButton>
+          {mobileWeb && <IconButton title={t('New task…')} active={addOpen} onClick={() => setAddOpen(v => !v)}><Plus size={22} /></IconButton>}
+          <IconButton title={t('Close')} onClick={() => closeBoard()}><X size={mobileWeb ? 22 : 16} /></IconButton>
         </div>
       </header>
 
+      {mobileWeb && <div className="mobile-board-segments" role="group" aria-label={t('Task status')}>
+        {[t('Queued tasks'), t('Active tasks'), t('Review tasks'), t('Completed tasks')].map((label, i) => <button type="button" key={i} aria-pressed={column === i} onClick={() => setColumn(i)}><span>{label}</span><small>{tasks.filter(task => COLUMNS[i].statuses.includes(task.status)).length}</small></button>)}
+      </div>}
       <div className="board-body">
         {!cwd ? (
           <div className="board-empty">{t('This project has no folder, so it has no task board.')}</div>
         ) : (
           <>
-            <div className="board-add">
+            {(!mobileWeb || addOpen) && <div className="board-add">
               <input
                 className="input"
                 value={title}
@@ -219,7 +231,7 @@ export function TaskBoardView({ group }: { group: WorkspaceGroup }) {
               <button type="button" className="btn btn-primary" disabled={!title.trim() || adding} onClick={() => void add()}>
                 {adding ? <Spinner size={13} /> : <Plus size={14} />} {t('Add')}
               </button>
-            </div>
+            </div>}
 
             {board?.error && (
               <div className="board-warn">
@@ -228,8 +240,8 @@ export function TaskBoardView({ group }: { group: WorkspaceGroup }) {
             )}
 
             {agents.length > 0 && (
-              <section className="board-agents">
-                <div className="board-section-title">{t('Agents now')}</div>
+              <AgentSection className="board-agents">
+                {mobileWeb ? <summary className="board-section-title">{t('Agents now')} · {agents.length}</summary> : <div className="board-section-title">{t('Agents now')}</div>}
                 <div className="board-agent-list">
                   {agents.map((a) => {
                     const { ask, plan } = activity(transcripts[a.paneId]?.items)
@@ -262,17 +274,19 @@ export function TaskBoardView({ group }: { group: WorkspaceGroup }) {
                     )
                   })}
                 </div>
-              </section>
+              </AgentSection>
             )}
 
             <section className="board-columns">
-              {COLUMNS.map((col) => {
+              {COLUMNS.map((col, index) => {
+                if (mobileWeb && column !== index) return null
                 const items = tasks.filter((x) => col.statuses.includes(x.status))
                 return (
                   <div key={col.statuses.join()} className="board-column">
                     <div className="board-column-head">
                       {col.title()} <span className="board-column-count">{items.length}</span>
                     </div>
+                    {mobileWeb && !items.length && tasks.length > 0 && <p className="mobile-column-empty">{t('No tasks in this status')}</p>}
                     {items.map((task) => {
                       const th = byName(task.assignee)
                       return (
@@ -282,6 +296,7 @@ export function TaskBoardView({ group }: { group: WorkspaceGroup }) {
                           tabIndex={0}
                           className={clsx('task-card', task.status === 'blocked' && 'blocked', th && 'linked')}
                           onClick={() => th && select(th.paneId)}
+                          onKeyDown={mobileWeb ? e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); if (th) select(th.paneId) } } : undefined}
                         >
                           <div className="task-card-top">
                             <div className="task-title">{task.title}</div>

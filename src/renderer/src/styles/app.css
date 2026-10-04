@@ -1818,3 +1818,64 @@ select {
   padding: 2px 2px 0;
   text-align: left;
 }
+
+/* Browser windows have no Electron traffic lights or empty draggable title bar. */
+html.drover-remote .traffic-space,
+html.drover-remote .welcome-drag:empty {
+  display: none;
+}
+html.drover-remote .welcome-drag {
+  padding-left: 12px;
+}
+html.drover-remote .thread-header.with-traffic {
+  padding-left: 18px;
+}
+html.drover-remote .drag {
+  -webkit-app-region: no-drag;
+}
+
+/* "Show only the project lead": the folded agents of a project. */
+.more-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 4px 8px 4px 13px;
+  border-radius: 8px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  cursor: pointer;
+  outline: none;
+}
+.more-row:hover {
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+.more-row:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.more-row-icon {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  transition: transform 0.15s;
+}
+.more-row.open .more-row-icon {
+  transform: rotate(90deg);
+}
+.more-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.more-row-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.lead-crown {
+  flex: none;
+  color: var(--blocked);
+}

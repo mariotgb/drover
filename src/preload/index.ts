@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
+import type { TranscriptCursor } from '@shared/types'
 import type {
   RemoteAccessSettings, RemoteDevice, RemotePairingCode, RemoteStatus,
   RemotePushStatus, RemotePushPreferences, RemotePushSubscription
@@ -65,7 +66,7 @@ const api = {
     ipcRenderer.send('term:scroll', id, dir, lines, source),
   termClose: (id: string) => ipcRenderer.send('term:close', id),
 
-  transcriptSubscribe: (paneId: string) => ipcRenderer.invoke('transcript:subscribe', paneId),
+  transcriptSubscribe: (paneId: string, cursor?: TranscriptCursor) => ipcRenderer.invoke('transcript:subscribe', paneId, cursor),
   transcriptUnsubscribe: (paneId: string) => ipcRenderer.send('transcript:unsubscribe', paneId),
 
   setSelectedPane: (paneId: string | null) => ipcRenderer.send('app:selected-pane', paneId),
@@ -97,7 +98,8 @@ const api = {
     selectPane: (fn: Listener) => on('app:select-pane', fn),
     command: (fn: Listener) => on('app:command', fn),
     windowFocus: (fn: Listener) => on('app:window-focus', fn),
-    limits: (fn: Listener) => on('limits:update', fn)
+    limits: (fn: Listener) => on('limits:update', fn),
+    settings: (fn: Listener) => on('settings:changed', fn)
   }
 }
 

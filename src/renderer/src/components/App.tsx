@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import clsx from 'clsx'
 import { Bot, FolderOpen, PanelLeftOpen, Play, RotateCw, X } from 'lucide-react'
-import { api, isRemote } from '../api'
+import { api } from '../api'
 import { t } from '../i18n'
-import { GRADIENTS } from '@shared/themes'
 import { interrupt, newTerminalTab, openNewAgent, openSettings } from '../actions'
 import {
   dismissToast,
@@ -19,6 +18,8 @@ import {
   togglePreview,
   updateSettings,
   useModel,
+  useSelectedThread,
+  useWorkspace,
   useStore,
   viewModeFor
 } from '../store'
@@ -35,7 +36,9 @@ import { TaskBoardView } from './TaskBoardView'
 import { BroadcastDialog, TeamDialog } from './TeamDialogs'
 import appIcon from '../assets/app-icon.png'
 import { MobileAgentList, MobileBack } from './MobileNavigation'
-import { useMobile } from '../mobile'
+import { useMobile, useMobileWeb } from '../mobile'
+import { MobileWebApp } from './MobileWeb'
+import { AppBackground } from './Backdrop'
 
 function handleCommand(cmd: string) {
   const t = selectedThread()
@@ -104,6 +107,7 @@ function handleCommand(cmd: string) {
 
 export function App() {
   const mobile = useMobile()
+  const mobileWeb = useMobileWeb()
   const mobileScreen = useStore((s) => s.mobileScreen)
   const ready = useStore((s) => s.ready)
   const sidebarHidden = useStore((s) => s.sidebarHidden)
@@ -112,11 +116,11 @@ export function App() {
   const lang = useStore((s) => s.settings.language)
   const paletteOpen = useStore((s) => s.paletteOpen)
   const connection = useStore((s) => s.connection)
-  useModel()
-  const thread = useStore((s) => (s.selectedPaneId ? getModel().byPane.get(s.selectedPaneId) ?? null : null))
-  const boardGroup = useStore((s) => (s.boardWorkspace ? getModel().groups.find((g) => g.workspace.workspace_id === s.boardWorkspace) ?? null : null))
+  const thread = useSelectedThread()
+  const boardWorkspace = useStore((s) => s.boardWorkspace)
+  const boardGroup = useWorkspace(boardWorkspace)
   const previewOpen = useStore((s) => (thread ? !!s.previewOpen[thread.workspaceId] : false))
-  const previewGroup = previewOpen && thread ? getModel().groups.find((g) => g.workspace.workspace_id === thread.workspaceId) ?? null : null
+  const previewGroup = useWorkspace(previewOpen && thread ? thread.workspaceId : null)
 
   useEffect(() => api.on.command(handleCommand), [])
 
@@ -134,7 +138,7 @@ export function App() {
       <AppBackground />
       {!mobile && !sidebarHidden && <Sidebar />}
       <main className="main">
-        {mobile && mobileScreen === 'list' ? (
+        {mobileWeb ? <MobileWebApp offline={connected ? null : <ConnectionScreen />} /> : mobile && mobileScreen === 'list' ? (
           <MobileAgentList />
         ) : !connected ? (
           <ConnectionScreen />
@@ -151,7 +155,7 @@ export function App() {
       </main>
       {!mobile && connected && previewGroup && <PreviewPanel key={previewGroup.workspace.workspace_id} group={previewGroup} />}
       {dialog?.type === 'new-agent' && <NewAgentDialog preset={dialog} />}
-      {dialog?.type === 'settings' && <SettingsDialog initialTab={dialog.tab} />}
+      {dialog?.type === 'settings' && !mobileWeb && <SettingsDialog initialTab={dialog.tab} />}
       {dialog?.type === 'prompt' && <PromptDialog d={dialog} />}
       {dialog?.type === 'confirm' && <ConfirmDialog d={dialog} />}
       {dialog?.type === 'team' && <TeamDialog workspaceId={dialog.workspaceId} />}
@@ -160,21 +164,6 @@ export function App() {
       <MenuHost />
       <Toasts />
       <Lightbox />
-    </div>
-  )
-}
-
-function AppBackground() {
-  const bg = useStore((s) => s.settings.appearance.background)
-  if (bg.kind === 'none' || (isRemote && (bg.kind === 'image' || bg.kind === 'video'))) return null
-  const src = bg.path ? `hdfile://local/?p=${encodeURIComponent(bg.path)}` : undefined
-  const gradient = GRADIENTS.find((g) => g.id === bg.gradient)
-  return (
-    <div className="app-bg" aria-hidden>
-      {bg.kind === 'gradient' && <div className="app-bg-media" style={{ background: gradient?.css ?? GRADIENTS[0].css }} />}
-      {bg.kind === 'image' && src && <img className="app-bg-media" src={src} alt="" style={{ objectFit: bg.fit }} />}
-      {bg.kind === 'video' && src && <video className="app-bg-media" src={src} autoPlay muted loop playsInline style={{ objectFit: bg.fit }} />}
-      <div className="app-bg-dim" />
     </div>
   )
 }

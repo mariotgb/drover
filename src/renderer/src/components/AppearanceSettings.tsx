@@ -49,7 +49,7 @@ function ThemeCard({ theme, active, onClick, label }: { theme: ThemeDef; active:
   )
 }
 
-const ACCENTS = ['#d97757', '#2f6fdf', '#1f8a55', '#7c4ddb', '#db2777', '#e0a100', '#0e9f9f', '#5b5b56']
+export const ACCENTS = ['#d97757', '#2f6fdf', '#1f8a55', '#7c4ddb', '#db2777', '#e0a100', '#0e9f9f', '#5b5b56']
 
 const PALETTE_FIELDS: [keyof ThemePalette, string][] = [
   ['bg', 'Background'],

@@ -1,0 +1,41 @@
+[Unit]
+Description=Drover reverse SSH tunnel (home server -> VPS 127.0.0.1:__PORT__)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=drover-tunnel
+Group=drover-tunnel
+# Plain ssh, no autossh: systemd restarts it whenever it exits.
+# -F /dev/null ignores any ssh_config; the dedicated key and known_hosts live in
+# /var/lib/drover-tunnel and are not readable by the "agent" user.
+ExecStart=/usr/bin/ssh -F /dev/null -N -T \
+    -R 127.0.0.1:__PORT__:localhost:22 \
+    -p __VPS_PORT__ \
+    -i /var/lib/drover-tunnel/.ssh/id_ed25519 \
+    -o IdentitiesOnly=yes \
+    -o BatchMode=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile=/var/lib/drover-tunnel/known_hosts \
+    -o LogLevel=ERROR \
+    __VPS_USER__@__VPS_HOST__
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

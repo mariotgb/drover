@@ -10,7 +10,7 @@ const RADII = {
   round: { sm: '8px', md: '14px', lg: '20px', xl: '28px', bubble: '22px' }
 } as const
 
-const UI_FONTS = {
+export const UI_FONTS = {
   system: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', system-ui, sans-serif",
   rounded: "ui-rounded, 'SF Pro Rounded', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
   serif: "ui-serif, 'New York', 'Iowan Old Style', Georgia, serif",

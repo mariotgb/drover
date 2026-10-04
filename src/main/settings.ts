@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { DEFAULT_SETTINGS, type AppSettings } from '@shared/types'
 import { DEFAULT_APPEARANCE } from '@shared/themes'
 import { DEFAULT_REMOTE_SETTINGS, type RemoteAccessSettings } from '@shared/remote'
-import { validStoredSettings, validateSettingsPatch } from './remote/validation'
+import { remoteSettingsPatch, validStoredSettings, validateSettingsPatch } from './remote/validation'
 
 export type StoredAppSettings = AppSettings & RemoteAccessSettings
 
@@ -57,6 +57,10 @@ export class SettingsStore {
     for (const l of this.listeners) l(this.data)
     this.scheduleSave()
     return this.data
+  }
+
+  setRemote(patch: unknown, backgroundsDir: string): StoredAppSettings {
+    return this.set(remoteSettingsPatch(patch, this.data, backgroundsDir))
   }
 
   onChange(fn: (s: StoredAppSettings) => void): () => void {

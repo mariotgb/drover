@@ -117,6 +117,9 @@ function General() {
       <Row label={t('Terminal font size')}>
         <Stepper value={s.terminalFontSize} min={10} max={22} onChange={(v) => set({ terminalFontSize: v })} />
       </Row>
+      <Row label={t('Show only the project lead')} hint={t('Other agents of a project fold into one row that opens on tap. Agents waiting for an answer stay in sight. Pick the lead in the agent menu.')}>
+        <Toggle value={s.leadOnly} onChange={(v) => set({ leadOnly: v })} />
+      </Row>
       <Row label={t('Sync focus with herdr')} hint={t('Selecting a thread focuses its pane in herdr and marks finished work as seen.')}>
         <Toggle value={s.syncFocus} onChange={(v) => set({ syncFocus: v })} />
       </Row>

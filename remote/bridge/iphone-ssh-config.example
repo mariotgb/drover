@@ -1,0 +1,27 @@
+# Example ssh config for the iPhone (Blink Shell reads this; in Termius create the
+# same two hosts in the UI: "mac" uses "vps" as its Jump Host, and its Startup
+# command is `herdr`). Replace the __PLACEHOLDERS__. Do NOT add this to the Mac's ~/.ssh/config.
+#
+# "jump" is a restricted VPS user: it can only forward to 127.0.0.1:2222 (this Mac).
+
+Host vps
+    HostName __VPS_HOST__
+    User jump
+    IdentityFile ~/.ssh/iphone_ed25519
+    IdentitiesOnly yes
+
+Host mac
+    # Resolved on the VPS side: 127.0.0.1:2222 there is the reverse tunnel to the Mac.
+    HostName 127.0.0.1
+    Port 2222
+    User __MAC_USER__
+    ProxyJump vps
+    IdentityFile ~/.ssh/iphone_ed25519
+    IdentitiesOnly yes
+    # Keep the Mac's host key apart from anything else on 127.0.0.1.
+    HostKeyAlias drover-mac
+    ServerAliveInterval 30
+    # `ssh mac` drops straight into herdr (it restores the session).
+    # For a plain shell instead:  ssh -o RemoteCommand=none -t mac zsh
+    RequestTTY yes
+    RemoteCommand herdr

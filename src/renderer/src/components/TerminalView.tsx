@@ -32,6 +32,8 @@ function xtermTheme(): ITheme {
 export interface TerminalHandle {
   focus(): void
   paste(text: string): void
+  key(data: string): void
+  control(active: boolean, consumed?: () => void): void
 }
 
 export function TerminalView({
@@ -120,8 +122,16 @@ export function TerminalView({
       if (!res.ok) setState({ phase: 'closed', reason: res.error })
     })
 
+    let controlArmed = false
+    let controlConsumed: (() => void) | undefined
     const dataSub = term.onData((d) => {
-      if (!closed) api.termInput(id, d)
+      if (closed) return
+      if (controlArmed) {
+        controlArmed = false
+        controlConsumed?.()
+        if (/^[a-z@\[\]\\^_]$/i.test(d)) d = String.fromCharCode(d.toUpperCase().charCodeAt(0) & 31)
+      }
+      api.termInput(id, d)
     })
     const binSub = term.onBinary((d) => {
       if (closed) return
@@ -238,7 +248,9 @@ export function TerminalView({
     })
 
     if (autoFocus) setTimeout(() => !useStore.getState().dialog && !useStore.getState().paletteOpen && term.focus(), 30)
-    onReady?.({ focus: () => term.focus(), paste: pasteText })
+    onReady?.({ focus: () => term.focus(), paste: pasteText,
+      key: (data) => { if (!closed) api.termInput(id, data) },
+      control: (active, consumed) => { controlArmed = active; controlConsumed = consumed } })
 
     return () => {
       onReady?.(null)

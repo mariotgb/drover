@@ -246,9 +246,9 @@ export class TaskBoards {
     return typeof cwd === 'string' && isAbsolute(cwd) && !cwd.includes('\0')
   }
 
-  async watch(cwd: string): Promise<TaskBoard> {
+  async watch(cwd: string, retain = true): Promise<TaskBoard> {
     let w = this.watched.get(cwd)
-    if (w) w.refs++
+    if (w) { if (retain) w.refs++ }
     else {
       w = { refs: 1, mtime: -1, size: -1, board: { cwd, exists: false, tasks: [] }, since: new Map() }
       this.watched.set(cwd, w)

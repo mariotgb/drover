@@ -8,6 +8,7 @@ import type {
   WorkspaceInfo
 } from '@shared/types'
 import { agentKindDef } from '@shared/agents'
+import { structuralShare } from './structural-share'
 
 export interface Thread {
   paneId: string
@@ -78,14 +79,21 @@ export function paneOrder(snapshot: HerdrSnapshot, tabId: string): Map<string, n
   return order
 }
 
-export function buildModel(snapshot: HerdrSnapshot | null): { groups: WorkspaceGroup[]; threads: Thread[]; byPane: Map<string, Thread> } {
+export interface ThreadModel { groups: WorkspaceGroup[]; threads: Thread[]; byPane: Map<string, Thread> }
+function shareList<T>(before: T[] | undefined, after: T[]): T[] {
+  return before?.length === after.length && after.every((item, i) => item === before[i]) ? before : after
+}
+export function buildModel(snapshot: HerdrSnapshot | null, previous?: ThreadModel): ThreadModel {
   const groups: WorkspaceGroup[] = []
   const threads: Thread[] = []
   const byPane = new Map<string, Thread>()
   if (!snapshot) return { groups, threads, byPane }
   const agentsByPane = new Map(snapshot.agents.map((a) => [a.pane_id, a]))
+  const oldGroups = new Map(previous?.groups.map(g => [g.workspace.workspace_id, g]))
   const workspaces = [...snapshot.workspaces].sort((a, b) => a.number - b.number)
   for (const ws of workspaces) {
+    const oldGroup = oldGroups.get(ws.workspace_id)
+    const oldTabs = new Map(oldGroup?.tabs.map(t => [t.tab.tab_id, t]))
     const tabs = snapshot.tabs.filter((t) => t.workspace_id === ws.workspace_id).sort((a, b) => a.number - b.number)
     const group: WorkspaceGroup = { workspace: ws, tabs: [], threads: [], cwd: null }
     for (const tab of tabs) {
@@ -111,7 +119,7 @@ export function buildModel(snapshot: HerdrSnapshot | null): { groups: WorkspaceG
         let subtitle = title
         if (!subtitle || subtitle === name) subtitle = kind ? def?.label ?? kind : basename(cwd)
         if (panes.length === 1 && custom && agentName && agentName !== custom && !title) subtitle = agentName
-        const th: Thread = {
+        const th = structuralShare(previous?.byPane.get(pane.pane_id), {
           paneId: pane.pane_id,
           tabId: tab.tab_id,
           workspaceId: ws.workspace_id,
@@ -127,18 +135,27 @@ export function buildModel(snapshot: HerdrSnapshot | null): { groups: WorkspaceG
           tabPaneCount: panes.length,
           paneIndex: idx,
           cwd
-        }
+        } satisfies Thread)
         tg.threads.push(th)
         group.threads.push(th)
         threads.push(th)
         byPane.set(pane.pane_id, th)
         if (!group.cwd && pane.cwd) group.cwd = pane.cwd
       })
-      group.tabs.push(tg)
+      const oldTab = oldTabs.get(tab.tab_id)
+      tg.tab = structuralShare(oldTab?.tab, tg.tab)
+      tg.threads = shareList(oldTab?.threads, tg.threads)
+      group.tabs.push(oldTab && oldTab.tab === tg.tab && oldTab.threads === tg.threads && oldTab.customLabel === tg.customLabel ? oldTab : tg)
     }
-    groups.push(group)
+    group.workspace = structuralShare(oldGroup?.workspace, group.workspace)
+    group.tabs = shareList(oldGroup?.tabs, group.tabs)
+    group.threads = shareList(oldGroup?.threads, group.threads)
+    groups.push(oldGroup && oldGroup.workspace === group.workspace && oldGroup.tabs === group.tabs && oldGroup.threads === group.threads && oldGroup.cwd === group.cwd ? oldGroup : group)
   }
-  return { groups, threads, byPane }
+  const sharedGroups = shareList(previous?.groups, groups)
+  const sharedThreads = shareList(previous?.threads, threads)
+  if (previous && sharedGroups === previous.groups && sharedThreads === previous.threads) return previous
+  return { groups: sharedGroups, threads: sharedThreads, byPane }
 }
 
 const ATTENTION: Record<AgentStatus, number> = { blocked: 0, done: 1, working: 2, idle: 3, unknown: 4 }

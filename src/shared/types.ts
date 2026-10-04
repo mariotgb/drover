@@ -251,7 +251,14 @@ export interface TranscriptMeta {
   located: 'exact' | 'heuristic'
 }
 
+/** Resume only within this server stream and a revision still known for this pane. */
+export interface TranscriptCursor { stream: string; revision: number }
 export interface TranscriptUpdate {
+  /** Orders snapshots and deltas; stream changes when the manager restarts. */
+  stream?: string
+  revision?: number
+  /** A resumed delta covers everything after this revision, even if events arrive first. */
+  baseRevision?: number
   paneId: string
   reset: boolean
   meta: TranscriptMeta | null
@@ -401,6 +408,10 @@ export interface AppSettings {
   teamBypass: boolean
   /** Tell agents started with a role how to open the preview panel. */
   agentPreviewHint: boolean
+  /** Agent lists show each project's lead; the other agents fold into one row. */
+  leadOnly: boolean
+  /** Lead agent picked by hand, per project folder: agent name. Default: orchestrator/team lead by name. */
+  projectLeads: Record<string, string>
   appearance: AppearanceSettings
 }
 
@@ -430,6 +441,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agentBypass: {},
   teamBypass: false,
   agentPreviewHint: true,
+  leadOnly: false,
+  projectLeads: {},
   appearance: DEFAULT_APPEARANCE
 }
 

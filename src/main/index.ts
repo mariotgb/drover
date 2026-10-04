@@ -23,6 +23,7 @@ import {
   type NewAgentRequest,
   type SendPromptRequest,
   type TaskBoard,
+  type TranscriptCursor,
   type TranscriptUpdate
 } from '@shared/types'
 import { createAgent, sendPrompt } from './actions'
@@ -304,11 +305,11 @@ function registerIpc() {
     appVersion: app.getVersion()
   }))
 
-  handle('settings:set', async (_e, patch: Partial<AppSettings & RemoteAccessSettings>) => {
+  handle('settings:set', async (ctx, patch: Partial<AppSettings & RemoteAccessSettings>) => {
     const remotePatch = Object.fromEntries(Object.entries(patch).filter(([key]) => key.startsWith('remote')))
     if (Object.keys(remotePatch).length) validateRemoteSettings(remotePatch, settings.get())
     const prevSession = settings.get().session
-    const next = settings.set(patch)
+    const next = ctx.remote ? settings.setRemote(patch, backgroundsDir()) : settings.set(patch)
     try { settings.flush() }
     catch (error) { await remote?.persistenceFailed(error, patch.remoteEnabled === false); throw error }
     applyTheme(next)
@@ -323,6 +324,8 @@ function registerIpc() {
       void service.start(next.session)
     }
     if (Object.keys(remotePatch).length) await remote?.sync()
+    // The Mac window and every phone apply the same appearance.
+    send('settings:changed', next)
     return next
   })
 
@@ -336,6 +339,7 @@ function registerIpc() {
   handle('push:subscribe', (ctx, subscription: unknown) => remote!.savePushSubscription(ctx.remote?.deviceId, subscription))
   handle('push:unsubscribe', (ctx, endpoint?: string) => remote!.deletePushSubscription(ctx.remote?.deviceId, endpoint))
   handle('push:preferences', (ctx, patch) => remote!.setPushPreferences(ctx.remote?.deviceId, patch))
+  handle('preview:link', (ctx, request: unknown) => remote!.previewLink(ctx.remote?.deviceId, request))
 
   handle('limits:get', () => limits.state)
   handle('limits:refresh', async () => {
@@ -365,7 +369,7 @@ function registerIpc() {
   )
   handle('herdr:sessions', () => service.listSessions())
   handle('herdr:start-server', () => service.startServerAndWait())
-  handle('herdr:reconnect', () => service.start(settings.get().session))
+  handle('herdr:reconnect', () => service.start(settings.get().session, true))
   handle('herdr:version', () => service.version())
   handle('herdr:cli', async (_e, args: string[]) => {
     if (!Array.isArray(args) || !CLI_ALLOWED.has(String(args[0]))) {
@@ -385,7 +389,7 @@ function registerIpc() {
   handle('agent:send', (_e, req: SendPromptRequest) =>
     READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } : sendPrompt(service, req)
   )
-  handle('tasks:watch', (_e, cwd: string) => (TaskBoards.valid(cwd) ? boards.watch(cwd) : null))
+  handle('tasks:watch', (ctx, cwd: string) => (TaskBoards.valid(cwd) ? boards.watch(cwd, !ctx.existingSubscription) : null))
   listen('tasks:unwatch', (_e, cwd: string) => TaskBoards.valid(cwd) && boards.unwatch(cwd))
   const boardWrite = async (cwd: unknown, fn: (cwd: string) => Promise<unknown>) => {
     if (READONLY) return { ok: false, error: 'read-only mode' }
@@ -433,7 +437,7 @@ function registerIpc() {
   )
   listen('term:close', (_e, id: string) => bridges.close(id))
 
-  handle('transcript:subscribe', (_e, paneId: string) => transcripts.subscribe(paneId))
+  handle('transcript:subscribe', (ctx, paneId: string, cursor?: TranscriptCursor) => transcripts.subscribe(paneId, !ctx.existingSubscription, cursor))
   listen('transcript:unsubscribe', (_e, paneId: string) => transcripts.unsubscribe(paneId))
 
   listen('app:selected-pane', (_e, paneId: string | null) => {
@@ -564,7 +568,17 @@ app.whenReady().then(() => {
     persistenceWarning: (error, poisonSaved) => dialog.showErrorBox(mt('Remote access stopped'), mt(poisonSaved
       ? 'Restart Drover and pair your devices again. {error}'
       : 'Could not record access revocation. Old access may return after restart. {error}', { error })),
-    pushTitle: (name, kind) => mt(kind === 'finished' ? '{name} finished' : '{name} needs your input', { name })
+    pushTitle: (name, kind) => mt(kind === 'finished' ? '{name} finished' : '{name} needs your input', { name }),
+    home: homedir(),
+    previewSource: (paneId) => {
+      const pane = service.snapshot?.panes.find((p) => p.pane_id === paneId)
+      const raw = pane?.tokens?.preview
+      return pane && raw ? { raw, cwd: pane.foreground_cwd || pane.cwd || null, project: `${service.sessionName}:${pane.workspace_id}` } : null
+    },
+    background: () => {
+      const bg = settings.get().appearance.background
+      return (bg.kind === 'image' || bg.kind === 'video') && bg.path ? { path: bg.path, dir: backgroundsDir() } : null
+    }
   })
   void remote.sync()
   rebuildMenu()

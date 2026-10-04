@@ -4,6 +4,11 @@
  */
 export const REMOTE_DEFAULT_PORT = 7780
 export const REMOTE_WS_PATH = '/ws'
+/** transcriptSubscribe(paneId, cursor?): full reset when unknown; otherwise a
+ * delta with baseRevision=cursor.revision. Omit cursor for a cold client.
+ * Stream changes on manager restart; /clear, truncation and an expired warm
+ * cache invalidate old revisions. The browser adapter supplies its cursor. */
+export type { TranscriptCursor } from './types'
 /** Relative to the packaged out/ directory; frontend owns both web builds. */
 export const REMOTE_WEB_DIRECTORY = 'web'
 export const REMOTE_WEB_ENTRY = 'index.html'
@@ -25,6 +30,17 @@ export const DEFAULT_REMOTE_SETTINGS: RemoteAccessSettings = {
   remoteEnabled: false, remotePort: REMOTE_DEFAULT_PORT, remotePublicUrl: ''
 }
 
+/** Pairing a phone needs a saved HTTPS hostname, not a Mac loopback URL. */
+export function remotePhoneOrigin(address: string): string | null {
+  try {
+    const url = new URL(address.trim())
+    const host = url.hostname.toLowerCase()
+    if (url.protocol !== 'https:' || url.username || url.password || url.origin !== address.trim().replace(/\/$/, '') ||
+        host === 'localhost' || host.endsWith('.localhost') || /^[\d.]+$/.test(host) || host.includes(':')) return null
+    return url.origin
+  } catch { return null }
+}
+
 export function remoteUsesProxy(settings: Pick<RemoteAccessSettings, 'remotePublicUrl' | 'remoteBehindProxy'>): boolean {
   return settings.remoteBehindProxy ?? settings.remotePublicUrl.startsWith('https://')
 }
@@ -43,7 +59,8 @@ export const REMOTE_METHOD_CHANNELS = {
   transcriptSubscribe: 'transcript:subscribe', transcriptUnsubscribe: 'transcript:unsubscribe',
   setSelectedPane: 'app:selected-pane', remoteStatus: 'remote:status',
   pushPublicKey: 'push:key', pushStatus: 'push:status', savePushSubscription: 'push:subscribe',
-  deletePushSubscription: 'push:unsubscribe', setPushPreferences: 'push:preferences'
+  deletePushSubscription: 'push:unsubscribe', setPushPreferences: 'push:preferences',
+  previewLink: 'preview:link'
 } as const
 export type RemoteMethod = keyof typeof REMOTE_METHOD_CHANNELS
 /** request is further restricted to the renderer's explicit herdr action allowlist
@@ -61,16 +78,26 @@ export const REMOTE_LOCAL_ONLY_METHODS = [
 
 export const REMOTE_EVENT_CHANNELS = [
   'herdr:snapshot', 'herdr:connection', 'term:frames', 'term:closed', 'transcript:update',
-  'tasks:changed', 'app:select-pane', 'app:command', 'app:window-focus', 'limits:update', 'remote:status'
+  'tasks:changed', 'app:select-pane', 'app:command', 'app:window-focus', 'limits:update', 'remote:status',
+  'settings:changed'
 ] as const
 export type RemoteEventChannel = typeof REMOTE_EVENT_CHANNELS[number]
+/** Includes transport time; long backend operations keep a larger budget. */
+export function remoteRpcDeadline(method: unknown, args: unknown): number {
+  if (method === 'request' && Array.isArray(args) && typeof args[2] === 'number' && Number.isFinite(args[2]) && args[2] >= 100 && args[2] <= 120_000) return args[2] + 15_000
+  if (method === 'createAgent') return 180_000
+  return 60_000
+}
 export interface RemoteCall { t: 'call'; id: string; method: string; args: unknown[] }
 export interface RemoteError { code: string; message: string }
+/** init carries the event revision at capture time, to reject late snapshots. */
 export type RemoteResult =
-  | { t: 'result'; id: string; ok: true; value: unknown }
-  | { t: 'result'; id: string; ok: false; error: RemoteError }
-export interface RemoteEvent { t: 'event'; channel: RemoteEventChannel; args: unknown[] }
-export type RemoteClientMessage = RemoteCall
+  | { t: 'result'; id: string; ok: true; value: unknown; stateRevision?: number }
+  | { t: 'result'; id: string; ok: false; error: RemoteError; stateRevision?: number }
+export interface RemoteEvent { t: 'event'; channel: RemoteEventChannel; args: unknown[]; stateRevision?: number }
+/** Diagnostic only: reports a client deadline, never cancels/replays the command. */
+export interface RemoteTimeout { t: 'timeout'; id: string }
+export type RemoteClientMessage = RemoteCall | RemoteTimeout
 export type RemoteServerMessage = RemoteResult | RemoteEvent
 /** termOpen(id, ...) subscribes this WS to id; termClose(id) releases it.
  * Terminal IDs are owned per connection; other connections cannot write/close them.
@@ -178,6 +205,10 @@ export interface RemotePushPayload {
  * Returned paths are on the Mac and can be passed to sendPrompt.
  * GET/HEAD previewPrefix + id also requires an authenticated session.
  */
+/** GET/HEAD with a session: the Mac's current image/video background (Range
+ * requests supported for video). 404 when the background is a gradient or none.
+ * Only files inside Drover's own backgrounds folder are ever served. */
+export const REMOTE_APPEARANCE_ROUTES = { background: '/appearance/background' } as const
 export const REMOTE_ATTACHMENT_ROUTES = { upload: '/attachments/upload', previewPrefix: '/attachments/files/' } as const
 export const REMOTE_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 export const REMOTE_ATTACHMENT_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/heic,image/heif,image/tiff,image/avif,.txt,.md,.log,.csv,.json,.yaml,.yml,.xml,.ts,.tsx,.js,.jsx,.css,.py,.sh,.toml,.ini'
@@ -194,3 +225,22 @@ export interface RemoteAttachment {
  * Origin === configured public origin OR http://localhost:<remotePort>.
  * localhost is allowed for ordinary local testing; 127.0.0.1 is the bind address only.
  */
+
+/** Phone previews of agents' pages (pane token `preview=`), served by Drover only
+ * through capability links /preview/<256-bit token>/… issued by previewLink to a
+ * paired device. A link is bound to one target taken from the agent's token: the
+ * folder of a local HTML page, or one loopback port (HTTP and WebSocket), and
+ * expires. No cookie is needed or forwarded; every answer is an opaque-origin
+ * sandbox (no allow-same-origin), so a page cannot reach the Drover API. */
+export const REMOTE_PREVIEW_PREFIX = '/preview/'
+export const REMOTE_PREVIEW_TTL_MS = 30 * 60 * 1000
+export const REMOTE_PREVIEW_CSP = 'sandbox allow-scripts allow-forms allow-popups'
+export type RemotePreviewRequest = { paneId: string } | { recentId: string }
+export type RemotePreviewError = 'no_preview' | 'too_long' | 'not_local' | 'unsupported' | 'not_found'
+export interface RemotePreviewRecent { id: string; label: string; kind: 'http' | 'file'; at: number }
+export type RemotePreviewLink =
+  | { ok: true; url: string; label: string; kind: 'http' | 'file'; reachable: boolean; expiresAt: number; recent: RemotePreviewRecent[] }
+  | { ok: false; code: RemotePreviewError; recent: RemotePreviewRecent[] }
+export interface RemotePreviewApi {
+  previewLink(request: RemotePreviewRequest): Promise<RemotePreviewLink>
+}

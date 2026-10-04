@@ -1,8 +1,11 @@
-import { memo, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
+import { LruCache, splitMarkdown } from '../markdown-blocks'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Check, Copy } from 'lucide-react'
+import { t } from '../i18n'
+import { useMobileWeb } from '../mobile'
 import { api, isRemote } from '../api'
 
 function textOf(node: ReactNode): string {
@@ -15,11 +18,13 @@ function textOf(node: ReactNode): string {
 
 export function CopyButton({ text, label }: { text: string; label?: string }) {
   const [done, setDone] = useState(false)
+  const mobileWeb = useMobileWeb()
   return (
     <button
       type="button"
       className="copy-btn"
-      title="Copy"
+      title={mobileWeb ? t('Copy') : 'Copy'}
+      aria-label={mobileWeb ? t(done ? 'Copied' : 'Copy') : undefined}
       onClick={(e) => {
         e.stopPropagation()
         void navigator.clipboard.writeText(text)
@@ -28,7 +33,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
       }}
     >
       {done ? <Check size={13} /> : <Copy size={13} />}
-      {label && <span>{done ? 'Copied' : label}</span>}
+      {label && <span>{mobileWeb ? t(done ? 'Copied' : label) : done ? 'Copied' : label}</span>}
     </button>
   )
 }
@@ -78,7 +83,49 @@ const components: Components = {
   }
 }
 
+const remarkPlugins = [remarkGfm]
+const rehypePlugins: NonNullable<Parameters<typeof ReactMarkdown>[0]['rehypePlugins']> = [[rehypeHighlight, { detect: false, ignoreMissing: true }]]
+const prepared = new LruCache<ReactElement>(600)
+
+/** Parsed and highlighted once per distinct block text; reused across messages, chats and remounts. */
+function prepare(text: string): ReactElement {
+  let element = prepared.get(text)
+  if (!element) {
+    // react-markdown's sync renderer is a plain function without hooks.
+    element = ReactMarkdown({ children: text, remarkPlugins, rehypePlugins, components }) as ReactElement
+    prepared.set(text, element)
+  }
+  return element
+}
+const Block = memo(function Block({ text }: { text: string }) {
+  return prepare(text)
+})
+
+/** At most one re-render per ~120 ms (aligned to a frame) while the text keeps changing. */
+function useBatchedText(text: string): string {
+  const [shown, setShown] = useState(text)
+  const latest = useRef(text)
+  const last = useRef(0)
+  latest.current = text
+  useEffect(() => {
+    if (shown === text) return
+    let frame = 0
+    const timer = setTimeout(() => {
+      frame = requestAnimationFrame(() => { last.current = performance.now(); setShown(latest.current) })
+    }, Math.max(0, 120 - (performance.now() - last.current)))
+    return () => { clearTimeout(timer); cancelAnimationFrame(frame) }
+  }, [text, shown])
+  return shown
+}
+
+/** Phone chat: one cached element per top-level block; only a changed (last) block is parsed again. */
+const BlockMarkdown = memo(function BlockMarkdown({ text }: { text: string }) {
+  const shown = useBatchedText(text)
+  return <div className="md">{splitMarkdown(shown).map((block, i) => <Block key={i} text={block} />)}</div>
+})
+
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
+  if (useMobileWeb()) return <BlockMarkdown text={text} />
   return (
     <div className="md">
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]} components={components}>

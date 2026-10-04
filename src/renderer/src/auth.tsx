@@ -1,26 +1,20 @@
 import { createRoot } from 'react-dom/client'
 import { useEffect, useState } from 'react'
-import { Fingerprint, Smartphone } from 'lucide-react'
+import { Fingerprint } from 'lucide-react'
 import { browserSupportsWebAuthn, startAuthentication, startRegistration, type PublicKeyCredentialCreationOptionsJSON, type PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
 import { REMOTE_AUTH_ROUTES, type RemoteAuthSession, type RemoteAuthOptionsResponse, type RemoteAuthVerifyResponse } from '@shared/remote'
 import { resolveLang, setLanguage, t } from './i18n'
+import appIcon from './assets/app-icon.png'
+import { AuthScreenError, authErrorText, authRequest, checkedAuthOptions, requestPasskey } from './auth-client'
 import { trackMobileViewport } from './mobile'
 import './styles/tokens.css'
 import './styles/app.css'
 import './styles/remote.css'
 import './styles/mobile.css'
+import './styles/mobile-design.css'
 
 setLanguage(resolveLang('system'))
 trackMobileViewport()
-async function post<T>(route: string, body: unknown): Promise<T> {
-  const response = await fetch(route, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  const data = await response.json()
-  if (!response.ok) {
-    if (data.error?.code === 'invalid_pairing_code' || data.error?.code === 'pairing_expired') throw new Error(t('This pairing link has expired. Create a new one on your Mac.'))
-    throw new Error(t('Could not sign in. Try again or create a new pairing link on your Mac.'))
-  }
-  return data
-}
 function AuthScreen() {
   const pairing = location.pathname === '/pair'
   const params = new URLSearchParams(location.search)
@@ -29,7 +23,12 @@ function AuthScreen() {
   const target = pane ? `/?pane=${encodeURIComponent(pane)}` : '/'
   useEffect(() => {
     if (pairing) return
-    void fetch(REMOTE_AUTH_ROUTES.session, { credentials: 'same-origin', cache: 'no-store' }).then((response) => response.json() as Promise<RemoteAuthSession>).then((session) => { if (session.authenticated) location.replace(target) }).catch(() => undefined)
+    let alive = true
+    void authRequest<RemoteAuthSession>(REMOTE_AUTH_ROUTES.session).then(session => {
+      if (typeof session.authenticated !== 'boolean') throw new AuthScreenError('invalid_response')
+      if (alive && session.authenticated) location.replace(target)
+    }).catch(cause => { if (alive) setError(previous => previous || authErrorText(cause)) })
+    return () => { alive = false }
   }, [])
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
@@ -42,24 +41,23 @@ function AuthScreen() {
     try {
       let result: RemoteAuthVerifyResponse
       if (pairing) {
-        const { challengeId, options } = await post<RemoteAuthOptionsResponse>(REMOTE_AUTH_ROUTES.registerOptions, { code, name: name.trim() || t('My phone') })
-        const response = await startRegistration({ optionsJSON: options as PublicKeyCredentialCreationOptionsJSON })
-        result = await post<RemoteAuthVerifyResponse>(REMOTE_AUTH_ROUTES.registerVerify, { challengeId, response })
+        const { challengeId, options } = checkedAuthOptions(await authRequest<RemoteAuthOptionsResponse>(REMOTE_AUTH_ROUTES.registerOptions, { code, name: name.trim() || t('My phone') }))
+        const response = await requestPasskey(() => startRegistration({ optionsJSON: options as PublicKeyCredentialCreationOptionsJSON }))
+        result = await authRequest<RemoteAuthVerifyResponse>(REMOTE_AUTH_ROUTES.registerVerify, { challengeId, response })
       } else {
-        const { challengeId, options } = await post<RemoteAuthOptionsResponse>(REMOTE_AUTH_ROUTES.loginOptions, {})
-        const response = await startAuthentication({ optionsJSON: options as PublicKeyCredentialRequestOptionsJSON })
-        result = await post<RemoteAuthVerifyResponse>(REMOTE_AUTH_ROUTES.loginVerify, { challengeId, response })
+        const { challengeId, options } = checkedAuthOptions(await authRequest<RemoteAuthOptionsResponse>(REMOTE_AUTH_ROUTES.loginOptions, {}))
+        const response = await requestPasskey(() => startAuthentication({ optionsJSON: options as PublicKeyCredentialRequestOptionsJSON }))
+        result = await authRequest<RemoteAuthVerifyResponse>(REMOTE_AUTH_ROUTES.loginVerify, { challengeId, response })
       }
-      if (!result.ok) throw new Error(t('Could not sign in. Try again or create a new pairing link on your Mac.'))
+      if (result.ok !== true) throw new AuthScreenError('passkey')
       history.replaceState(null, '', '/login')
       location.replace(target)
     } catch (cause) {
-      if (cause instanceof Error && ['NotAllowedError', 'AbortError'].includes(cause.name)) setError(t('Passkey request cancelled. Tap the button to try again.'))
-      else setError(cause instanceof TypeError ? t('No connection') : cause instanceof Error ? cause.message : t('Could not sign in. Try again or create a new pairing link on your Mac.'))
+      setError(authErrorText(cause))
     } finally { setBusy(false) }
   }
   return <main className="remote-auth"><div className="remote-auth-content">
-    <div className="remote-auth-mark">{pairing ? <Smartphone size={32} /> : <Fingerprint size={32} />}</div>
+    <div className="remote-auth-mark"><img src={appIcon} width={80} height={80} alt="Drover" /></div>
     <h1>{pairing ? t('Pair your phone') : t('Sign in to Drover')}</h1>
     <p>{pairing ? t('Create a passkey to securely connect this phone to Drover on your Mac.') : t('Use your passkey to open your agents, conversations and tasks.')}</p>
     {pairing && <label className="remote-auth-field">{t('Device name')}<input className="input" value={name} maxLength={80} placeholder={t('My phone')} autoComplete="off" onChange={(e) => setName(e.target.value)} /></label>}
