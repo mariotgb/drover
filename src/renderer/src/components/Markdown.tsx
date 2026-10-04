@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Check, Copy } from 'lucide-react'
-import { api } from '../api'
+import { api, isRemote } from '../api'
 
 function textOf(node: ReactNode): string {
   if (node === null || node === undefined || typeof node === 'boolean') return ''
@@ -38,7 +38,10 @@ const components: Components = {
     return (
       <a
         href={href}
+        target={isRemote ? '_blank' : undefined}
+        rel={isRemote ? 'noopener noreferrer' : undefined}
         onClick={(e) => {
+          if (isRemote && href && /^https?:|^mailto:/i.test(href)) return
           e.preventDefault()
           if (href && /^https?:|^mailto:/i.test(href)) void api.openExternal(href)
         }}

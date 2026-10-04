@@ -11,7 +11,7 @@ import {
   type ThemeDef,
   type ThemePalette
 } from '@shared/themes'
-import { api } from '../api'
+import { api, isRemote } from '../api'
 import { t } from '../i18n'
 import { toast, updateSettings, useStore } from '../store'
 
@@ -137,10 +137,10 @@ export function AppearanceSettingsPane() {
             {editing === current.id ? t('Done editing') : t('Edit colors')}
           </button>
         )}
-        <button type="button" className="btn btn-sm" onClick={() => void importOne()}>
+        <button type="button" className="btn btn-sm" disabled={isRemote} onClick={() => void importOne()}>
           <Upload size={13} /> {t('Import…')}
         </button>
-        <button type="button" className="btn btn-sm" onClick={() => void exportCurrent()}>
+        <button type="button" className="btn btn-sm" disabled={isRemote} onClick={() => void exportCurrent()}>
           <Download size={13} /> {t('Export…')}
         </button>
       </div>
@@ -220,13 +220,13 @@ export function AppearanceSettingsPane() {
             <span>{g.name}</span>
           </button>
         ))}
-        <button type="button" className={clsx('bg-card', a.background.kind === 'image' && 'active')} onClick={() => void pick('image')}>
+        <button type="button" className={clsx('bg-card', a.background.kind === 'image' && 'active')} disabled={isRemote} onClick={() => void pick('image')}>
           <span className="bg-swatch file">
-            {a.background.kind === 'image' && a.background.path ? <img src={`hdfile://local/?p=${encodeURIComponent(a.background.path)}`} alt="" /> : <ImageIcon size={16} />}
+            {!isRemote && a.background.kind === 'image' && a.background.path ? <img src={`hdfile://local/?p=${encodeURIComponent(a.background.path)}`} alt="" /> : <ImageIcon size={16} />}
           </span>
           <span>{t('Image…')}</span>
         </button>
-        <button type="button" className={clsx('bg-card', a.background.kind === 'video' && 'active')} onClick={() => void pick('video')}>
+        <button type="button" className={clsx('bg-card', a.background.kind === 'video' && 'active')} disabled={isRemote} onClick={() => void pick('video')}>
           <span className="bg-swatch file">
             <Film size={16} />
           </span>

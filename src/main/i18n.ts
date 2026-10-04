@@ -7,6 +7,10 @@ type Lang = 'en' | 'ru' | 'es' | 'de' | 'zh'
 
 const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
   ru: {
+    "Remote access stopped": "Удалённый доступ остановлен",
+    "Restart Drover and pair your devices again. {error}": "Перезапустите Drover и привяжите устройства заново. {error}",
+    "Could not record access revocation. Old access may return after restart. {error}": "Не удалось записать отзыв доступа. После перезапуска старый доступ может восстановиться. {error}",
+    "Could not save settings": "Не удалось сохранить настройки",
     "Agents are still working": "Агенты ещё работают",
     "Agents working right now: {n}. They will stop together with herdr.": "Сейчас работают агенты: {n}. Они остановятся вместе с herdr.",
     "Stop herdr and quit": "Остановить herdr и выйти",
@@ -38,6 +42,10 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     '{name} needs your input': '{name} ждёт вашего ответа'
   },
   es: {
+    "Remote access stopped": "Acceso remoto detenido",
+    "Restart Drover and pair your devices again. {error}": "Reinicia Drover y vuelve a vincular tus dispositivos. {error}",
+    "Could not record access revocation. Old access may return after restart. {error}": "No se pudo guardar la revocación. El acceso anterior puede volver tras reiniciar. {error}",
+    "Could not save settings": "No se pudo guardar la configuración",
     "Agents are still working": "Los agentes siguen trabajando",
     "Agents working right now: {n}. They will stop together with herdr.": "Agentes trabajando ahora: {n}. Se detendrán junto con herdr.",
     "Stop herdr and quit": "Detener herdr y salir",
@@ -69,6 +77,10 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     '{name} needs your input': '{name} necesita tu respuesta'
   },
   de: {
+    "Remote access stopped": "Fernzugriff gestoppt",
+    "Restart Drover and pair your devices again. {error}": "Starte Drover neu und kopple deine Geräte erneut. {error}",
+    "Could not record access revocation. Old access may return after restart. {error}": "Der Zugriffsentzug konnte nicht gespeichert werden. Alter Zugriff kann nach dem Neustart zurückkehren. {error}",
+    "Could not save settings": "Einstellungen konnten nicht gespeichert werden",
     "Agents are still working": "Agenten arbeiten noch",
     "Agents working right now: {n}. They will stop together with herdr.": "Gerade arbeitende Agenten: {n}. Sie werden zusammen mit herdr beendet.",
     "Stop herdr and quit": "herdr beenden und schließen",
@@ -100,6 +112,10 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     '{name} needs your input': '{name} braucht deine Antwort'
   },
   zh: {
+    "Remote access stopped": "远程访问已停止",
+    "Restart Drover and pair your devices again. {error}": "请重启 Drover 并重新配对设备。{error}",
+    "Could not record access revocation. Old access may return after restart. {error}": "无法保存访问撤销记录。重启后原有访问权限可能恢复。{error}",
+    "Could not save settings": "无法保存设置",
     "Agents are still working": "智能体仍在工作",
     "Agents working right now: {n}. They will stop together with herdr.": "正在工作的智能体：{n} 个。它们会随 herdr 一起停止。",
     "Stop herdr and quit": "停止 herdr 并退出",

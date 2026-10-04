@@ -22,8 +22,11 @@ import { Composer } from './Composer'
 import { openMenuAt } from './Menu'
 import { AgentAvatar, IconButton, StatusDot } from './primitives'
 import { TerminalView } from './TerminalView'
+import { useMobile } from '../mobile'
+import { MobileThreadHeader, QuickReplies } from './MobileNavigation'
 
 export function ThreadView({ thread }: { thread: Thread }) {
+  const mobile = useMobile()
   const explicit = useStore((s) => s.viewMode[thread.paneId])
   const supportsChat = !!agentKindDef(thread.kind)?.transcript
   const mode = supportsChat ? explicit ?? 'chat' : 'terminal'
@@ -31,19 +34,21 @@ export function ThreadView({ thread }: { thread: Thread }) {
 
   return (
     <div className="thread-view">
-      <ThreadHeader thread={thread} mode={mode} supportsChat={supportsChat} drawerOpen={drawerOpen} />
+      {mobile ? <MobileThreadHeader thread={thread} mode={mode} supportsChat={supportsChat} /> : <ThreadHeader thread={thread} mode={mode} supportsChat={supportsChat} drawerOpen={drawerOpen} />}
       <div className="thread-body">
         {mode === 'chat' ? (
           <>
             <ChatView thread={thread} />
-            {drawerOpen && <TerminalDrawer thread={thread} />}
+            {!mobile && drawerOpen && <TerminalDrawer thread={thread} />}
+            {mobile && thread.status === 'blocked' && <QuickReplies thread={thread} />}
             <Composer thread={thread} />
           </>
         ) : (
           <>
             <div className="terminal-main">
-              <TerminalView key={thread.paneId} paneId={thread.paneId} autoFocus />
+              <TerminalView key={thread.paneId} paneId={thread.paneId} autoFocus={!mobile} />
             </div>
+            {mobile && thread.status === 'blocked' && <QuickReplies thread={thread} />}
             <Composer thread={thread} compact />
           </>
         )}

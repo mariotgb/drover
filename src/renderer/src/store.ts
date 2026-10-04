@@ -70,6 +70,7 @@ export type ViewMode = 'chat' | 'terminal'
 
 interface State {
   ready: boolean
+  mobileScreen: 'list' | 'detail'
   settings: AppSettings
   connection: ConnectionState
   snapshot: HerdrSnapshot | null
@@ -109,6 +110,7 @@ interface State {
 
 export const useStore = create<State>(() => ({
   ready: false,
+  mobileScreen: 'list',
   settings: DEFAULT_SETTINGS,
   connection: { status: 'connecting', session: 'default' },
   snapshot: null,
@@ -206,16 +208,24 @@ export async function guard<T>(p: Promise<T>, success?: string): Promise<T | und
 // settings & theme
 
 export async function updateSettings(patch: Partial<AppSettings>) {
-  if (patch.language) {
-    setLanguage(resolveLang(patch.language))
-    modelCache = null
+  const previous = get().settings
+  try {
+    if (patch.language) {
+      setLanguage(resolveLang(patch.language))
+      modelCache = null
+    }
+    const optimistic = { ...get().settings, ...patch }
+    set({ settings: optimistic })
+    applyAppearance(optimistic)
+    const next = await api.setSettings(patch)
+    set({ settings: next })
+    applyAppearance(next)
+  } catch (error) {
+    set({ settings: previous })
+    setLanguage(resolveLang(previous.language))
+    applyAppearance(previous)
+    toast('error', t('Could not save settings: {error}', { error: error instanceof Error ? error.message : String(error) }))
   }
-  const optimistic = { ...get().settings, ...patch }
-  set({ settings: optimistic })
-  applyAppearance(optimistic)
-  const next = await api.setSettings(patch)
-  set({ settings: next })
-  applyAppearance(next)
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +241,8 @@ export function viewModeFor(paneId: string): ViewMode {
   return defaultViewMode(getModel().byPane.get(paneId))
 }
 
-export function select(paneId: string | null) {
+export function select(paneId: string | null, navigate = true) {
+  if (navigate) set({ mobileScreen: paneId ? 'detail' : 'list' })
   if (get().boardWorkspace) set({ boardWorkspace: null })
   if (paneId === get().selectedPaneId) return
   set({ selectedPaneId: paneId })
@@ -241,7 +252,7 @@ export function select(paneId: string | null) {
   markSeen(paneId)
   // An agent that is already waiting for an answer: show its terminal right away.
   const t = getModel().byPane.get(paneId)
-  if (t?.status === 'blocked' && viewModeFor(paneId) === 'chat') toggleDrawer(paneId, true)
+  if (!window.matchMedia('(max-width: 480px)').matches && t?.status === 'blocked' && viewModeFor(paneId) === 'chat') toggleDrawer(paneId, true)
 }
 
 export function markSeen(paneId: string) {
@@ -387,7 +398,7 @@ function onSnapshot(snap: HerdrSnapshot) {
       model.threads.find((t) => t.pane.focused)?.paneId ??
       model.threads[0]?.paneId ??
       null
-    if (fallback !== selected) select(fallback)
+    if (fallback !== selected) select(fallback, false)
   }
 
   // Open the terminal panel when the selected agent needs an answer.
@@ -526,11 +537,11 @@ export function watchBoard(cwd: string): () => void {
 }
 
 export function openBoard(workspaceId: string) {
-  set({ boardWorkspace: workspaceId })
+  set({ boardWorkspace: workspaceId, mobileScreen: 'detail' })
 }
 
 export function closeBoard() {
-  set({ boardWorkspace: null })
+  set({ boardWorkspace: null, mobileScreen: 'list' })
 }
 
 export async function refreshModels() {

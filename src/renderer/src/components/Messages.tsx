@@ -35,6 +35,8 @@ import { formatDuration } from '../model'
 import { elementTitle, splitElementBlocks, type ParsedElement } from '../preview/elementContext'
 import { CopyButton, Markdown } from './Markdown'
 import { Spinner } from './primitives'
+import { isRemote } from '../api'
+import { remoteAttachmentUrl } from '../attachments'
 
 /** Tool titles come from the main process with a translatable key. */
 export function toolTitle(tool: TranscriptTool): string {
@@ -51,11 +53,15 @@ export function Thumbs({ images, size = 'md' }: { images: ImageRef[]; size?: 'sm
   if (!images.length) return null
   return (
     <div className={clsx('thumbs', size === 'sm' && 'thumbs-sm')}>
-      {images.map((img, i) => (
-        <button key={i} type="button" className="thumb" onClick={() => openLightbox(img.src)} title={img.path ?? t('Image')}>
-          <img src={img.src} alt="" loading="lazy" />
+      {images.map((img, i) => {
+        // Transcript parsers produce Mac-only hdfile URLs. Resolve uploaded images
+        // through the authenticated preview endpoint after the pending item settles.
+        const path = img.path ?? (img.src.startsWith('hdfile:') ? new URL(img.src).searchParams.get('p') : null)
+        const src = isRemote && path && /^remote-[0-9a-f-]+\.[a-z]+$/.test(path.split('/').pop() ?? '') ? remoteAttachmentUrl(path) : img.src
+        return <button key={i} type="button" className="thumb" onClick={() => openLightbox(src)} title={img.path ?? t('Image')}>
+          <img src={src} alt="" loading="lazy" />
         </button>
-      ))}
+      })}
     </div>
   )
 }

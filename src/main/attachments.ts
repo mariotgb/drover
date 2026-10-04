@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
-import { mkdir, readdir, rm, stat, writeFile, copyFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, stat, writeFile, copyFile, chmod } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { extname, join, basename } from 'node:path'
+import { extname, join, basename, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { promisify } from 'node:util'
 
@@ -31,7 +31,13 @@ export const CONVERT_EXTS = new Set(['heic', 'heif', 'tif', 'tiff'])
 const CONVERT_MIMES: Record<string, string> = { 'image/heic': 'heic', 'image/heif': 'heif', 'image/tiff': 'tiff' }
 
 export async function convertToJpeg(src: string, dest: string): Promise<void> {
-  await run('/usr/bin/sips', ['-s', 'format', 'jpeg', src, '--out', dest], { timeout: 60000 })
+  await mkdir(dirname(dest), { recursive: true, mode: 0o700 })
+  await chmod(dirname(dest), 0o700)
+  await writeFile(dest, '', { mode: 0o600 })
+  try {
+    await run('/usr/bin/sips', ['-s', 'format', 'jpeg', src, '--out', dest], { timeout: 60000 })
+    await chmod(dest, 0o600)
+  } catch (error) { await rm(dest, { force: true }); throw error }
 }
 
 function stamp(): string {
@@ -45,14 +51,15 @@ export async function saveImage(bytes: Uint8Array, mime: string, name?: string):
   const convert = CONVERT_MIMES[mime.toLowerCase()] ?? (CONVERT_EXTS.has(nameExt) ? nameExt : null)
   const ext = EXT_BY_MIME[mime.toLowerCase()] ?? nameExt
   const safeExt = IMAGE_EXTS.has(ext) ? ext : 'png'
-  await mkdir(ATTACHMENTS_DIR, { recursive: true })
+  await mkdir(ATTACHMENTS_DIR, { recursive: true, mode: 0o700 })
+  await chmod(ATTACHMENTS_DIR, 0o700)
   const base = name
     ? basename(name, extname(name)).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 40) || 'image'
     : 'screenshot'
   const stem = join(ATTACHMENTS_DIR, `${base}-${stamp()}-${randomBytes(3).toString('hex')}`)
   if (convert) {
     const raw = `${stem}.${convert}`
-    await writeFile(raw, bytes)
+    await writeFile(raw, bytes, { mode: 0o600 })
     try {
       await convertToJpeg(raw, `${stem}.jpg`)
     } finally {
@@ -61,7 +68,7 @@ export async function saveImage(bytes: Uint8Array, mime: string, name?: string):
     return `${stem}.jpg`
   }
   const file = `${stem}.${safeExt}`
-  await writeFile(file, bytes)
+  await writeFile(file, bytes, { mode: 0o600 })
   return file
 }
 
@@ -70,7 +77,8 @@ export async function stageFile(path: string): Promise<string> {
   const ext = extname(path)
   const convert = CONVERT_EXTS.has(ext.slice(1).toLowerCase())
   if (!convert && !/[\s'"\\]/.test(path)) return path
-  await mkdir(ATTACHMENTS_DIR, { recursive: true })
+  await mkdir(ATTACHMENTS_DIR, { recursive: true, mode: 0o700 })
+  await chmod(ATTACHMENTS_DIR, 0o700)
   const base = basename(path, ext).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 40) || 'file'
   const stem = join(ATTACHMENTS_DIR, `${base}-${stamp()}-${randomBytes(3).toString('hex')}`)
   if (convert) {
@@ -82,11 +90,14 @@ export async function stageFile(path: string): Promise<string> {
     }
   }
   await copyFile(path, `${stem}${ext}`)
+  await chmod(`${stem}${ext}`, 0o600)
   return `${stem}${ext}`
 }
 
 export async function cleanupAttachments(maxAgeDays = 30): Promise<void> {
   try {
+    await mkdir(ATTACHMENTS_DIR, { recursive: true, mode: 0o700 })
+    await chmod(ATTACHMENTS_DIR, 0o700)
     const cutoff = Date.now() - maxAgeDays * 864e5
     for (const f of await readdir(ATTACHMENTS_DIR)) {
       const p = join(ATTACHMENTS_DIR, f)

@@ -1,0 +1,86 @@
+/* The desktop layout remains authoritative above 480px. */
+@media (max-width: 480px) {
+  html { background: var(--bg); }
+  body { font-size: 16px; }
+  #root { position: fixed; top: var(--mobile-top, 0px); left: 0; width: 100%; height: var(--mobile-height, 100dvh); }
+  .app { padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+  .main { min-width: 0; }
+  .drag { -webkit-app-region: no-drag; }
+  button, .btn, .icon-btn, .send-btn, .stop-btn, .composer-tool { min-height: 44px; }
+  .icon-btn, .send-btn, .stop-btn, .composer-tool { min-width: 44px; }
+  input, textarea, select, .input { font-size: 16px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .mobile-home { display: flex; flex-direction: column; height: 100%; background: var(--bg); }
+  .mobile-home-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 4px; }
+  .mobile-home-head h1 { font-size: 25px; margin: 0; }
+  .mobile-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 16px 24px; }
+  .mobile-list h2 { font-size: 21px; margin: 4px 0 24px; }
+  .mobile-workspace { margin-top: 24px; }
+  .mobile-workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .mobile-workspace-head h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+  .mobile-thread { display: flex; align-items: center; gap: 12px; width: 100%; padding: 16px 0; background: none; border: 0; border-bottom: 1px solid var(--border); text-align: left; }
+  .mobile-thread:active { background: var(--bg-hover); }
+  .mobile-thread > svg { flex: none; color: var(--text-2); }
+  .mobile-thread-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .mobile-thread-text strong { font-size: 17px; overflow-wrap: anywhere; }
+  .mobile-thread-text > span { font-size: 14px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-thread-status { display: flex; gap: 6px; align-items: center; }
+  .mobile-tabs { display: flex; flex: none; border-top: 1px solid var(--border); padding: 6px 8px max(8px, env(safe-area-inset-bottom)); background: var(--bg); }
+  .mobile-tabs button { display: flex; flex: 1; flex-direction: column; gap: 5px; align-items: center; padding: 8px 4px; border: 0; background: none; color: var(--text-2); font-size: 12px; }
+  .mobile-tabs button[aria-current] { color: var(--accent); }
+  .mobile-empty { color: var(--text-2); font-size: 15px; line-height: 1.5; }
+  .mobile-offline { color: var(--danger); }
+  .mobile-back { align-self: flex-start; flex: none; display: flex; gap: 8px; align-items: center; border: 0; background: none; padding: 8px 12px; color: var(--accent); font-size: 15px; }
+  .mobile-thread-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; border-bottom: 1px solid var(--border); padding: 0 12px 10px; gap: 2px 8px; }
+  .mobile-thread-header .mobile-back { grid-column: 1 / -1; padding-left: 0; }
+  .mobile-thread-heading { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .mobile-thread-heading strong { font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-thread-heading > span { font-size: 13px; color: var(--text-2); display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; }
+  .mobile-thread-tools { display: flex; gap: 6px; }
+  .thread-body { min-height: 0; }
+  .chat-column { padding: 16px 12px 8px; width: 100%; }
+  .chat-scroll { overscroll-behavior: contain; }
+  .chat-column .blocked { display: none; }
+  .md { overflow-wrap: anywhere; }
+  .md pre { max-width: 100%; overflow: auto; }
+  .composer-wrap, .composer-wrap.compact { flex: none; padding: 8px 10px max(10px, env(safe-area-inset-bottom)); }
+  .composer { padding: 8px; }
+  .composer-input::placeholder, .input::placeholder { color: var(--text-2); }
+  .board-foot, .task-assignee.dim { color: var(--text-2); }
+  .composer-input { font-size: 16px; line-height: 1.45; max-height: min(160px, 25dvh); padding: 8px 4px; }
+  .composer-bar { gap: 4px; }
+  .composer-left { flex: 1; min-width: 0; gap: 2px; }
+  .composer-chip { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .composer-chip.link, .context-meter, .composer-right .limit-chip { display: none; }
+  .model-chip .chip-dim { overflow: hidden; text-overflow: ellipsis; }
+  .model-menu { position: fixed; left: 12px; right: 12px; width: auto; max-width: calc(100vw - 24px); bottom: 110px; max-height: 45dvh; }
+  .mobile-quick-replies { flex: none; padding: 10px 12px; background: var(--accent-soft); border-top: 1px solid var(--border); font-size: 14px; }
+  .mobile-quick-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+  .mobile-quick-buttons .btn { font-size: 16px; min-height: 46px; }
+  .terminal-main { padding: 4px; }
+  .board-head { height: auto; min-height: 58px; padding: 8px 12px; gap: 4px; }
+  .board-title { flex-wrap: wrap; gap: 6px; }
+  .board-count { font-size: 12px; width: 100%; background: none; padding: 0; color: var(--text-2); }
+  .board-actions { flex: none; }
+  .board-body { padding: 14px 12px 24px; }
+  .board-add { flex-wrap: wrap; }
+  .board-add .input:first-child { flex-basis: 100%; }
+  .board-add .input.select { flex: 1; min-width: 0; width: auto; }
+  .board-columns { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .board-agent-list { grid-template-columns: minmax(0, 1fr); }
+  .task-more { opacity: 1; min-width: 44px; }
+  .task-title { overflow-wrap: anywhere; }
+  .board-foot { padding-bottom: env(safe-area-inset-bottom); }
+  .overlay { top: var(--mobile-top, 0px); bottom: auto; height: var(--mobile-height, 100dvh); padding: 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .modal { width: 100%; max-height: 100%; }
+  .modal-body { padding: 8px 12px 16px; }
+  .settings { display: flex; flex-direction: column; }
+  .settings-nav { display: flex; flex-wrap: wrap; width: 100%; padding: 0 0 12px; }
+  .settings-pane { padding: 0; min-width: 0; }
+  .setting-row { flex-wrap: wrap; gap: 12px; }
+  .setting-control { max-width: 100%; }
+  .toasts { right: 10px; left: 10px; bottom: max(12px, env(safe-area-inset-bottom)); width: auto; }
+  .welcome-inner { padding: 20px; }
+  .welcome-inner h1 { font-size: 26px; }
+  .welcome-actions { flex-wrap: wrap; }
+}

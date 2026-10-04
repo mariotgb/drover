@@ -1,7 +1,7 @@
 import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
-import type { Plugin } from 'vite'
+import { build as buildWeb, type Plugin } from 'vite'
 
 // Strict CSP for packaged builds only (the dev server needs inline scripts).
 const CSP = [
@@ -46,7 +46,31 @@ export default defineConfig({
         '@': resolve(__dirname, 'src/renderer/src')
       }
     },
-    plugins: [react(), cspPlugin()],
+    plugins: [react(), cspPlugin(), {
+      name: 'drover-remote-renderers',
+      apply: 'build',
+      async closeBundle() {
+        const aliases = { '@shared': resolve(__dirname, 'src/shared'), '@': resolve(__dirname, 'src/renderer/src') }
+        await buildWeb({
+          configFile: false,
+          root: resolve(__dirname, 'src/renderer/web'),
+          base: '/',
+          publicDir: resolve(__dirname, 'src/renderer/public'),
+          resolve: { alias: aliases },
+          plugins: [react()],
+          build: { outDir: resolve(__dirname, 'out/web'), emptyOutDir: true }
+        })
+        await buildWeb({
+          configFile: false,
+          root: resolve(__dirname, 'src/renderer/auth'),
+          base: '/auth/',
+          publicDir: resolve(__dirname, 'src/renderer/auth/public'),
+          resolve: { alias: aliases },
+          plugins: [react()],
+          build: { outDir: resolve(__dirname, 'out/web/auth'), emptyOutDir: true }
+        })
+      }
+    }],
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'src/renderer/index.html')

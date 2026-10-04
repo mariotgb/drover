@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { ArrowUp, ChevronDown, Crosshair, FileText, FolderOpen, Paperclip, Square, X } from 'lucide-react'
+import { ArrowUp, Camera, ChevronDown, ClipboardPaste, Crosshair, FileText, FolderOpen, ImagePlus, Paperclip, Square, X } from 'lucide-react'
+import { REMOTE_ATTACHMENT_ACCEPT } from '@shared/remote'
+import { remoteAttachmentUrl, uploadAttachment } from '../attachments'
 import { agentKindDef } from '@shared/agents'
 import { supportsModels } from '@shared/models'
 import { t } from '../i18n'
-import { api, humanizeError } from '../api'
+import { useRemoteConnection } from '../remote-api'
+import { api, humanizeError, isRemote } from '../api'
 import { interrupt } from '../actions'
 import { formatTokens, shortPath, type Thread } from '../model'
 import {
@@ -61,10 +64,11 @@ const SLASH: Record<string, { cmd: string; desc: string }[]> = {
 let attSeq = 0
 
 function fileUrl(path: string) {
-  return `hdfile://local/?p=${encodeURIComponent(path)}`
+  return isRemote ? remoteAttachmentUrl(path) : `hdfile://local/?p=${encodeURIComponent(path)}`
 }
 
 export function Composer({ thread, compact }: { thread: Thread; compact?: boolean }) {
+  const remoteConnection = useRemoteConnection()
   const paneId = thread.paneId
   const draft = useStore((s) => s.drafts[paneId])
   const sendWithEnter = useStore((s) => s.settings.sendWithEnter)
@@ -78,6 +82,11 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   const [slashIdx, setSlashIdx] = useState(0)
   const [histPos, setHistPos] = useState(-1)
   const [sending, setSending] = useState(false)
+  const [uploading, setUploading] = useState(0)
+  const [attachOpen, setAttachOpen] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const photoRef = useRef<HTMLInputElement>(null)
+  const cameraRef = useRef<HTMLInputElement>(null)
   const def = agentKindDef(thread.kind)
   const [modelOpen, setModelOpen] = useState(false)
   const catalog = useStore((s) => s.models)
@@ -96,7 +105,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   useEffect(() => {
     setHistPos(-1)
     // In terminal mode the terminal itself takes the keyboard.
-    if (compact) return
+    if (compact || window.matchMedia('(max-width: 480px)').matches) return
     const t = setTimeout(() => taRef.current?.focus(), 40)
     return () => clearTimeout(t)
   }, [paneId, compact])
@@ -131,6 +140,17 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
 
   const addFiles = useCallback(
     async (files: File[]) => {
+      if (isRemote) {
+        setAttachOpen(false)
+        setUploading((n) => n + 1)
+        try {
+          for (const file of files) {
+            try { addAttachments([await uploadAttachment(file)]) }
+            catch (error) { toast('error', error instanceof Error ? error.message : t('Could not upload {name}. Try again.', { name: file.name })) }
+          }
+        } finally { setUploading((n) => n - 1) }
+        return
+      }
       const atts: Attachment[] = []
       const paths: string[] = []
       for (const f of files) {
@@ -150,6 +170,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   )
 
   const pickFiles = useCallback(async () => {
+    if (isRemote) { setAttachOpen((open) => !open); return }
     const paths = await api.pickFiles()
     const atts: Attachment[] = []
     const others: string[] = []
@@ -196,7 +217,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   const send = async () => {
     const body = text.trim()
     if (!body && !attachments.length && !elements.length) return
-    if (sending || switchingModel) return
+    if (sending || switchingModel || uploading || (isRemote && remoteConnection !== 'connected')) return
     setSending(true)
     const images = attachments.filter((a) => a.isImage)
     // Picked preview elements: their screenshots go first, then other images,
@@ -204,7 +225,8 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
     let shot = 0
     const blocks = elements.map((el) => elementBlock(el, el.screenshot ? ++shot : undefined))
     const imagePaths = [...elements.filter((el) => el.screenshot).map((el) => el.screenshot!), ...images.map((a) => a.path)]
-    const fullText = [blocks.join('\n\n'), body].filter(Boolean).join('\n\n')
+    const filePaths = attachments.filter((a) => !a.isImage).map((a) => /\s/.test(a.path) ? `"${a.path}"` : a.path).join(' ')
+    const fullText = [blocks.join('\n\n'), body, filePaths].filter(Boolean).join('\n\n')
     const pendingId = `p${Date.now()}`
     const showPending = !!def?.transcript && !thread.isShell
     if (showPending) {
@@ -279,7 +301,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
   }
 
   // While Drover drives the agent's /model menu, typed text would land in that menu.
-  const canSend = !switchingModel && (!!text.trim() || attachments.length > 0 || elements.length > 0)
+  const canSend = (!isRemote || remoteConnection === 'connected') && !uploading && !switchingModel && (!!text.trim() || attachments.length > 0 || elements.length > 0)
   const pct = meta?.contextTokens && meta.contextWindow ? Math.min(100, Math.round((meta.contextTokens / meta.contextWindow) * 100)) : null
   const placeholder = thread.isShell
     ? t('Run a command in this terminal…')
@@ -308,6 +330,31 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
       }}
     >
       <div className={clsx('composer', dragging && 'dragging')}>
+        {isRemote && <>
+          <input hidden ref={fileRef} type="file" accept={REMOTE_ATTACHMENT_ACCEPT} multiple onChange={(e) => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = '' }} />
+          <input hidden ref={photoRef} type="file" accept="image/*" multiple onChange={(e) => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = '' }} />
+          <input hidden ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={(e) => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = '' }} />
+          {attachOpen && <div className="remote-attachment-picker" aria-label={t('Attach images or files')}>
+            <button type="button" onClick={() => { setAttachOpen(false); photoRef.current?.click() }}><ImagePlus size={18} />{t('Photo library')}</button>
+            <button type="button" onClick={() => { setAttachOpen(false); cameraRef.current?.click() }}><Camera size={18} />{t('Take photo')}</button>
+            <button type="button" onClick={() => { setAttachOpen(false); fileRef.current?.click() }}><FileText size={18} />{t('Choose files')}</button>
+            <button type="button" onClick={async () => {
+              setAttachOpen(false)
+              try {
+                const items = await navigator.clipboard.read()
+                const files: File[] = []
+                for (const item of items) {
+                  const mime = item.types.find((type) => type.startsWith('image/'))
+                  if (mime) files.push(new File([await item.getType(mime)], `screenshot.${mime.split('/')[1] === 'jpeg' ? 'jpg' : mime.split('/')[1]}`, { type: mime }))
+                }
+                if (files.length) await addFiles(files)
+                else toast('info', t('Paste an image into the message field.'))
+              } catch { toast('info', t('Paste an image into the message field.')) }
+            }}><ClipboardPaste size={18} />{t('Paste image')}</button>
+            <span>{t('Images and text files · up to 20 MB each')}</span>
+          </div>}
+          {!!uploading && <div className="remote-upload-status" role="status"><Spinner size={14} />{t('Uploading attachments…')}</div>}
+        </>}
         {slashItems.length > 0 && (
           <div className="slash-menu">
             {slashItems.map((c, i) => (
@@ -366,6 +413,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
         <textarea
           ref={taRef}
           className="composer-input"
+          aria-label={placeholder}
           rows={1}
           value={text}
           placeholder={placeholder}
@@ -379,7 +427,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
         />
         <div className="composer-bar">
           <div className="composer-left">
-            <button type="button" className="composer-tool" title={t('Attach images or files (⌘⇧A)')} onClick={() => void pickFiles()}>
+            <button type="button" className="composer-tool" title={isRemote ? t('Attach images or files') : t('Attach images or files (⌘⇧A)')} aria-expanded={isRemote ? attachOpen : undefined} disabled={isRemote && (remoteConnection !== 'connected' || !!uploading)} onClick={() => void pickFiles()}>
               <Paperclip size={16} />
             </button>
             {supportsModels(thread.kind) && !thread.isShell ? (
@@ -402,7 +450,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
                 {meta?.model ? <span className="chip-dim"> · {meta.model.replace(/^claude-/, '')}</span> : null}
               </span>
             )}
-            {thread.cwd && (
+            {!isRemote && thread.cwd && (
               <button type="button" className="composer-chip link" title={t('Reveal in Finder')} onClick={() => void api.openPath(thread.cwd!)}>
                 <FolderOpen size={12} /> {shortPath(thread.cwd, home).split('/').slice(-2).join('/')}
               </button>

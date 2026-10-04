@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import clsx from 'clsx'
 import { Bot, FolderOpen, PanelLeftOpen, Play, RotateCw, X } from 'lucide-react'
-import { api } from '../api'
+import { api, isRemote } from '../api'
 import { t } from '../i18n'
 import { GRADIENTS } from '@shared/themes'
 import { interrupt, newTerminalTab, openNewAgent, openSettings } from '../actions'
@@ -34,6 +34,8 @@ import { PreviewPanel } from './PreviewPanel'
 import { TaskBoardView } from './TaskBoardView'
 import { BroadcastDialog, TeamDialog } from './TeamDialogs'
 import appIcon from '../assets/app-icon.png'
+import { MobileAgentList, MobileBack } from './MobileNavigation'
+import { useMobile } from '../mobile'
 
 function handleCommand(cmd: string) {
   const t = selectedThread()
@@ -101,6 +103,8 @@ function handleCommand(cmd: string) {
 }
 
 export function App() {
+  const mobile = useMobile()
+  const mobileScreen = useStore((s) => s.mobileScreen)
   const ready = useStore((s) => s.ready)
   const sidebarHidden = useStore((s) => s.sidebarHidden)
   const dialog = useStore((s) => s.dialog)
@@ -128,19 +132,24 @@ export function App() {
   return (
     <div key={lang} className={clsx('app', sidebarHidden && 'sidebar-hidden', hasBg && 'has-bg')}>
       <AppBackground />
-      {!sidebarHidden && <Sidebar />}
+      {!mobile && !sidebarHidden && <Sidebar />}
       <main className="main">
-        {!connected ? (
+        {mobile && mobileScreen === 'list' ? (
+          <MobileAgentList />
+        ) : !connected ? (
           <ConnectionScreen />
         ) : boardGroup ? (
-          <TaskBoardView key={boardGroup.workspace.workspace_id} group={boardGroup} />
+          <>
+            {mobile && <MobileBack />}
+            <TaskBoardView key={boardGroup.workspace.workspace_id} group={boardGroup} />
+          </>
         ) : thread ? (
           <ThreadView key={thread.paneId} thread={thread} />
         ) : (
-          <Welcome />
+          mobile ? <MobileAgentList /> : <Welcome />
         )}
       </main>
-      {connected && previewGroup && <PreviewPanel key={previewGroup.workspace.workspace_id} group={previewGroup} />}
+      {!mobile && connected && previewGroup && <PreviewPanel key={previewGroup.workspace.workspace_id} group={previewGroup} />}
       {dialog?.type === 'new-agent' && <NewAgentDialog preset={dialog} />}
       {dialog?.type === 'settings' && <SettingsDialog initialTab={dialog.tab} />}
       {dialog?.type === 'prompt' && <PromptDialog d={dialog} />}
@@ -157,7 +166,7 @@ export function App() {
 
 function AppBackground() {
   const bg = useStore((s) => s.settings.appearance.background)
-  if (bg.kind === 'none') return null
+  if (bg.kind === 'none' || (isRemote && (bg.kind === 'image' || bg.kind === 'video'))) return null
   const src = bg.path ? `hdfile://local/?p=${encodeURIComponent(bg.path)}` : undefined
   const gradient = GRADIENTS.find((g) => g.id === bg.gradient)
   return (

@@ -31,6 +31,11 @@ export class TerminalBridges {
 
   constructor(private host: BridgeHost) {}
 
+  /** Reloading/closing the desktop window must not tear down browser terminals. */
+  closeLocal(): void {
+    for (const id of this.bridges.keys()) if (!id.startsWith('remote:')) this.close(id)
+  }
+
   open(id: string, target: string, cols: number, rows: number, observeOnly = false): { ok: boolean; error?: string } {
     this.close(id)
     const herdr = this.host.herdrPath()

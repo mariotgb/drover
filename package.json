@@ -1,7 +1,7 @@
 {
   "name": "drover",
   "productName": "Drover",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Desktop app for herdr: run and chat with coding agents without the terminal",
   "license": "MIT",
   "author": "mariotgb",
@@ -58,8 +58,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^5.2.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-unicode11": "^0.9.0",
@@ -81,5 +84,12 @@
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "zustand": "^5.0.15"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
+    "@simplewebauthn/server": "^14.0.3",
+    "qrcode": "^1.5.4",
+    "web-push": "^3.6.7",
+    "ws": "^8.22.0"
   }
 }

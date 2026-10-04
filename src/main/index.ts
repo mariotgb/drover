@@ -8,8 +8,7 @@ import {
   Notification,
   protocol,
   screen,
-  shell,
-  type IpcMainInvokeEvent
+  shell
 } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -44,6 +43,10 @@ import { defaultPaths, installStatusline, statuslineState, uninstallStatusline }
 import { SettingsStore } from './settings'
 import { TerminalBridges } from './terminal'
 import { TranscriptManager } from './transcripts/manager'
+import { REMOTE_WEB_DIRECTORY, type RemoteAccessSettings } from '@shared/remote'
+import { testTrustedProxy } from './remote/security'
+import { RpcHandlers, type RpcHandler } from './remote/rpc'
+import { RemoteServer, validateRemoteSettings } from './remote/server'
 
 app.setName('Drover')
 
@@ -68,9 +71,16 @@ const service = new HerdrService({
 
 let win: BrowserWindow | null = null
 let selectedPaneId: string | null = null
+const rpcHandlers = new RpcHandlers()
+let remote: RemoteServer | null = null
+settings.onSaveError((error) => {
+  void remote?.persistenceFailed(error)
+  void app.whenReady().then(() => dialog.showErrorBox(mt('Could not save settings'), error.message))
+})
 
 function send(channel: string, ...args: unknown[]) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args)
+  remote?.broadcast(channel, args)
 }
 
 const bridges = new TerminalBridges({
@@ -110,6 +120,9 @@ service.on('snapshot', (s) => {
 })
 
 service.on('status-change', ({ pane, from, to, name }) => {
+  // Push is independent of native notification preferences/window focus.
+  void remote?.agentStatusChanged({ pane, from, to, name }, service.snapshot, service.sessionName)
+    .catch(() => console.warn('[web-push] unable to dispatch notification'))
   if (pane.agent === 'claude' && from === 'working') void limits.refreshClaude()
   const s = settings.get()
   if (!s.notifications || !Notification.isSupported()) return
@@ -206,7 +219,7 @@ function createWindow() {
   win.once('ready-to-show', () => (BACKGROUND ? win?.showInactive() : win?.show()))
   win.on('close', saveWindowState)
   win.on('closed', () => {
-    bridges.closeAll()
+    bridges.closeLocal()
     win = null
   })
   win.on('focus', () => {
@@ -225,8 +238,8 @@ function createWindow() {
       if (/^https?:/i.test(url)) void shell.openExternal(url)
     }
   })
-  win.webContents.on('render-process-gone', () => bridges.closeAll())
-  win.webContents.on('did-start-loading', () => bridges.closeAll())
+  win.webContents.on('render-process-gone', () => bridges.closeLocal())
+  win.webContents.on('did-start-loading', () => bridges.closeLocal())
 
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -247,8 +260,14 @@ function showWindow() {
 // ---------------------------------------------------------------------------
 // IPC
 
-type Handler = (e: IpcMainInvokeEvent, ...args: any[]) => unknown // eslint-disable-line @typescript-eslint/no-explicit-any
-const handle = (channel: string, fn: Handler) => ipcMain.handle(channel, fn)
+const handle = (channel: string, fn: RpcHandler) => {
+  rpcHandlers.register(channel, fn)
+  ipcMain.handle(channel, (_event, ...args) => rpcHandlers.invoke(channel, {}, args))
+}
+const listen = (channel: string, fn: RpcHandler) => {
+  rpcHandlers.register(channel, fn)
+  ipcMain.on(channel, (_event, ...args) => rpcHandlers.invoke(channel, {}, args))
+}
 
 function wrap<T>(p: Promise<T>): Promise<{ ok: true; result: T } | { ok: false; code: string; error: string }> {
   return p.then(
@@ -285,9 +304,13 @@ function registerIpc() {
     appVersion: app.getVersion()
   }))
 
-  handle('settings:set', (_e, patch: Partial<AppSettings>) => {
+  handle('settings:set', async (_e, patch: Partial<AppSettings & RemoteAccessSettings>) => {
+    const remotePatch = Object.fromEntries(Object.entries(patch).filter(([key]) => key.startsWith('remote')))
+    if (Object.keys(remotePatch).length) validateRemoteSettings(remotePatch, settings.get())
     const prevSession = settings.get().session
     const next = settings.set(patch)
+    try { settings.flush() }
+    catch (error) { await remote?.persistenceFailed(error, patch.remoteEnabled === false); throw error }
     applyTheme(next)
     if (patch.language) {
       setMainLanguage(next.language)
@@ -299,8 +322,20 @@ function registerIpc() {
       transcripts.dispose()
       void service.start(next.session)
     }
+    if (Object.keys(remotePatch).length) await remote?.sync()
     return next
   })
+
+  handle('remote:status', () => remote!.status())
+  handle('remote:configure', (_e, patch: Partial<RemoteAccessSettings>) => remote!.configure(patch))
+  handle('remote:pair-code', () => remote!.pairingCode())
+  handle('remote:devices', () => remote!.devices())
+  handle('remote:revoke', (_e, id: string) => remote!.revoke(id))
+  handle('push:key', () => remote!.pushPublicKey())
+  handle('push:status', (ctx) => remote!.pushStatus(ctx.remote?.deviceId))
+  handle('push:subscribe', (ctx, subscription: unknown) => remote!.savePushSubscription(ctx.remote?.deviceId, subscription))
+  handle('push:unsubscribe', (ctx, endpoint?: string) => remote!.deletePushSubscription(ctx.remote?.deviceId, endpoint))
+  handle('push:preferences', (ctx, patch) => remote!.setPushPreferences(ctx.remote?.deviceId, patch))
 
   handle('limits:get', () => limits.state)
   handle('limits:refresh', async () => {
@@ -351,7 +386,7 @@ function registerIpc() {
     READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } : sendPrompt(service, req)
   )
   handle('tasks:watch', (_e, cwd: string) => (TaskBoards.valid(cwd) ? boards.watch(cwd) : null))
-  ipcMain.on('tasks:unwatch', (_e, cwd: string) => TaskBoards.valid(cwd) && boards.unwatch(cwd))
+  listen('tasks:unwatch', (_e, cwd: string) => TaskBoards.valid(cwd) && boards.unwatch(cwd))
   const boardWrite = async (cwd: unknown, fn: (cwd: string) => Promise<unknown>) => {
     if (READONLY) return { ok: false, error: 'read-only mode' }
     if (!TaskBoards.valid(cwd)) return { ok: false, error: 'bad project folder' }
@@ -390,18 +425,18 @@ function registerIpc() {
   })
 
   handle('term:open', (_e, id: string, target: string, cols: number, rows: number) => bridges.open(id, target, cols, rows, READONLY))
-  ipcMain.on('term:input', (_e, id: string, text: string) => bridges.input(id, text))
-  ipcMain.on('term:input-bytes', (_e, id: string, b64: string) => bridges.inputBytes(id, b64))
-  ipcMain.on('term:resize', (_e, id: string, cols: number, rows: number) => bridges.resize(id, cols, rows))
-  ipcMain.on('term:scroll', (_e, id: string, dir: 'up' | 'down', lines: number, source?: 'wheel' | 'page_key') =>
+  listen('term:input', (_e, id: string, text: string) => bridges.input(id, text))
+  listen('term:input-bytes', (_e, id: string, b64: string) => bridges.inputBytes(id, b64))
+  listen('term:resize', (_e, id: string, cols: number, rows: number) => bridges.resize(id, cols, rows))
+  listen('term:scroll', (_e, id: string, dir: 'up' | 'down', lines: number, source?: 'wheel' | 'page_key') =>
     bridges.scroll(id, dir, lines, source)
   )
-  ipcMain.on('term:close', (_e, id: string) => bridges.close(id))
+  listen('term:close', (_e, id: string) => bridges.close(id))
 
   handle('transcript:subscribe', (_e, paneId: string) => transcripts.subscribe(paneId))
-  ipcMain.on('transcript:unsubscribe', (_e, paneId: string) => transcripts.unsubscribe(paneId))
+  listen('transcript:unsubscribe', (_e, paneId: string) => transcripts.unsubscribe(paneId))
 
-  ipcMain.on('app:selected-pane', (_e, paneId: string | null) => {
+  listen('app:selected-pane', (_e, paneId: string | null) => {
     selectedPaneId = paneId
   })
 
@@ -517,6 +552,21 @@ app.whenReady().then(() => {
   applyTheme(settings.get())
   setMainLanguage(settings.get().language)
   registerIpc()
+  remote = new RemoteServer({
+    webRoot: join(__dirname, '..', REMOTE_WEB_DIRECTORY), userData, handlers: rpcHandlers,
+    settings: () => {
+      const { remoteEnabled, remotePort, remotePublicUrl, remoteBehindProxy } = settings.get()
+      return { remoteEnabled, remotePort, remotePublicUrl, ...(remoteBehindProxy === undefined ? {} : { remoteBehindProxy }) }
+    },
+    saveSettings: (patch) => { settings.set(patch); settings.flush() },
+    trustedProxy: testTrustedProxy(process.env),
+    statusChanged: (status) => send('remote:status', status),
+    persistenceWarning: (error, poisonSaved) => dialog.showErrorBox(mt('Remote access stopped'), mt(poisonSaved
+      ? 'Restart Drover and pair your devices again. {error}'
+      : 'Could not record access revocation. Old access may return after restart. {error}', { error })),
+    pushTitle: (name, kind) => mt(kind === 'finished' ? '{name} finished' : '{name} needs your input', { name })
+  })
+  void remote.sync()
   rebuildMenu()
   createWindow()
   void service.start(settings.get().session)
@@ -557,7 +607,11 @@ app.on('before-quit', (e) => {
   }
   quitDecided = true
   saveWindowState()
-  settings.flush()
+  try { settings.flush() }
+  catch (error) {
+    dialog.showErrorBox(mt('Could not save settings'), error instanceof Error ? error.message : String(error))
+  }
+  void remote?.stop()
   bridges.closeAll()
   transcripts.dispose()
   limits.stop()

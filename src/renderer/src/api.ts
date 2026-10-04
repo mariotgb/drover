@@ -1,7 +1,9 @@
 import { t } from './i18n'
 import type { DroverApi } from '../../preload/api'
+import type { RemoteManagementApi, RemotePushApi } from '@shared/remote'
 
-export const api: DroverApi = window.herdr
+export const api: DroverApi & Partial<RemoteManagementApi & RemotePushApi> = window.api ?? window.herdr
+export const isRemote = !!window.droverRemote
 
 export class CallError extends Error {
   constructor(

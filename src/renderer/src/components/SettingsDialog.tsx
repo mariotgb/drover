@@ -2,7 +2,9 @@ import { useEffect, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { RefreshCw } from 'lucide-react'
 import type { AppSettings, ClaudeStatuslineState, HerdrSessionInfo } from '@shared/types'
-import { api } from '../api'
+import { api, isRemote } from '../api'
+import { RemoteAccessSettings } from './RemoteAccessSettings'
+import { PushSettings } from './PushSettings'
 import { LANGUAGES, t, type LangSetting } from '../i18n'
 import { toast, updateSettings, useStore } from '../store'
 import { AppearanceSettingsPane } from './AppearanceSettings'
@@ -10,20 +12,22 @@ import { Modal } from './Modal'
 import { Spinner } from './primitives'
 import { RolesSettingsPane } from './RolesSettings'
 import appIcon from '../assets/app-icon.png'
+import { logoutRemote } from '../remote-session'
 
 export function SettingsDialog({ initialTab }: { initialTab?: string }) {
   const [tab, setTab] = useState(initialTab ?? 'general')
+  const [signingOut, setSigningOut] = useState(false)
   const close = () => useStore.setState({ dialog: null })
   const tabs = [
     { id: 'general', label: t('General') },
     { id: 'appearance', label: t('Appearance') },
     { id: 'roles', label: t('Roles') },
     { id: 'notifications', label: t('Notifications') },
-    { id: 'herdr', label: 'herdr' },
+    ...(!isRemote ? [{ id: 'remote', label: t('Remote access') }, { id: 'herdr', label: 'herdr' }] : []),
     { id: 'integrations', label: t('Integrations') },
     { id: 'plugins', label: t('Plugins') },
     { id: 'about', label: t('About') }
-  ]
+  ].filter((x) => !isRemote || ['general', 'appearance', 'notifications'].includes(x.id))
   return (
     <Modal title={t('Settings')} onClose={close} width={780}>
       <div className="settings">
@@ -33,12 +37,18 @@ export function SettingsDialog({ initialTab }: { initialTab?: string }) {
               {x.label}
             </button>
           ))}
+          {isRemote && <button type="button" disabled={signingOut} onClick={async () => {
+            setSigningOut(true)
+            try { await logoutRemote() }
+            catch (error) { toast('error', error instanceof Error ? error.message : t('Could not sign out. Try again.')); setSigningOut(false) }
+          }}>{signingOut ? t('Signing out…') : t('Sign out')}</button>}
         </nav>
         <div className="settings-pane">
+          {tab === 'remote' && <RemoteAccessSettings />}
           {tab === 'general' && <General />}
           {tab === 'appearance' && <AppearanceSettingsPane />}
           {tab === 'roles' && <RolesSettingsPane />}
-          {tab === 'notifications' && <Notifications />}
+          {tab === 'notifications' && (isRemote ? <PushSettings /> : <Notifications />)}
           {tab === 'herdr' && <HerdrTab />}
           {tab === 'integrations' && <Integrations />}
           {tab === 'plugins' && <Plugins />}
@@ -113,7 +123,7 @@ function General() {
       <Row label={t('Show plan usage limits')} hint={t('5-hour and weekly limits in the sidebar and composer. Read from local files only — the app never uses your tokens or calls any API.')}>
         <Toggle value={s.showLimits} onChange={(v) => set({ showLimits: v })} />
       </Row>
-      {s.showLimits && <ClaudeLimitsRow />}
+      {!isRemote && s.showLimits && <ClaudeLimitsRow />}
     </div>
   )
 }

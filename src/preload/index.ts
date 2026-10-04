@@ -1,4 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
+import type {
+  RemoteAccessSettings, RemoteDevice, RemotePairingCode, RemoteStatus,
+  RemotePushStatus, RemotePushPreferences, RemotePushSubscription
+} from '@shared/remote'
 
 type Listener = (...args: any[]) => void // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -11,6 +15,16 @@ function on(channel: string, fn: Listener): () => void {
 const api = {
   init: () => ipcRenderer.invoke('app:init'),
   setSettings: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
+  remoteStatus: (): Promise<RemoteStatus> => ipcRenderer.invoke('remote:status'),
+  setRemoteAccess: (patch: Partial<RemoteAccessSettings>): Promise<RemoteStatus> => ipcRenderer.invoke('remote:configure', patch),
+  createRemotePairingCode: (): Promise<RemotePairingCode> => ipcRenderer.invoke('remote:pair-code'),
+  remoteDevices: (): Promise<RemoteDevice[]> => ipcRenderer.invoke('remote:devices'),
+  revokeRemoteDevice: (id: string): Promise<void> => ipcRenderer.invoke('remote:revoke', id),
+  pushPublicKey: (): Promise<string> => ipcRenderer.invoke('push:key'),
+  pushStatus: (): Promise<RemotePushStatus> => ipcRenderer.invoke('push:status'),
+  savePushSubscription: (subscription: RemotePushSubscription): Promise<RemotePushStatus> => ipcRenderer.invoke('push:subscribe', subscription),
+  deletePushSubscription: (endpoint?: string): Promise<RemotePushStatus> => ipcRenderer.invoke('push:unsubscribe', endpoint),
+  setPushPreferences: (patch: Partial<RemotePushPreferences>): Promise<RemotePushStatus> => ipcRenderer.invoke('push:preferences', patch),
 
   request: (method: string, params?: unknown, timeoutMs?: number) =>
     ipcRenderer.invoke('herdr:request', method, params ?? {}, timeoutMs),
