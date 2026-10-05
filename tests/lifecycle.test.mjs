@@ -26,7 +26,7 @@ test('dirty marker survives abrupt termination, next start detects it, clean qui
   assert.ok(events.some(e => e.event === 'normal-exit' && e.reason === 'user-quit-keep-herdr'))
 })
 
-test('fatal exit cannot stop herdr or be reported clean by Electron quit event', t => {
+test('fatal exit cannot use the in-process stop path or be reported clean by Electron quit event', t => {
   const dir = mkdtempSync(join(tmpdir(), 'drover-lifecycle-case-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const journal = new m.LifecycleJournal(dir, '0.7.2', 123)

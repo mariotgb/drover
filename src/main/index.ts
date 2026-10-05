@@ -40,6 +40,7 @@ import { addTask, ensureBoard, removeTask, TaskBoards, updateTask, normalizeStat
 import { loginEnv, setEnvProbeLogger, which } from './env'
 import { HerdrService } from './herdr/service'
 import { quitPlan, stopServerSync } from './herdr/cli'
+import { ServerWatchdog } from './herdr/watchdog'
 import { LimitsService } from './limits'
 import { buildMenu } from './menu'
 import { mt, setMainLanguage } from './i18n'
@@ -87,7 +88,7 @@ process.on('uncaughtExceptionMonitor', (error) => lifecycle.abnormal(`uncaughtEx
 process.on('unhandledRejection', (error) => lifecycle.record('unhandled-rejection', { error: String(error) }))
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, () => {
   lifecycle.abnormal(signal)
-  // Signals are not a user-requested quit and must preserve the herdr server.
+  // The watchdog applies stopServerOnQuit after an abnormal exit too.
   app.exit(128 + { SIGTERM: 15, SIGINT: 2, SIGHUP: 1 }[signal])
 })
 let attachedSession: string | null = null
@@ -97,6 +98,18 @@ if (process.env.DROVER_SESSION) settings.set({ session: process.env.DROVER_SESSI
 const service = new HerdrService({
   logDir: join(userData, 'logs'),
   autoStartServer: () => settings.get().autoStartServer
+})
+const serverWatchdog = new ServerWatchdog(join(userData, 'logs'), (event, details) => lifecycle.record(event, details))
+function syncServerWatchdog(): void {
+  const enabled = ownsInstanceLock && process.env.DROVER_READONLY !== '1' && settings.get().stopServerOnQuit
+  const target = (attachedSession === service.sessionName || service.connection.status === 'starting-server') && service.herdrPath && service.connection.socketPath
+    ? { session: service.sessionName, socketPath: service.connection.socketPath, herdrPath: service.herdrPath, env: service.env, generation: service.connectionGeneration }
+    : null
+  serverWatchdog.update(enabled, target)
+}
+settings.onChange(() => {
+  if (settings.get().session !== service.sessionName) serverWatchdog.disarm()
+  else syncServerWatchdog()
 })
 const codexDaemon = new CodexDaemon(service)
 const codexIntegration = new CodexIntegration(service, codexDaemon)
@@ -177,6 +190,10 @@ limits.on('limits', (s) => send('limits:update', s))
 service.on('connection', (c) => {
   if (c.status === 'connected') attachedSession = c.session
   else if (c.session !== attachedSession) attachedSession = null
+  // Keep the old watcher during a same-session reconnect; replace it once the
+  // fresh login environment is resolved. A new session disarms the old owner.
+  if (c.status !== 'connecting') syncServerWatchdog()
+  else if (c.session !== attachedSession) serverWatchdog.disarm()
   lifecycle.record('herdr-connection', { status: c.status, session: c.session })
   boss.onChange()
   office.onConnection(c.status === 'connected')
@@ -773,6 +790,7 @@ app.on('before-quit', (e) => {
     } else stopServer = plan === 'stop'
   }
   quitDecided = true
+  if (lifecycle.canStopServer) serverWatchdog.disarm()
   quitReason = stopServer ? 'user-quit-stop-herdr' : 'user-quit-keep-herdr'
   saveWindowState()
   try { settings.flush() }
