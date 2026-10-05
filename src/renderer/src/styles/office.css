@@ -1,0 +1,154 @@
+/* «Общий зал» (desktop only). Drover chrome around a pixel-art stage.
+ *
+ * Class contract for the tab markup (src/renderer/src/office/**):
+ *   .office                         root, fills .main
+ *     .office-head                  title bar
+ *       .office-title / .office-subtitle
+ *       .office-legend > .office-legend-item.st-<status> > .office-mark
+ *       .office-tools > .office-tool (buttons), .office-tool.active, .office-zoom (×1/×2/×3 segment)
+ *     .office-body
+ *       .office-stage               canvas container (drag/pan); .office-stage.dragging while panning
+ *         canvas.office-canvas
+ *         .office-tooltip           [style left/top], .office-tooltip-title, .office-tooltip-sub
+ *         .office-empty             empty state
+ *         .office-stale             "data is stale" banner (disconnect)
+ *       .office-list                DOM list (accessible twin of the canvas); .office-list[hidden]
+ *         .office-search > input
+ *         .office-dept > .office-dept-head (.office-dept-name, .office-dept-count)
+ *           .office-agent (button-like row, .selected) >
+ *             .office-agent-sprite  (optional mini sprite: background = atlas, pixelated)
+ *             .office-agent-text > .office-agent-name, .office-agent-meta (.office-role, .office-role.guess)
+ *             .office-status.st-<status> > .office-mark + text
+ *             .office-agent-open (button «Открыть чат»)
+ *     .office-live                  visually hidden live region
+ * Status classes: st-working, st-blocked, st-idle, st-done, st-unknown, st-disconnect.
+ * Marks differ by shape, not only colour (spinner arc, ?, ring, check, dash, slash). */
+
+.office {
+  --office-ground: #5e8a4a;
+  --office-wood: #8d6a4f;
+  --office-wood-dark: #5b3d2a;
+  --office-paper: #fbf3df;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* ---------------------------------------------------------------- header */
+.office-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: var(--header-h, 52px);
+  padding: 8px 14px 8px 18px;
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+.office-head > * { -webkit-app-region: no-drag; }
+.office-title { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
+.office-subtitle { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.office-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 0 auto; padding: 0; list-style: none; font-size: 12px; color: var(--text-2); }
+.office-legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.office-tools { display: flex; align-items: center; gap: 4px; }
+.office-tool {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 28px; min-width: 28px; padding: 0 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm, 6px);
+  background: var(--bg-elev); color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer;
+}
+.office-tool:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.office-tool.active, .office-tool[aria-pressed='true'] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); }
+.office-tool:focus-visible, .office-agent:focus-visible, .office-agent-open:focus-visible, .office-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.office-zoom { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--radius-sm, 6px); background: var(--bg-active); }
+.office-zoom .office-tool { height: 24px; border: 0; background: transparent; font-variant-numeric: tabular-nums; }
+.office-zoom .office-tool.active, .office-zoom .office-tool[aria-pressed='true'] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 0.5px var(--border); }
+
+/* ---------------------------------------------------------------- status marks (shape + colour) */
+.office-mark { position: relative; flex: none; display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.st-working .office-mark { border: 2px solid color-mix(in srgb, var(--working) 30%, transparent); border-top-color: var(--working); animation: office-spin 0.9s linear infinite; }
+.st-blocked .office-mark { border-radius: 2px; background: var(--blocked); }
+.st-blocked .office-mark::after { content: '?'; position: absolute; inset: -2px 0 0; font: 700 9px/12px var(--font-ui); color: #fff; text-align: center; }
+.st-idle .office-mark { border: 2px solid var(--idle); }
+.st-done .office-mark { background: var(--done); }
+.st-done .office-mark::after { content: ''; position: absolute; left: 3px; top: 1.5px; width: 3px; height: 5px; border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.st-unknown .office-mark { border-radius: 2px; background: none; }
+.st-unknown .office-mark::after { content: ''; position: absolute; left: 1px; right: 1px; top: 4px; height: 2px; background: var(--text-3); }
+.st-disconnect .office-mark { border: 2px dashed var(--text-4); }
+.st-disconnect .office-mark::after { content: ''; position: absolute; left: -2px; right: -2px; top: 3px; height: 1.5px; background: var(--text-3); transform: rotate(-45deg); }
+@keyframes office-spin { to { transform: rotate(360deg); } }
+
+/* ---------------------------------------------------------------- stage */
+.office-body { flex: 1; min-height: 0; display: flex; }
+.office-stage {
+  position: relative; flex: 1; min-width: 0; overflow: hidden;
+  background: var(--office-ground);
+  background-image: radial-gradient(color-mix(in srgb, #ffffff 9%, transparent) 1px, transparent 1px);
+  background-size: 8px 8px;
+  cursor: grab; touch-action: none; user-select: none;
+}
+.office-stage.dragging { cursor: grabbing; }
+.office-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+.office-stage::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 18%, transparent), inset 0 10px 18px -12px color-mix(in srgb, #000 45%, transparent);
+}
+.office-tooltip {
+  position: absolute; z-index: 3; pointer-events: none; max-width: 240px;
+  padding: 6px 9px; border-radius: 4px;
+  background: var(--office-paper); color: #3b2b26;
+  border: 2px solid var(--office-wood-dark);
+  box-shadow: 0 2px 0 var(--office-wood), 0 6px 14px color-mix(in srgb, #000 30%, transparent);
+  font-size: 12px; line-height: 1.35; transform: translate(-50%, calc(-100% - 10px));
+}
+.office-tooltip-title { font-weight: 650; }
+.office-tooltip-sub { color: #7a5636; font-size: 11px; }
+.office-empty, .office-stale {
+  position: absolute; left: 50%; transform: translateX(-50%); z-index: 2;
+  padding: 8px 14px; border-radius: 4px; font-size: 13px;
+  background: var(--office-paper); color: #3b2b26; border: 2px solid var(--office-wood-dark); box-shadow: 0 2px 0 var(--office-wood);
+}
+.office-empty { top: 50%; transform: translate(-50%, -50%); text-align: center; max-width: 320px; line-height: 1.5; }
+.office-stale { top: 12px; display: flex; align-items: center; gap: 8px; }
+
+/* ---------------------------------------------------------------- list (accessible twin) */
+.office-list {
+  flex: none; width: 300px; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 10px 10px 16px; border-left: 1px solid var(--border); background: var(--sidebar-bg, var(--bg-elev));
+}
+.office-list[hidden] { display: none; }
+.office-search { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 30px; border-radius: var(--radius-sm, 6px); background: var(--bg-active); color: var(--text-3); }
+.office-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: none; color: var(--text); font: inherit; font-size: 13px; }
+.office-dept-head { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; font-size: 12px; font-weight: 600; color: var(--text-3); }
+.office-dept-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-dept-count { font-variant-numeric: tabular-nums; font-weight: 500; }
+.office-agent {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-height: 44px; padding: 6px 8px;
+  border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.office-agent:hover { background: var(--bg-hover); }
+.office-agent.selected, .office-agent[aria-current='true'] { background: var(--bg-selected); }
+.office-agent-sprite { flex: none; width: 32px; height: 48px; margin: -10px 0 -6px; image-rendering: pixelated; background-repeat: no-repeat; }
+.office-agent-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.office-agent-name { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-agent-meta { font-size: 11.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-role.guess::after { content: ' · ' attr(data-guess); color: var(--text-4); }
+.office-status { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-2); }
+.office-agent-open { flex: none; height: 26px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: var(--bg-elev); color: var(--text-2); font: inherit; font-size: 11.5px; cursor: pointer; }
+.office-agent-open:hover { color: var(--text); background: var(--bg-hover); }
+.office-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .st-working .office-mark { animation: none; border-color: var(--working); }
+}
+
+/* Live tab markup (OfficeView): rows hold a separate open button; footer hint. */
+li.office-agent { cursor: default; }
+.office-agents { display: flex; flex-direction: column; gap: 2px; }
+.office-agent .office-status { margin-top: 2px; }
+.office-help { flex: none; margin: 0; padding: 6px 18px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--text-3); }
+.office-tooltip strong { font-weight: 650; }

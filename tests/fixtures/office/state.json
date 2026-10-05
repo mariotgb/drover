@@ -1,0 +1,331 @@
+{
+  "session": "synthetic-office",
+  "generation": "fixture-v1",
+  "departments": [
+    {
+      "id": "fixture:w1",
+      "workspaceId": "w1",
+      "name": "Studio",
+      "number": 1
+    },
+    {
+      "id": "fixture:w2",
+      "workspaceId": "w2",
+      "name": "Platform",
+      "number": 2
+    },
+    {
+      "id": "fixture:w3",
+      "workspaceId": "w3",
+      "name": "Research",
+      "number": 3
+    }
+  ],
+  "seats": [
+    {
+      "id": "fixture:w1:seat:0",
+      "departmentId": "fixture:w1",
+      "index": 0,
+      "paneId": "w1:p1",
+      "agentId": "fixture:agent:0:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w2:seat:0",
+      "departmentId": "fixture:w2",
+      "index": 0,
+      "paneId": "w2:p2",
+      "agentId": "fixture:agent:1:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w3:seat:0",
+      "departmentId": "fixture:w3",
+      "index": 0,
+      "paneId": "w3:p3",
+      "agentId": "fixture:agent:2:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w1:seat:1",
+      "departmentId": "fixture:w1",
+      "index": 1,
+      "paneId": "w1:p4",
+      "agentId": "fixture:agent:3:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w2:seat:1",
+      "departmentId": "fixture:w2",
+      "index": 1,
+      "paneId": "w2:p5",
+      "agentId": "fixture:agent:4:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w3:seat:1",
+      "departmentId": "fixture:w3",
+      "index": 1,
+      "paneId": "w3:p6",
+      "agentId": "fixture:agent:5:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w1:seat:2",
+      "departmentId": "fixture:w1",
+      "index": 2,
+      "paneId": "w1:p7",
+      "agentId": "fixture:agent:6:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w2:seat:2",
+      "departmentId": "fixture:w2",
+      "index": 2,
+      "paneId": "w2:p8",
+      "agentId": "fixture:agent:7:v1",
+      "terminal": false
+    },
+    {
+      "id": "fixture:w1:seat:3",
+      "departmentId": "fixture:w1",
+      "index": 3,
+      "paneId": "w1:p9",
+      "agentId": null,
+      "terminal": true
+    }
+  ],
+  "agents": [
+    {
+      "id": "fixture:agent:0:v1",
+      "paneId": "w1:p1",
+      "incarnation": "synthetic-0",
+      "kind": "claude",
+      "name": "fixture-lead",
+      "role": "lead",
+      "roleSource": "binding",
+      "departmentId": "fixture:w1",
+      "seatId": "fixture:w1:seat:0",
+      "status": "working",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "exact"
+    },
+    {
+      "id": "fixture:agent:1:v1",
+      "paneId": "w2:p2",
+      "incarnation": "synthetic-1",
+      "kind": "codex",
+      "name": "fixture-backend",
+      "role": "backend",
+      "roleSource": "binding",
+      "departmentId": "fixture:w2",
+      "seatId": "fixture:w2:seat:0",
+      "status": "blocked",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "exact"
+    },
+    {
+      "id": "fixture:agent:2:v1",
+      "paneId": "w3:p3",
+      "incarnation": "synthetic-2",
+      "kind": "gemini",
+      "name": "fixture-frontend",
+      "role": "frontend",
+      "roleSource": "binding",
+      "departmentId": "fixture:w3",
+      "seatId": "fixture:w3:seat:0",
+      "status": "idle",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "unavailable"
+    },
+    {
+      "id": "fixture:agent:3:v1",
+      "paneId": "w1:p4",
+      "incarnation": "synthetic-3",
+      "kind": "opencode",
+      "name": "fixture-devops",
+      "role": "devops",
+      "roleSource": "binding",
+      "departmentId": "fixture:w1",
+      "seatId": "fixture:w1:seat:1",
+      "status": "done",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "unavailable"
+    },
+    {
+      "id": "fixture:agent:4:v1",
+      "paneId": "w2:p5",
+      "incarnation": "synthetic-4",
+      "kind": "cursor",
+      "name": "fixture-docs",
+      "role": "docs",
+      "roleSource": "binding",
+      "departmentId": "fixture:w2",
+      "seatId": "fixture:w2:seat:1",
+      "status": "unknown",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "unavailable"
+    },
+    {
+      "id": "fixture:agent:5:v1",
+      "paneId": "w3:p6",
+      "incarnation": "synthetic-5",
+      "kind": "copilot",
+      "name": "fixture-reviewer",
+      "role": "reviewer",
+      "roleSource": "binding",
+      "departmentId": "fixture:w3",
+      "seatId": "fixture:w3:seat:1",
+      "status": "disconnect",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "unavailable"
+    },
+    {
+      "id": "fixture:agent:6:v1",
+      "paneId": "w1:p7",
+      "incarnation": "synthetic-6",
+      "kind": "amp",
+      "name": "fixture-designer",
+      "role": "designer",
+      "roleSource": "binding",
+      "departmentId": "fixture:w1",
+      "seatId": "fixture:w1:seat:2",
+      "status": "working",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "unavailable"
+    },
+    {
+      "id": "fixture:agent:7:v1",
+      "paneId": "w2:p8",
+      "incarnation": "synthetic-7",
+      "kind": "droid",
+      "name": "fixture-general",
+      "role": "general",
+      "roleSource": "binding",
+      "departmentId": "fixture:w2",
+      "seatId": "fixture:w2:seat:2",
+      "status": "idle",
+      "lastStatusAt": 1800000000000,
+      "transcriptCoverage": "unavailable"
+    }
+  ],
+  "externalNodes": [
+    {
+      "id": "user",
+      "kind": "user",
+      "name": "User"
+    },
+    {
+      "id": "machine:pc",
+      "kind": "machine",
+      "name": "pc"
+    },
+    {
+      "id": "machine:homeserver",
+      "kind": "machine",
+      "name": "homeserver"
+    }
+  ],
+  "links": [
+    {
+      "id": "fixture-link-0",
+      "from": "fixture:agent:0:v1",
+      "to": "fixture:agent:1:v1",
+      "kind": "prompt",
+      "count": 1,
+      "lastAt": 1800000000000,
+      "weight": 1,
+      "style": "agent"
+    },
+    {
+      "id": "fixture-link-1",
+      "from": "fixture:agent:1:v1",
+      "to": "fixture:agent:0:v1",
+      "kind": "prompt_attempt",
+      "count": 1,
+      "lastAt": 1799999999000,
+      "weight": 1,
+      "style": "attempt"
+    },
+    {
+      "id": "fixture-link-2",
+      "from": "user",
+      "to": "fixture:agent:2:v1",
+      "kind": "user_prompt",
+      "count": 1,
+      "lastAt": 1799999998000,
+      "weight": 1,
+      "style": "user"
+    },
+    {
+      "id": "fixture-link-3",
+      "from": "fixture:w2",
+      "to": "fixture:agent:3:v1",
+      "kind": "task_assigned",
+      "count": 1,
+      "lastAt": 1799999997000,
+      "weight": 1,
+      "style": "board"
+    },
+    {
+      "id": "fixture-link-4",
+      "from": "fixture:agent:0:v1",
+      "to": "machine:pc",
+      "kind": "ssh_attempt",
+      "count": 1,
+      "lastAt": 1799999996000,
+      "weight": 1,
+      "style": "machine"
+    }
+  ],
+  "recentEvents": [
+    {
+      "id": "fixture-event-0",
+      "to": "fixture:agent:1:v1",
+      "kind": "prompt",
+      "ts": 1800000000000,
+      "summary": "Сообщение доставлено",
+      "from": "fixture:agent:0:v1"
+    },
+    {
+      "id": "fixture-event-1",
+      "to": "fixture:agent:0:v1",
+      "kind": "prompt_attempt",
+      "ts": 1799999999000,
+      "summary": "Попытка отправки",
+      "from": "fixture:agent:1:v1"
+    },
+    {
+      "id": "fixture-event-2",
+      "to": "fixture:agent:2:v1",
+      "kind": "user_prompt",
+      "ts": 1799999998000,
+      "summary": "Сообщение пользователя",
+      "from": "user"
+    },
+    {
+      "id": "fixture-event-3",
+      "to": "fixture:agent:3:v1",
+      "kind": "task_assigned",
+      "ts": 1799999997000,
+      "summary": "Задача назначена",
+      "from": "fixture:w2"
+    },
+    {
+      "id": "fixture-event-4",
+      "to": "machine:pc",
+      "kind": "ssh_attempt",
+      "ts": 1799999996000,
+      "summary": "Запущена SSH-команда",
+      "from": "fixture:agent:0:v1"
+    },
+    {
+      "id": "fixture-event-5",
+      "to": "fixture:agent:1:v1",
+      "kind": "input_observed",
+      "ts": 1799999995000,
+      "summary": "Наблюдается входящее сообщение",
+      "from": null
+    }
+  ]
+}

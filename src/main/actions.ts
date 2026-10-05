@@ -28,7 +28,7 @@ function errResult(e: unknown): SendPromptResult {
 export async function sendPrompt(
   service: HerdrService,
   req: SendPromptRequest,
-  opts: { confirm?: boolean } = {}
+  opts: { confirm?: boolean; onAccepted?: () => void } = {}
 ): Promise<SendPromptResult> {
   const paneId = req.paneId
   const text = req.text.replace(/\r\n/g, '\n')
@@ -64,6 +64,7 @@ export async function sendPrompt(
     try {
       const wait = opts.confirm ? { until: ['working', 'blocked'], timeout_ms: 15000 } : undefined
       await service.request('agent.prompt', { target: req.target || paneId, text: body, ...(wait ? { wait } : {}) }, wait ? 30000 : 20000)
+      opts.onAccepted?.()
     } catch (e) {
       if (e instanceof HerdrApiError && (e.code === 'agent_not_found' || e.code === 'not_found')) {
         // herdr no longer recognizes an agent here; type into the pane directly.

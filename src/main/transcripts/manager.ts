@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { stat } from 'node:fs/promises'
+import { OFFICE_LIMITS } from '@shared/office'
 import type { HerdrSnapshot, PaneInfo, TranscriptCursor, TranscriptMeta, TranscriptUpdate } from '@shared/types'
 import type { HerdrService } from '../herdr/service'
 import { ClaudeParser } from './claude'
@@ -19,8 +21,10 @@ type Kind = 'claude' | 'codex'
 interface Sub {
   paneId: string
   refs: number
+  officeRefs: number
   kind: Kind | null
   sessionId: string | null
+  exactId: string | null
   path: string | null
   located: 'exact' | 'heuristic'
   parser: TranscriptParser | null
@@ -42,32 +46,44 @@ export class TranscriptManager {
   private subs = new Map<string, Sub>()
   private stream = randomUUID()
   private revision = 0
+  private lookupCount = 0
+  private lookupWaiters: Array<() => void> = []
 
   constructor(
     private service: HerdrService,
-    private send: (update: TranscriptUpdate) => void
+    private send: (update: TranscriptUpdate) => void,
+    private observeOffice: (update: TranscriptUpdate) => void = () => {}
   ) {}
 
   private pane(paneId: string): PaneInfo | undefined {
     return this.service.snapshot?.panes.find((p) => p.pane_id === paneId)
   }
 
-  async subscribe(paneId: string, retain = true, cursor?: TranscriptCursor): Promise<TranscriptUpdate> {
+  async subscribe(paneId: string, retain = true, cursor?: TranscriptCursor, office = false): Promise<TranscriptUpdate> {
     let sub = this.subs.get(paneId)
     if (sub) {
-      if (retain) sub.refs++
+      if (retain) { if (office) sub.officeRefs++; else sub.refs++ }
+      if (!office && sub.error === 'office-history-limit') { this.reset(sub); void this.locate(sub) }
       if (sub.teardown) {
         clearTimeout(sub.teardown)
         sub.teardown = null
       }
       await sub.loading
+      if (office && sub.path) {
+        const path = sub.path, generation = sub.generation
+        const size = (await stat(path).catch(() => null))?.size ?? 0
+        if (this.subs.get(sub.paneId) !== sub || generation !== sub.generation || path !== sub.path) return this.full(sub)
+        if (size > OFFICE_LIMITS.maxHistoryBytes) return { ...this.full(sub), items: [], error: 'office-history-limit' }
+      }
       return sub.history.resume(this.full(sub), cursor)
     }
     sub = {
       paneId,
-      refs: 1,
+      refs: office ? 0 : 1,
+      officeRefs: office ? 1 : 0,
       kind: null,
       sessionId: null,
+      exactId: this.pane(paneId)?.agent_session?.value ?? null,
       path: null,
       located: 'exact',
       parser: null,
@@ -85,11 +101,20 @@ export class TranscriptManager {
     return this.full(sub)
   }
 
+  subscribeOffice(paneId: string): Promise<TranscriptUpdate> { return this.subscribe(paneId, true, undefined, true) }
+
+  unsubscribeOffice(paneId: string) {
+    const sub = this.subs.get(paneId)
+    if (!sub) return
+    sub.officeRefs = Math.max(0, sub.officeRefs - 1)
+    if (!sub.officeRefs && !sub.refs) this.drop(sub)
+  }
+
   unsubscribe(paneId: string) {
     const sub = this.subs.get(paneId)
     if (!sub) return
     sub.refs = Math.max(0, sub.refs - 1)
-    if (sub.refs > 0 || sub.teardown) return
+    if (sub.refs > 0 || sub.officeRefs > 0 || sub.teardown) return
     // Keep recently viewed transcripts warm so switching threads is instant.
     sub.teardown = setTimeout(() => this.drop(sub), 90_000)
   }
@@ -112,9 +137,10 @@ export class TranscriptManager {
       const kind = normalizeKind(pane?.agent)
       const exactId = pane?.agent_session?.value ?? null
       const changedKind = kind !== sub.kind
-      const changedSession = !!exactId && exactId !== sub.sessionId
+      const changedSession = exactId !== sub.exactId
       if (changedKind || changedSession) {
         this.reset(sub)
+        sub.exactId = exactId
         void this.locate(sub)
       }
     }
@@ -158,13 +184,15 @@ export class TranscriptManager {
       reset: true,
       meta: this.meta(sub),
       items: sub.parser ? sub.parser.store.items.slice() : [],
-      error: sub.path ? undefined : sub.error
+      error: sub.error
     }
   }
 
   private publish(sub: Sub, update: TranscriptUpdate) {
     sub.history.record(update)
-    this.send(update)
+    if (this.subs.get(sub.paneId) !== sub) return
+    if (sub.officeRefs > 0) this.observeOffice(update)
+    if (sub.refs > 0) this.send(update)
   }
 
   private claimedIds(except: string): Set<string> {
@@ -190,6 +218,18 @@ export class TranscriptManager {
   }
 
   private async locateOnce(sub: Sub): Promise<void> {
+    if (this.lookupCount >= OFFICE_LIMITS.lookupConcurrency) await new Promise<void>(resolve => this.lookupWaiters.push(resolve))
+    else this.lookupCount++
+    try {
+      if (this.subs.get(sub.paneId) === sub) await this.locateLimited(sub)
+    } finally {
+      const next = this.lookupWaiters.shift()
+      if (next) next()
+      else this.lookupCount--
+    }
+  }
+
+  private async locateLimited(sub: Sub): Promise<void> {
     const generation = sub.generation
     if (sub.retry) {
       clearTimeout(sub.retry)
@@ -211,6 +251,7 @@ export class TranscriptManager {
     const env = this.service.env
     const exactId = pane.agent_session?.value ?? null
     sub.sessionId = exactId
+    sub.exactId = exactId
     let path: string | null = null
     let sessionId: string | null = null
     let located: 'exact' | 'heuristic' = 'exact'
@@ -242,6 +283,15 @@ export class TranscriptManager {
       this.scheduleRetry(sub)
       return
     }
+    const size = sub.refs === 0 ? ((await stat(path).catch(() => null))?.size ?? 0) : 0
+    if (this.subs.get(sub.paneId) !== sub || generation !== sub.generation) return
+    if (sub.refs === 0 && size > OFFICE_LIMITS.maxHistoryBytes) {
+      sub.error = 'office-history-limit'
+      sub.revision = ++this.revision
+      this.publish(sub, this.full(sub))
+      return
+    }
+    if (this.subs.get(sub.paneId) !== sub || generation !== sub.generation) return
     if (path === sub.path) return
     sub.tailer?.stop()
     sub.path = path
@@ -265,9 +315,13 @@ export class TranscriptManager {
           this.publish(sub, { paneId: sub.paneId, stream: this.stream, revision: sub.revision, reset: false, meta: this.meta(sub), items })
         }
       },
-      () => {
-        /* transient read errors are retried by the poll */
-      }
+      (error) => {
+        if (error.message === 'office-history-limit' && sub.tailer === tailer) {
+          sub.error = 'office-history-limit'
+          this.publish(sub, this.full(sub))
+        }
+      },
+      () => sub.refs > 0 ? Infinity : OFFICE_LIMITS.maxHistoryBytes
     )
     sub.tailer = tailer
     await tailer.start()

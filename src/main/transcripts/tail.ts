@@ -14,11 +14,13 @@ export class FileTailer {
   private reading = false
   private again = false
   private stopped = false
+  private identity: string | null = null
 
   constructor(
     readonly path: string,
     private onLines: (lines: string[], reset: boolean) => void,
-    private onError?: (err: Error) => void
+    private onError?: (err: Error) => void,
+    private maxBytes: () => number = () => Infinity
   ) {}
 
   async start(): Promise<void> {
@@ -54,12 +56,15 @@ export class FileTailer {
     try {
       let reset = initial
       const st = await stat(this.path)
-      if (st.size < this.offset) {
+      if (st.size > this.maxBytes()) throw new Error('office-history-limit')
+      const identity = `${st.dev}:${st.ino}`
+      if ((this.identity !== null && this.identity !== identity) || st.size < this.offset) {
         // Truncated or replaced: start over.
         this.offset = 0
         this.partial = Buffer.alloc(0)
         reset = true
       }
+      this.identity = identity
       if (st.size > this.offset || reset) {
         const fh = await open(this.path, 'r')
         try {

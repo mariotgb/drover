@@ -29,7 +29,7 @@ import {
 import { createAgent, sendPrompt } from './actions'
 import { ATTACHMENTS_DIR, cleanupAttachments, CONVERT_EXTS, IMAGE_EXTS, saveImage, stageFile } from './attachments'
 import { modelCatalog, switchAgentModel } from './models'
-import { addTask, ensureBoard, removeTask, TaskBoards, updateTask } from './tasks'
+import { addTask, ensureBoard, removeTask, TaskBoards, updateTask, normalizeStatus, type BoardWriteEvidence } from './tasks'
 import { loginEnv, which } from './env'
 import { HerdrService } from './herdr/service'
 import { quitPlan, stopServerSync } from './herdr/cli'
@@ -44,6 +44,9 @@ import { defaultPaths, installStatusline, statuslineState, uninstallStatusline }
 import { SettingsStore } from './settings'
 import { TerminalBridges } from './terminal'
 import { TranscriptManager } from './transcripts/manager'
+import { OfficeCollector } from './office/collector'
+import { resolveOfficeRole, validOfficeRoleId } from './office/collector-role'
+import { publicTranscript } from './office/transport'
 import { REMOTE_WEB_DIRECTORY, type RemoteAccessSettings } from '@shared/remote'
 import { testTrustedProxy } from './remote/security'
 import { RpcHandlers, type RpcHandler } from './remote/rpc'
@@ -93,7 +96,7 @@ const bridges = new TerminalBridges({
 
 const lastPoke: Record<string, number> = {}
 const transcripts = new TranscriptManager(service, (u: TranscriptUpdate) => {
-  send('transcript:update', u)
+  send('transcript:update', publicTranscript(u))
   // Agent activity means fresh limit snapshots on disk (Codex rollout,
   // Claude Code status line); pick them up without waiting for the timer.
   const agent = u.meta?.agent
@@ -101,9 +104,23 @@ const transcripts = new TranscriptManager(service, (u: TranscriptUpdate) => {
     lastPoke[agent] = Date.now()
     void (agent === 'codex' ? limits.refreshCodex() : limits.refreshClaude())
   }
-})
+}, (u) => office.onTranscript(u))
 
-const boards = new TaskBoards((b: TaskBoard) => send('tasks:changed', b))
+const boards = new TaskBoards((b: TaskBoard) => send('tasks:changed', b),
+  (b, write) => office.onBoard(b, write))
+const office = new OfficeCollector({
+  session: () => service.sessionName,
+  snapshot: () => service.snapshot,
+  settings: () => settings.get(),
+  subscribe: (paneId) => transcripts.subscribeOffice(paneId),
+  unsubscribe: (paneId) => transcripts.unsubscribeOffice(paneId),
+  watchBoard: (cwd) => boards.watchOffice(cwd),
+  unwatchBoard: (cwd) => boards.unwatchOffice(cwd),
+  roles: discoverRoles
+}, (update) => {
+  // Explicitly local: never call send(), which also broadcasts to phones.
+  if (win && !win.isDestroyed()) win.webContents.send('office:update', update)
+})
 const limits = new LimitsService({
   env: () => loginEnv(),
   enabled: () => settings.get().showLimits
@@ -113,9 +130,13 @@ limits.on('limits', (s) => send('limits:update', s))
 // ---------------------------------------------------------------------------
 // herdr service wiring
 
-service.on('connection', (c) => send('herdr:connection', c))
+service.on('connection', (c) => {
+  office.onConnection(c.status === 'connected')
+  send('herdr:connection', c)
+})
 service.on('snapshot', (s) => {
   send('herdr:snapshot', s)
+  office.onSnapshot(s)
   transcripts.onSnapshot(s)
   updateBadge()
 })
@@ -220,6 +241,7 @@ function createWindow() {
   win.once('ready-to-show', () => (BACKGROUND ? win?.showInactive() : win?.show()))
   win.on('close', saveWindowState)
   win.on('closed', () => {
+    office.stop()
     bridges.closeLocal()
     win = null
   })
@@ -239,8 +261,8 @@ function createWindow() {
       if (/^https?:/i.test(url)) void shell.openExternal(url)
     }
   })
-  win.webContents.on('render-process-gone', () => bridges.closeLocal())
-  win.webContents.on('did-start-loading', () => bridges.closeLocal())
+  win.webContents.on('render-process-gone', () => { office.stop(); bridges.closeLocal() })
+  win.webContents.on('did-start-loading', () => { office.stop(); bridges.closeLocal() })
 
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -320,6 +342,7 @@ function registerIpc() {
     if (patch.showLimits !== undefined) limits.start()
     if (patch.session && patch.session !== prevSession) {
       bridges.closeAll()
+      office.resetSession()
       transcripts.dispose()
       void service.start(next.session)
     }
@@ -386,17 +409,21 @@ function registerIpc() {
     })
   })
 
-  handle('agent:send', (_e, req: SendPromptRequest) =>
-    READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } : sendPrompt(service, req)
-  )
+  handle('agent:send', (_e, req: SendPromptRequest) => {
+    const endpoint = office.endpoint(req.paneId)
+    return READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } :
+      sendPrompt(service, req, { onAccepted: () => office.userPrompt(endpoint, req.text) })
+  })
+  // Register local Electron channels directly, outside the remote RPC table.
+  ipcMain.handle('office:init', () => process.platform === 'darwin' ? office.init() : null)
+  ipcMain.on('office:stop', () => office.stop())
   handle('tasks:watch', (ctx, cwd: string) => (TaskBoards.valid(cwd) ? boards.watch(cwd, !ctx.existingSubscription) : null))
   listen('tasks:unwatch', (_e, cwd: string) => TaskBoards.valid(cwd) && boards.unwatch(cwd))
-  const boardWrite = async (cwd: unknown, fn: (cwd: string) => Promise<unknown>) => {
+  const boardWrite = async (cwd: unknown, fn: (cwd: string) => Promise<unknown>, evidence?: (result: unknown) => BoardWriteEvidence) => {
     if (READONLY) return { ok: false, error: 'read-only mode' }
     if (!TaskBoards.valid(cwd)) return { ok: false, error: 'bad project folder' }
     try {
-      const result = await fn(cwd)
-      await boards.refresh(cwd)
+      const result = await boards.mutate(cwd, fn, evidence)
       return { ok: true, result }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
@@ -404,7 +431,7 @@ function registerIpc() {
   }
   handle('tasks:ensure', (_e, cwd: string) => boardWrite(cwd, (c) => ensureBoard(c)))
   handle('tasks:add', (_e, cwd: string, title: string, assignee?: string) =>
-    typeof title === 'string' && title.trim() ? boardWrite(cwd, (c) => addTask(c, title.slice(0, 500), typeof assignee === 'string' ? assignee : undefined)) : { ok: false, error: 'empty task' }
+    typeof title === 'string' && title.trim() ? boardWrite(cwd, (c) => addTask(c, title.slice(0, 500), typeof assignee === 'string' ? assignee : undefined), (result) => ({ taskId: (result as { id: string }).id, created: true, assignee: typeof assignee === 'string' ? assignee : '' })) : { ok: false, error: 'empty task' }
   )
   handle('tasks:update', (_e, cwd: string, id: string, patch: Record<string, string>) =>
     boardWrite(cwd, (c) =>
@@ -413,7 +440,8 @@ function registerIpc() {
         assignee: typeof patch?.assignee === 'string' ? patch.assignee : undefined,
         title: typeof patch?.title === 'string' ? patch.title : undefined,
         notes: typeof patch?.notes === 'string' ? patch.notes : undefined
-      })
+      }),
+      () => ({ taskId: String(id), assignee: typeof patch?.assignee === 'string' ? patch.assignee : undefined, status: patch?.status === undefined ? undefined : normalizeStatus(patch.status) })
     )
   )
   handle('tasks:remove', (_e, cwd: string, id: string) => boardWrite(cwd, (c) => removeTask(c, String(id))))
@@ -425,7 +453,14 @@ function registerIpc() {
   handle('agent:create', async (_e, req: NewAgentRequest) => {
     if (READONLY) return { ok: false, code: 'readonly', error: 'read-only mode' }
     if (req.folder) settings.addRecentFolder(req.folder)
-    return createAgent(service, req)
+    const result = await createAgent(service, req)
+    if (result.ok && result.paneId && validOfficeRoleId(req.roleId)) {
+      const cwd = service.snapshot?.panes.find(p => p.pane_id === result.paneId)?.cwd || req.folder
+      const templates = [...settings.get().roles, ...(cwd ? await discoverRoles(cwd) : [])]
+      const role = resolveOfficeRole(req.roleId, templates)
+      if (role) office.bindRole(result.paneId, role)
+    }
+    return result
   })
 
   handle('term:open', (_e, id: string, target: string, cols: number, rows: number) => bridges.open(id, target, cols, rows, READONLY))
@@ -437,7 +472,7 @@ function registerIpc() {
   )
   listen('term:close', (_e, id: string) => bridges.close(id))
 
-  handle('transcript:subscribe', (ctx, paneId: string, cursor?: TranscriptCursor) => transcripts.subscribe(paneId, !ctx.existingSubscription, cursor))
+  handle('transcript:subscribe', async (ctx, paneId: string, cursor?: TranscriptCursor) => publicTranscript(await transcripts.subscribe(paneId, !ctx.existingSubscription, cursor)))
   listen('transcript:unsubscribe', (_e, paneId: string) => transcripts.unsubscribe(paneId))
 
   listen('app:selected-pane', (_e, paneId: string | null) => {
@@ -627,7 +662,9 @@ app.on('before-quit', (e) => {
   }
   void remote?.stop()
   bridges.closeAll()
+  office.dispose()
   transcripts.dispose()
+  boards.dispose()
   limits.stop()
   service.stop()
   if (stopServer && service.herdrPath) stopServerSync(service.herdrPath, service.sessionName, service.env)

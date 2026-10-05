@@ -1,6 +1,7 @@
 // Types shared between the Electron main process, preload and renderer.
 
 import type { ModelChoice } from './models'
+import type { OfficeToolEvidence } from './office'
 import { DEFAULT_APPEARANCE, type AppearanceSettings } from './themes'
 
 export type AgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown'
@@ -218,6 +219,8 @@ export interface TranscriptTool {
   diff?: DiffFile[]
   todos?: TodoItem[]
   commands?: string[]
+  /** Main-only; removed from transcript IPC/remote payloads. */
+  officeEvidence?: OfficeToolEvidence
 }
 
 export interface TranscriptEvent {
@@ -485,6 +488,9 @@ export interface TaskBoard {
 }
 
 export interface NewAgentRequest {
+  /** Explicit selected role; office never infers this from prompt text. */
+  roleId?: string
+
   workspaceId: string | null
   folder: string | null
   workspaceLabel?: string

@@ -70,6 +70,7 @@ export type RemoteMethod = keyof typeof REMOTE_METHOD_CHANNELS
  */
 /** Must not be circumvented by setSettings: remote* setting keys are desktop-only. */
 export const REMOTE_LOCAL_ONLY_METHODS = [
+  'officeInit', 'officeStop',
   'cli', 'claudeStatusline', 'setClaudeStatusline', 'pickBackground', 'exportTheme', 'importTheme',
   'capturePreview', 'pickPreviewFile', 'saveImage', 'stageFile', 'pickFiles', 'pickFolder',
   'pathForFile', 'openPath', 'reveal', 'openExternal', 'openInEditor',

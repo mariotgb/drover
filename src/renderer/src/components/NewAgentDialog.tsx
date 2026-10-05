@@ -161,6 +161,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
     }
     void updateSettings(patch)
     const req: NewAgentRequest = {
+      roleId: kind ? role?.id : undefined,
       workspaceId,
       folder: workspaceId ? null : folder,
       workspaceLabel: folder ? basename(folder) : undefined,

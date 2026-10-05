@@ -332,6 +332,7 @@ export class RemoteServer {
         if (!entry) continue
         eventArgs = [entry[0], ...args.slice(1)]
       }
+      if (channel === 'tasks:changed' && !client.rpc.tasks.has((args[0] as { cwd?: string })?.cwd ?? '')) continue
       if (channel === 'transcript:update' && !client.rpc.transcripts.has((args[0] as { paneId?: string })?.paneId ?? '')) continue
       this.write(client, { t: 'event', channel, args: eventArgs, stateRevision: ++client.stateRevision })
     }

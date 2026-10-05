@@ -81,18 +81,21 @@ test('real file tail + manager: switch/resume and a new connection receive only 
   const timer=setTimeout(()=>{events.off('update',onUpdate);reject(new Error(`Timed out waiting for ${description}`))},10_000)
   events.on('update',onUpdate)
  })
- manager=new m.TranscriptManager(service,u=>events.emit('update',u))
+ const publicUpdates=[]
+ manager=new m.TranscriptManager(service,u=>publicUpdates.push(u),u=>events.emit('update',u))
  const initial=await manager.subscribe('p1');assert.equal(initial.reset,true);assert.deepEqual(initial.items.map(i=>i.text),['a']);assert.equal(initial.meta.path,file)
- manager.unsubscribe('p1');const cursor={stream:initial.stream,revision:initial.revision}
+ await manager.subscribeOffice('p1')
+ manager.unsubscribe('p1');const publicCount=publicUpdates.length;const cursor={stream:initial.stream,revision:initial.revision}
  const appended=waitForUpdate(u=>u.items.some(i=>i.text==='b'),'appended transcript item')
  appendFileSync(file,line('b'))
  await appended
+ assert.equal(publicUpdates.length,publicCount,'internal office observation never publishes raw chat while the public subscription is closed')
  const resumed=await manager.subscribe('p1',true,cursor);assert.equal(resumed.reset,false);assert.deepEqual(resumed.items.map(i=>i.text),['b'])
  const handlers=new m.RpcHandlers();handlers.register('transcript:subscribe',(ctx,id,cursor)=>manager.subscribe(id,!ctx.existingSubscription,cursor));handlers.register('transcript:unsubscribe',(_,id)=>manager.unsubscribe(id))
  const connection=new m.RemoteRpcConnection('fresh')
  const rpc=await m.dispatchRemoteRpc(handlers,connection,{t:'call',id:'resume',method:'transcriptSubscribe',args:['p1',cursor]});assert.equal(rpc.ok,true);assert.deepEqual(rpc.value.items.map(i=>i.text),['b'])
  m.releaseRemoteRpc(handlers,connection)
- // Register before truncation: fs.watch or the poll must publish the reset.
+ // Register before truncation: fs.watch or the poll must deliver the internal reset.
  // Awaiting the private read() is not a barrier if another read is in flight.
  const reset=waitForUpdate(u=>u.reset,'truncated transcript reset')
  writeFileSync(file,'')

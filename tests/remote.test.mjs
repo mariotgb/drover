@@ -426,3 +426,38 @@ test('the Mac background is served only with a session, only from the background
   background = null
   assert.equal((await get()).status, 404)
 })
+
+test('phones receive board updates only for their own retained project subscriptions', async (t) => {
+  const dir=temp(t),port=await freePort(),origin=`http://localhost:${port}`,web=join(dir,'web')
+  mkdirSync(web);writeFileSync(join(web,'index.html'),'<html>fixture</html>')
+  const store=new m.RemoteAuthStore(join(dir,'remote-auth.json'))
+  const token=store.issueSession(device(store).id,origin).token
+  const handlers=new m.RpcHandlers()
+  handlers.register('tasks:watch',(_ctx,cwd)=>({cwd,exists:true,tasks:[]}))
+  handlers.register('tasks:unwatch',()=>{})
+  const settings={...m.DEFAULT_REMOTE_SETTINGS,remoteEnabled:true,remotePort:port}
+  const server=new m.RemoteServer({webRoot:web,userData:dir,attachmentsDir:join(dir,'attachments'),handlers,settings:()=>settings,saveSettings:()=>{},statusChanged:()=>{}})
+  t.after(()=>server.stop());await server.sync()
+  const a=websocket(port,token),b=websocket(port,token)
+  await Promise.all([once(a,'open'),once(b,'open')]);t.after(()=>{a.terminate();b.terminate()})
+  const received=[],other=[]
+  a.on('message',d=>received.push(JSON.parse(d.toString())));b.on('message',d=>other.push(JSON.parse(d.toString())))
+  const wait=async fn=>{const end=Date.now()+3000;while(!fn()&&Date.now()<end)await new Promise(r=>setTimeout(r,10));assert.ok(fn())}
+  const fence=async id=>{
+    server.broadcast('herdr:connection',[{fence:id}])
+    await wait(()=>received.some(r=>r.args?.[0]?.fence===id)&&other.some(r=>r.args?.[0]?.fence===id))
+  }
+  const board={cwd:'/synthetic/private-project',exists:true,tasks:[{id:'task',title:'private-title',status:'todo',notes:'PRIVATE_NOTES'}]}
+  server.broadcast('tasks:changed',[board]);await fence('no-subscriptions')
+  assert.ok(!JSON.stringify(received).includes('PRIVATE_NOTES'));assert.ok(!JSON.stringify(other).includes('private-project'))
+  a.send(JSON.stringify(call('watchTasks',[board.cwd],'watch-board')))
+  await wait(()=>received.some(r=>r.id==='watch-board'))
+  server.broadcast('tasks:changed',[board]);server.broadcast('tasks:changed',[{...board,cwd:'/different-project'}]);await fence('subscribed')
+  assert.equal(received.filter(r=>r.channel==='tasks:changed').length,1)
+  assert.equal(other.filter(r=>r.channel==='tasks:changed').length,0)
+  assert.equal(received.find(r=>r.channel==='tasks:changed').args[0].cwd,board.cwd)
+  a.send(JSON.stringify(call('unwatchTasks',[board.cwd],'unwatch-board')))
+  await wait(()=>received.some(r=>r.id==='unwatch-board'))
+  server.broadcast('tasks:changed',[board]);await fence('unsubscribed')
+  assert.equal(received.filter(r=>r.channel==='tasks:changed').length,1)
+})

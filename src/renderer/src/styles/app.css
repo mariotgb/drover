@@ -1879,3 +1879,6 @@ html.drover-remote .drag {
   flex: none;
   color: var(--blocked);
 }
+
+/* Always loaded: office navigation also appears before the lazy office chunk. */
+.office-tabs { display: flex; gap: 8px; padding: 8px 12px; flex: none; }

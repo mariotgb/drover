@@ -1,4 +1,5 @@
 import type { ModelCatalog, ModelChoice } from '../shared/models'
+import type { OfficeState, OfficeUpdate } from '../shared/office'
 import type {
   BoardTask,
   TaskBoard,
@@ -48,6 +49,9 @@ export interface BoardWriteResult<T = unknown> {
 
 export interface DroverApi {
   init(): Promise<InitPayload>
+  /** Local Mac renderer only; initial state never includes historical animations. */
+  officeInit(): Promise<OfficeState | null>
+  officeStop(): void
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
 
   request<T = Record<string, unknown>>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<ApiResult<T>>
@@ -107,6 +111,8 @@ export interface DroverApi {
   openInEditor(p: string): Promise<string>
 
   on: {
+    /** Desktop-only compact state and fresh, confirmed effects. */
+    office(fn: (update: OfficeUpdate) => void): Unsub
     snapshot(fn: (s: HerdrSnapshot) => void): Unsub
     connection(fn: (c: ConnectionState) => void): Unsub
     termFrames(fn: (id: string, frames: TerminalFrame[]) => void): Unsub

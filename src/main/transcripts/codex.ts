@@ -1,3 +1,4 @@
+import { extractOfficeToolEvidence } from '../office/analyze'
 import type { DiffFile, ImageRef, TodoItem, ToolCategory, TranscriptMeta, TranscriptTool } from '@shared/types'
 import { parseApplyPatch } from './diff'
 import { ItemStore, type TranscriptParser } from './store'
@@ -406,7 +407,8 @@ export class CodexParser implements TranscriptParser {
           name,
           status: existing?.kind === 'tool' ? existing.status : 'running',
           output: existing?.kind === 'tool' ? existing.output : undefined,
-          ...d
+          ...d,
+          officeEvidence: existing?.kind === 'tool' && existing.officeEvidence ? existing.officeEvidence : extractOfficeToolEvidence(name, p.type === 'custom_tool_call' ? p.input : p.arguments, undefined)
         })
         return
       }
@@ -422,6 +424,7 @@ export class CodexParser implements TranscriptParser {
           category: 'command',
           ...(firstLine(cmd) ? { title: firstLine(cmd) } : T('Ran command')),
           commands: [cmd],
+          officeEvidence: extractOfficeToolEvidence('shell', {command: action.command}, undefined),
           status: p.status === 'completed' ? 'done' : 'running'
         })
         return
@@ -448,6 +451,7 @@ export class CodexParser implements TranscriptParser {
         const out = outputFrom(p.output)
         const next: TranscriptTool = {
           ...item,
+          officeEvidence: extractOfficeToolEvidence(item.name, item.officeEvidence?.input, p.output),
           output: truncate(out.text.replace(/\x1b\[[0-9;]*m/g, '')),
           outputImages: out.images.length ? out.images : item.outputImages,
           status: out.failed ? 'error' : 'done'

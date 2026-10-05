@@ -1,0 +1,1 @@
+Synthetic office fixture v1. Fixed time 1800000000000; no live sessions or user data. Three departments, eight distinct kinds and roles, all six statuses, a shell desk, directed agent/user/board/machine/attempt links. state.json satisfies OfficeState. Geometry belongs to the renderer.

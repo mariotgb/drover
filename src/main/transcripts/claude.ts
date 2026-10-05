@@ -1,3 +1,4 @@
+import { extractOfficeToolEvidence } from '../office/analyze'
 import type { ImageRef, TodoItem, ToolCategory, TranscriptMeta, TranscriptTool, DiffFile } from '@shared/types'
 import { editDiff, structuredPatchDiff, writeDiff } from './diff'
 import { ItemStore, type TranscriptParser } from './store'
@@ -357,7 +358,8 @@ export class ClaudeParser implements TranscriptParser {
           name: str(b.name),
           status: existing?.kind === 'tool' ? existing.status : 'running',
           output: existing?.kind === 'tool' ? existing.output : undefined,
-          ...d
+          ...d,
+          officeEvidence: existing?.kind === 'tool' && existing.officeEvidence ? existing.officeEvidence : extractOfficeToolEvidence(str(b.name), b.input, undefined)
         })
       }
     })
@@ -381,6 +383,7 @@ export class ClaudeParser implements TranscriptParser {
     }
     const next: TranscriptTool = {
       ...item,
+      officeEvidence: extractOfficeToolEvidence(item.name, item.officeEvidence?.input, b.content),
       output: truncate(text.replace(/\x1b\[[0-9;]*m/g, '')),
       outputImages: images.length ? images : undefined,
       status: b.is_error ? 'error' : 'done',

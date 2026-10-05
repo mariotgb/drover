@@ -81,6 +81,7 @@ export function TeamDialog({ workspaceId }: { workspaceId: string }) {
       patch(i, { state: 'starting', error: undefined })
       const role = { ...r.role, kind: r.kind }
       const res = await api.createAgent({
+        roleId: role.id,
         workspaceId,
         folder: null,
         kind: r.kind,

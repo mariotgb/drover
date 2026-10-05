@@ -227,8 +227,16 @@ export async function removeTask(cwd: string, id: string): Promise<void> {
   await writeBoard(cwd, data)
 }
 
+/** Only fields from a completed UI write; unrelated polled changes have no author. */
+export interface BoardWriteEvidence {
+  taskId: string
+  created?: boolean
+  assignee?: string
+  status?: TaskStatus
+}
 interface Watched {
   refs: number
+  officeRefs: number
   mtime: number
   size: number
   board: TaskBoard
@@ -240,21 +248,24 @@ export class TaskBoards {
   private watched = new Map<string, Watched>()
   private timer: NodeJS.Timeout | null = null
 
-  constructor(private send: (board: TaskBoard) => void) {}
+  private locks = new Map<string, Promise<void>>()
+
+  constructor(private send: (board: TaskBoard, write?: BoardWriteEvidence) => void,
+    private observeOffice: (board: TaskBoard, write?: BoardWriteEvidence) => void = () => {}) {}
 
   static valid(cwd: unknown): cwd is string {
     return typeof cwd === 'string' && isAbsolute(cwd) && !cwd.includes('\0')
   }
 
-  async watch(cwd: string, retain = true): Promise<TaskBoard> {
+  async watch(cwd: string, retain = true, office = false): Promise<TaskBoard> {
     let w = this.watched.get(cwd)
-    if (w) { if (retain) w.refs++ }
+    if (w) { if (retain) { if (office) w.officeRefs++; else w.refs++ } }
     else {
-      w = { refs: 1, mtime: -1, size: -1, board: { cwd, exists: false, tasks: [] }, since: new Map() }
+      w = { refs: office ? 0 : 1, officeRefs: office ? 1 : 0, mtime: -1, size: -1, board: { cwd, exists: false, tasks: [] }, since: new Map() }
       this.watched.set(cwd, w)
     }
     await this.check(cwd, w, true)
-    if (!this.timer) {
+    if (this.watched.get(cwd) === w && w.refs + w.officeRefs > 0 && !this.timer) {
       this.timer = setInterval(() => void this.poll(), POLL_MS)
       // Polling alone must never keep the process alive.
       this.timer.unref?.()
@@ -262,10 +273,16 @@ export class TaskBoards {
     return w.board
   }
 
-  unwatch(cwd: string) {
+  watchOffice(cwd: string): Promise<TaskBoard> { return this.watch(cwd, true, true) }
+  unwatchOffice(cwd: string) { this.release(cwd, true) }
+  unwatch(cwd: string) { this.release(cwd, false) }
+
+  private release(cwd: string, office: boolean) {
     const w = this.watched.get(cwd)
     if (!w) return
-    if (--w.refs > 0) return
+    if (office) w.officeRefs = Math.max(0,w.officeRefs-1)
+    else w.refs = Math.max(0,w.refs-1)
+    if (w.refs + w.officeRefs > 0) return
     this.watched.delete(cwd)
     if (!this.watched.size && this.timer) {
       clearInterval(this.timer)
@@ -273,17 +290,48 @@ export class TaskBoards {
     }
   }
 
+  /** Serialize the UI write and its attributed observation with polling. */
+  mutate<T>(cwd: string, operation: (cwd: string) => Promise<T>, evidence?: (result: T) => BoardWriteEvidence): Promise<T> {
+    return this.enqueue(cwd, async () => {
+      const before = this.watched.get(cwd)
+      if (before) await this.checkOnce(cwd, before, true)
+      const result = await operation(cwd)
+      const after = this.watched.get(cwd)
+      if (after) await this.checkOnce(cwd, after, true, evidence?.(result))
+      return result
+    })
+  }
+
+  private enqueue<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+    const result = (this.locks.get(cwd) || Promise.resolve()).then(operation)
+    const settled = result.then(() => {}, () => {})
+    this.locks.set(cwd, settled)
+    void settled.then(() => { if (this.locks.get(cwd) === settled) this.locks.delete(cwd) })
+    return result
+  }
+
+  private publish(cwd: string, w: Watched, write?: BoardWriteEvidence) {
+    if (this.watched.get(cwd) !== w) return
+    if (w.officeRefs > 0) this.observeOffice(w.board, write)
+    if (w.refs > 0) this.send(w.board, write)
+  }
+
   /** Re-reads a board right away (after Drover itself wrote it). */
-  async refresh(cwd: string) {
+  async refresh(cwd: string, write?: BoardWriteEvidence) {
     const w = this.watched.get(cwd)
-    if (w) await this.check(cwd, w, true)
+    if (w) await this.check(cwd, w, true, write)
   }
 
   private async poll() {
     for (const [cwd, w] of this.watched) await this.check(cwd, w, false)
   }
 
-  private async check(cwd: string, w: Watched, force: boolean) {
+  private check(cwd: string, w: Watched, force: boolean, write?: BoardWriteEvidence): Promise<void> {
+    return this.enqueue(cwd, () => this.checkOnce(cwd, w, force, write))
+  }
+
+  private async checkOnce(cwd: string, w: Watched, force: boolean, write?: BoardWriteEvidence) {
+    if (this.watched.get(cwd) !== w) return
     let mtime = 0
     let size = 0
     try {
@@ -294,7 +342,7 @@ export class TaskBoards {
       if (w.board.exists || force) {
         w.mtime = w.size = 0
         w.board = { cwd, exists: false, tasks: [] }
-        this.send(w.board)
+        this.publish(cwd, w)
       }
       return
     }
@@ -318,11 +366,12 @@ export class TaskBoards {
       t.since = w.since.get(t.id)!.at
     }
     w.board = { cwd, exists: true, tasks, error }
-    this.send(w.board)
+    this.publish(cwd, w, write)
   }
 
   dispose() {
     if (this.timer) clearInterval(this.timer)
+    this.timer = null
     this.watched.clear()
   }
 }

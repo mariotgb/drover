@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import clsx from 'clsx'
 import { Bot, FolderOpen, PanelLeftOpen, Play, RotateCw, X } from 'lucide-react'
 import { api } from '../api'
+import { agentKindDef } from '@shared/agents'
 import { t } from '../i18n'
+import { isSidebarNavigation } from '../office/navigation'
 import { interrupt, newTerminalTab, openNewAgent, openSettings } from '../actions'
 import {
   dismissToast,
@@ -39,6 +41,8 @@ import { MobileAgentList, MobileBack } from './MobileNavigation'
 import { useMobile, useMobileWeb } from '../mobile'
 import { MobileWebApp } from './MobileWeb'
 import { AppBackground } from './Backdrop'
+
+const OfficeView = lazy(() => import('../office/OfficeView').then(m => ({ default: m.OfficeView })))
 
 function handleCommand(cmd: string) {
   const t = selectedThread()
@@ -106,6 +110,9 @@ function handleCommand(cmd: string) {
 }
 
 export function App() {
+  const [officeAllowed, setOfficeAllowed] = useState(false)
+  const [officeOpen, setOfficeOpen] = useState(false)
+  const [officeVisited, setOfficeVisited] = useState(false)
   const mobile = useMobile()
   const mobileWeb = useMobileWeb()
   const mobileScreen = useStore((s) => s.mobileScreen)
@@ -123,6 +130,25 @@ export function App() {
   const previewGroup = useWorkspace(previewOpen && thread ? thread.workspaceId : null)
 
   useEffect(() => api.on.command(handleCommand), [])
+  useEffect(() => {
+    if (window.droverRemote) return
+    let cancelled = false
+    void api.init().then(info => { if (!cancelled) setOfficeAllowed(info.platform === 'darwin') }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [])
+  useEffect(() => useStore.subscribe((next, previous) => {
+    if (next.selectedPaneId !== previous.selectedPaneId || next.boardWorkspace !== previous.boardWorkspace) setOfficeOpen(false)
+  }), [])
+  useEffect(() => api.on.selectPane(() => setOfficeOpen(false)), [])
+
+  const showOffice = officeAllowed && !window.droverRemote && !mobile && officeOpen
+  const openOfficePane = (paneId: string) => {
+    const target = getModel().byPane.get(paneId)
+    if (!target) return
+    select(paneId)
+    setViewMode(paneId, agentKindDef(target.kind)?.transcript ? 'chat' : 'terminal')
+    setOfficeOpen(false)
+  }
 
   if (!ready) {
     return (
@@ -134,11 +160,18 @@ export function App() {
 
   const connected = connection.status === 'connected'
   return (
-    <div key={lang} className={clsx('app', sidebarHidden && 'sidebar-hidden', hasBg && 'has-bg')}>
+    <div key={lang} className={clsx('app', sidebarHidden && 'sidebar-hidden', hasBg && 'has-bg')} onClickCapture={e => { if (isSidebarNavigation(e.target)) setOfficeOpen(false) }} onKeyDownCapture={e => { if (isSidebarNavigation(e.target, e.key)) setOfficeOpen(false) }}>
       <AppBackground />
       {!mobile && !sidebarHidden && <Sidebar />}
       <main className="main">
-        {mobileWeb ? <MobileWebApp offline={connected ? null : <ConnectionScreen />} /> : mobile && mobileScreen === 'list' ? (
+        {officeAllowed && !window.droverRemote && !mobile && <nav className="office-tabs no-drag" aria-label={t('Views')}>
+          <button type="button" className="btn btn-sm" aria-pressed={!showOffice} onClick={() => setOfficeOpen(false)}>{t('Chats')}</button>
+          <button type="button" className="btn btn-sm" aria-pressed={showOffice} onClick={() => { setOfficeVisited(true); setOfficeOpen(true) }}>{t('Shared office')}</button>
+        </nav>}
+        {officeAllowed && !window.droverRemote && !mobile && officeVisited && <Suspense fallback={showOffice ? <Spinner size={18} /> : null}>
+          <OfficeView key={connection.session} active={showOffice} onOpen={openOfficePane} />
+        </Suspense>}
+        {showOffice ? null : mobileWeb ? <MobileWebApp offline={connected ? null : <ConnectionScreen />} /> : mobile && mobileScreen === 'list' ? (
           <MobileAgentList />
         ) : !connected ? (
           <ConnectionScreen />
@@ -153,7 +186,7 @@ export function App() {
           mobile ? <MobileAgentList /> : <Welcome />
         )}
       </main>
-      {!mobile && connected && previewGroup && <PreviewPanel key={previewGroup.workspace.workspace_id} group={previewGroup} />}
+      {!showOffice && !mobile && connected && previewGroup && <PreviewPanel key={previewGroup.workspace.workspace_id} group={previewGroup} />}
       {dialog?.type === 'new-agent' && <NewAgentDialog preset={dialog} />}
       {dialog?.type === 'settings' && !mobileWeb && <SettingsDialog initialTab={dialog.tab} />}
       {dialog?.type === 'prompt' && <PromptDialog d={dialog} />}

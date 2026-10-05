@@ -1,0 +1,6 @@
+export { parseShellCommands, parseShellCommandChain, recognizeOfficeCommands } from './shell'
+export { commandsFromExecScript } from './script'
+export { analyzeToolCall, analyzeTranscriptTool, extractOfficeToolEvidence } from './tools'
+export { diffTaskBoard, analyzeTaskBoard, analyzeTaskBoardJson } from './board'
+export type { OfficeAnalyzeContext, OfficeEventCandidate, OfficeToolCall, ResolvedOfficeAgent } from './types'
+export type { OfficeBoardContext, OfficeBoardObservation, OfficeBoardEventCandidate } from './board'
