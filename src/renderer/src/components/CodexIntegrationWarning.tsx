@@ -35,8 +35,8 @@ async function installIntegration() {
       outcome: result.code !== 0 ? 'error' : result.status.status === 'ok' ? 'ok' : 'warning',
       detail: [result.stdout, result.stderr, result.status.message].filter(Boolean).join('\n').trim()
     } })
-  } catch (error) {
-    useIntegration.setState({ result: { operation: 'integration', outcome: 'error', detail: error instanceof Error ? error.message : String(error) } })
+  } catch {
+    useIntegration.setState({ result: { operation: 'integration', outcome: 'error', detail: t('Could not reinstall Codex integration. Check the herdr connection and try again.') } })
   } finally { useIntegration.setState({ busy: false }) }
 }
 
@@ -76,8 +76,8 @@ export function CodexIntegrationWarning() {
     try {
       const next = await api.codexDaemonRestartPlan()
       if (request === planRequest.current) setPlan(next)
-    } catch (error) {
-      if (request === planRequest.current) setPlanError(error instanceof Error ? error.message : String(error))
+    } catch {
+      if (request === planRequest.current) setPlanError(t('Could not load the Codex agent list. Check the herdr connection and try again.'))
     } finally { if (request === planRequest.current) setPlanLoading(false) }
   }
   const restart = async () => {
@@ -88,13 +88,18 @@ export function CodexIntegrationWarning() {
       await checking
       // A second, explicit click confirms this plan; the backend revalidates it.
       const result = await api.codexDaemonRestart(plan.token)
+      if (result.outcome === 'plan_changed') {
+        setPlan(result.plan); setPlanExpired(false)
+        setPlanError(t('The Codex agent list changed — review it and confirm again.'))
+        return
+      }
       useIntegration.setState({ status: result.status, result: {
         operation: 'daemon', outcome: result.code !== 0 ? 'error' : result.status.status === 'ok' ? 'ok' : 'warning',
         detail: [result.stdout, result.stderr, result.status.message].filter(Boolean).join('\n').trim()
       } })
       setPlan(null)
-    } catch (error) {
-      setPlanError(error instanceof Error ? error.message : String(error)); setPlanExpired(true)
+    } catch {
+      setPlanError(t('Could not restart the Codex service. Refresh the agent list and try again.')); setPlanExpired(true)
     } finally { useIntegration.setState({ busy: false }) }
   }
   if (isRemote || platform !== 'darwin' || (status?.status !== 'warning' && !result && !busy && !plan)) return null
@@ -128,7 +133,7 @@ export function CodexIntegrationWarning() {
         <strong>{agent.name}</strong><span>{agent.session} · {agent.paneId} · {statusLabel(agent.status) || t('Unknown status')}</span>
         {!agent.hasSession && <span className="form-error">{t('Session not saved')}</span>}
       </li>)}</ul> : <p>{t('No Codex agents found in running herdr sessions.')}</p>}
-      {!plan.canRestart && <p className="form-error">{plan.reason || t('Codex service restart is unavailable.')}</p>}
+      {!plan.canRestart && <p className="form-error">{t(plan.reason || 'Codex service restart is unavailable.')}</p>}
       {planExpired && <p role="status">{t('The agent list changed or expired. Refresh it before restarting.')}</p>}
       {planError && <p className="form-error" role="alert">{planError}</p>}
       <div className="form-actions">

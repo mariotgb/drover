@@ -44,7 +44,7 @@ function daemonFixture(extra = {}) {
     daemonContext: async () => ({ identity: '123', paneId: 'stale:p1', socketPath: '/test.sock' }),
     snapshots: async () => [{ session: 'isolated', snapshot }], ...extra
   })
-  return { daemon, calls, snapshot }
+  return { daemon, calls, snapshot, service }
 }
 
 test('daemon plan is read-only, includes interruption list and wait recommendation; explicit confirmed execute is single use', async () => {
@@ -60,11 +60,72 @@ test('daemon plan is read-only, includes interruption list and wait recommendati
   await assert.rejects(f.daemon.execute(plan.token), /fresh/)
 })
 
-test('daemon execute rejects changed agents, changed daemon, expired/invalid tokens and incomplete inventory', async () => {
+test('daemon status changes do not invalidate a confirmed restart plan', async () => {
   const f = daemonFixture()
-  const first = await f.daemon.plan()
-  f.snapshot.agents[0].terminal_id = 'replacement'
-  await assert.rejects(f.daemon.execute(first.token), /changed/)
+  for (const status of ['idle', 'working', 'blocked', 'done', 'unknown']) {
+    const plan = await f.daemon.plan()
+    f.snapshot.agents[0].agent_status = status
+    assert.equal((await f.daemon.execute(plan.token)).outcome, 'completed')
+  }
+  assert.equal(f.calls.filter(args => args.includes('restart')).length, 5)
+})
+
+test('daemon identity and agent membership changes return a fresh plan requiring another confirmation', async () => {
+  const changes = [
+    f => { f.snapshot.agents.push({ ...f.snapshot.agents[0], pane_id: 'w1:p2', terminal_id: 'term2', name: 'new-worker' }) },
+    f => { f.snapshot.agents.pop() },
+    ...['pane_id', 'terminal_id', 'agent_session', 'name'].map(field => f => { f.snapshot.agents[0][field] = 'replacement' })
+  ]
+  for (const change of changes) {
+    const f = daemonFixture()
+    const plan = await f.daemon.plan()
+    change(f)
+    const result = await f.daemon.execute(plan.token)
+    assert.equal(result.outcome, 'plan_changed')
+    assert.notEqual(result.plan.token, plan.token)
+    assert.deepEqual(result.plan.agents.map(agent => agent.name), f.snapshot.agents.map(agent => agent.name))
+    assert.equal(f.calls.some(args => args.includes('restart')), false)
+    assert.equal((await f.daemon.execute(result.plan.token)).outcome, 'completed')
+    assert.equal(f.calls.filter(args => args.includes('restart')).length, 1)
+  }
+  for (const field of ['identity', 'session']) {
+    let identity = '123', session = 'isolated'
+    const f = daemonFixture({
+      daemonContext: async () => ({ identity, paneId: 'stale:p1', socketPath: '/test.sock' }),
+      snapshots: async () => [{ session, snapshot: f.snapshot }]
+    })
+    const plan = await f.daemon.plan()
+    if (field === 'identity') identity = '456'
+    else session = 'replacement'
+    const result = await f.daemon.execute(plan.token)
+    assert.equal(result.outcome, 'plan_changed')
+    assert.equal(f.calls.some(args => args.includes('restart')), false)
+    assert.equal((await f.daemon.execute(result.plan.token)).outcome, 'completed')
+  }
+})
+
+test('daemon execute returns an unavailable fresh plan when inventory becomes incomplete or the service stops', async () => {
+  for (const change of ['inventory', 'running', 'supported']) {
+    let changed = false
+    const f = daemonFixture({
+      run: async args => { f.calls.push(args); return { code: 0, stdout: JSON.stringify({ status: changed && change === 'running' ? 'stopped' : 'running' }), stderr: '' } },
+      snapshots: async () => {
+        if (changed && change === 'inventory') throw new Error('socket unavailable')
+        return [{ session: 'isolated', snapshot: f.snapshot }]
+      }
+    })
+    f.service.codexLaunch.supportsNoDaemon = async () => !(changed && change === 'supported')
+    const plan = await f.daemon.plan()
+    changed = true
+    const result = await f.daemon.execute(plan.token)
+    assert.equal(result.outcome, 'plan_changed')
+    assert.equal(result.plan.canRestart, false)
+    assert.equal(f.calls.some(args => args.includes('restart')), false)
+  }
+})
+
+test('daemon execute rejects expired/invalid tokens and unavailable plans', async () => {
+  const f = daemonFixture()
   const second = await f.daemon.plan()
   await assert.rejects(f.daemon.execute('arbitrary-token'), /fresh/)
   await assert.rejects(f.daemon.execute(second.token), /fresh/)

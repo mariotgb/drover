@@ -36,7 +36,12 @@ export interface CodexDaemonRestartPlan {
   reason?: string
   otherClientsMayBeAffected: boolean
 }
-export interface CodexDaemonRestartResult {
+export interface CodexDaemonPlanChangedResult {
+  outcome: 'plan_changed'
+  plan: CodexDaemonRestartPlan
+}
+export type CodexDaemonRestartResult = CodexDaemonPlanChangedResult | {
+  outcome: 'completed'
   code: number
   stdout: string
   stderr: string

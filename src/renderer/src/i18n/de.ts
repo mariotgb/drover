@@ -1,6 +1,13 @@
 import type { Dict } from './index'
 
 export const de: Dict = {
+  "The Codex agent list changed — review it and confirm again.": "Die Liste der Codex-Agenten hat sich geändert — prüfen und bestätigen Sie sie erneut.",
+  "Could not reinstall Codex integration. Check the herdr connection and try again.": "Die Codex-Integration konnte nicht neu installiert werden. Prüfen Sie die herdr-Verbindung und versuchen Sie es erneut.",
+  "Could not load the Codex agent list. Check the herdr connection and try again.": "Die Liste der Codex-Agenten konnte nicht geladen werden. Prüfen Sie die herdr-Verbindung und versuchen Sie es erneut.",
+  "Could not restart the Codex service. Refresh the agent list and try again.": "Der Codex-Dienst konnte nicht neu gestartet werden. Aktualisieren Sie die Agentenliste und versuchen Sie es erneut.",
+  "Could not inspect all running herdr sessions": "Nicht alle laufenden herdr-Sitzungen konnten geprüft werden. Prüfen Sie die Verbindung und aktualisieren Sie die Agentenliste.",
+  "The shared Codex service is not running": "Der gemeinsame Codex-Dienst läuft nicht.",
+  "Cannot safely identify a supported Codex service": "Ein unterstützter Codex-Dienst konnte nicht sicher identifiziert werden. Prüfen Sie die Codex-Version und aktualisieren Sie die Agentenliste.",
   "Session switch was cancelled.": "Sitzungswechsel wurde abgebrochen.",
   "Could not connect to herdr session {session}.": "Verbindung zur herdr-Sitzung {session} fehlgeschlagen.",
   "The boss session changed. Refresh before opening it.": "Die Chef-Sitzung hat sich geändert. Aktualisieren Sie sie vor dem Öffnen.",

@@ -399,6 +399,7 @@ function registerIpc() {
   ipcMain.handle('codex:daemon-restart', async (_event, token: string) => {
     if (process.platform !== 'darwin' || READONLY) throw new Error('Codex service restart is only available in the local Mac app')
     const result = await codexDaemon.execute(token)
+    if (result.outcome === 'plan_changed') return result
     return { ...result, status: await codexIntegration.status() }
   })
   handle('app:init', async () => {

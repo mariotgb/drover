@@ -26,9 +26,9 @@ test('desktop drag, phone arrows, importance sync and explicit Codex repair work
       bossRoster:async()=>{const session=useStore.getState().connection.session;window.bossFlow.push('roster:'+session);return {session:'owner',needsSessionSwitch:session!=='owner',hqFolder:'/hq',projects:[],boss:{paneId:'owner:p1',kind:'codex',name:'drover-boss',status:'idle'}}},
       openBoss:async req=>{window.bossOpenCalls.push(req);window.bossFlow.push('open:'+useStore.getState().connection.session);return {ok:true,paneId:'owner:p1',existing:true,folder:'/hq'}},
       codexIntegrationStatus:async()=>{window.statusCalls++;return warning},
-      codexIntegrationInstall:async()=>{window.installCalls++;return {code:0,stdout:'fixture hook installed',stderr:'',status:{...warning,status:'ok',outdated:false}}},
-      codexDaemonRestartPlan:async()=>{window.planCalls++;const plan={token:'fixture-plan-'+window.planCalls,expiresAt:Date.now()+(window.expiredPlan?-1:60000),agents:[{session:'other-session',paneId:'w9:p1',name:'possibly-affected-agent',status:'working',hasSession:false}],busy:true,daemonRunning:true,canRestart:true,otherClientsMayBeAffected:true};return window.deferPlan?new Promise(resolve=>{window.resolveDeferredPlan=()=>resolve(plan)}):plan},
-      codexDaemonRestart:async token=>{window.restartCalls.push(token);return {code:0,stdout:'fixture daemon restarted',stderr:'',status:warning}},
+      codexIntegrationInstall:async()=>{window.installCalls++;if(window.installFailure)throw new Error("Error invoking remote method 'codex:integration-install': Error: fixture failure");return {code:0,stdout:'fixture hook installed',stderr:'',status:{...warning,status:'ok',outdated:false}}},
+      codexDaemonRestartPlan:async()=>{window.planCalls++;if(window.planFailure)throw new Error("Error invoking remote method 'codex:daemon-restart-plan': Error: fixture failure");const plan={token:'fixture-plan-'+window.planCalls,expiresAt:Date.now()+(window.expiredPlan?-1:60000),agents:[{session:'other-session',paneId:'w9:p1',name:'possibly-affected-agent',status:'working',hasSession:false}],busy:true,daemonRunning:true,canRestart:true,otherClientsMayBeAffected:true};return window.deferPlan?new Promise(resolve=>{window.resolveDeferredPlan=()=>resolve(plan)}):plan},
+      codexDaemonRestart:async token=>{window.restartCalls.push(token);if(window.restartFailure)throw new Error("Error invoking remote method 'codex:daemon-restart': Error: Review a fresh Codex restart plan first");if(window.changedRestart){window.changedRestart=false;return {outcome:'plan_changed',plan:{token:'changed-plan',expiresAt:Date.now()+60000,agents:[{session:'other-session',paneId:'w9:p2',name:'replacement-agent',status:'idle',hasSession:true}],busy:false,daemonRunning:true,canRestart:true,otherClientsMayBeAffected:true}}}return {outcome:'completed',code:0,stdout:'fixture daemon restarted',stderr:'',status:warning}},
       request:async()=>({ok:true,result:{}}),setSelectedPane:()=>{},termOpen:async()=>({ok:true}),termClose:()=>{},termResize:()=>{},limits:async()=>({claude:null,codex:null}),refreshLimits:async()=>({claude:null,codex:null}),watchTasks:async()=>null,unwatchTasks:()=>{},
       previewServers:async()=>[],on:new Proxy({},{get:()=>()=>()=>{}})};
     const workspaces=['Alpha','Beta','Gamma'].map((label,i)=>({workspace_id:'w'+i,number:i+1,label}));
@@ -112,13 +112,37 @@ test('desktop drag, phone arrows, importance sync and explicit Codex repair work
   assert.deepEqual(await desktop.evaluate(() => window.restartCalls), [], 'an expired plan cannot execute')
   await desktop.evaluate(() => { window.expiredPlan = false })
   await planDialog.getByRole('button', { name: 'Refresh agent list', exact: true }).click()
+  await desktop.evaluate(() => { window.changedRestart = true })
   await planDialog.getByRole('button', { name: 'Restart anyway', exact: true }).click()
+  await planDialog.getByText('The Codex agent list changed — review it and confirm again.', { exact: true }).waitFor()
+  await planDialog.getByText('replacement-agent', { exact: true }).waitFor()
+  assert.equal(await planDialog.getByText('possibly-affected-agent', { exact: true }).count(), 0)
+  assert.equal(await planDialog.getByText('The agent list changed or expired. Refresh it before restarting.', { exact: true }).count(), 0)
+  assert.deepEqual(await desktop.evaluate(() => window.restartCalls), ['fixture-plan-4'], 'a changed plan never restarts automatically')
+  await planDialog.getByRole('button', { name: 'Confirm restart', exact: true }).click()
   await desktop.getByText('Codex service restarted, but the warning remains.', { exact: true }).waitFor()
-  assert.deepEqual(await desktop.evaluate(() => window.restartCalls), ['fixture-plan-4'])
+  assert.deepEqual(await desktop.evaluate(() => window.restartCalls), ['fixture-plan-4', 'changed-plan'])
   await desktop.screenshot({ path: '/tmp/drover-docs-desktop.png' })
+  await desktop.evaluate(() => { window.planFailure = true })
+  await desktop.getByRole('button', { name: 'Restart Codex service', exact: true }).click()
+  await desktop.getByText('Could not load the Codex agent list. Check the herdr connection and try again.', { exact: true }).waitFor()
+  assert.equal(await planDialog.count(), 0)
+  await desktop.evaluate(() => { window.planFailure = false; window.restartFailure = true })
+  await desktop.getByRole('button', { name: 'Restart Codex service', exact: true }).click()
+  await planDialog.getByRole('button', { name: 'Restart anyway', exact: true }).click()
+  await planDialog.getByText('Could not restart the Codex service. Refresh the agent list and try again.', { exact: true }).waitFor()
+  assert.ok(await planDialog.getByRole('button', { name: 'Restart anyway', exact: true }).isDisabled())
+  await planDialog.getByRole('button', { name: 'Wait for agents', exact: true }).click()
+  await desktop.evaluate(() => { window.installFailure = true })
+  await desktop.getByRole('button', { name: 'Reinstall Codex integration', exact: true }).click()
+  await desktop.getByText('Could not reinstall Codex integration', { exact: true }).waitFor()
+  await desktop.locator('.codex-integration-result summary').click()
+  await desktop.getByText('Could not reinstall Codex integration. Check the herdr connection and try again.', { exact: true }).waitFor()
+  assert.equal(await desktop.getByText(/Error invoking remote method/).count(), 0, 'IPC failures never show the raw Electron wrapper')
+  await desktop.evaluate(() => { window.installFailure = false })
   await desktop.getByRole('button', { name: 'Reinstall Codex integration', exact: true }).click()
   await desktop.getByText('Codex integration reinstalled', { exact: true }).waitFor()
-  assert.equal(await desktop.evaluate(() => window.installCalls), 1)
+  assert.equal(await desktop.evaluate(() => window.installCalls), 2)
   await desktop.evaluate(() => window.fixtureStore.setState({ dialog: { type: 'boss' } }))
   await desktop.getByText('The Main boss already exists in herdr session owner.', { exact: true }).waitFor()
   assert.equal(await desktop.evaluate(() => window.writes.filter(p => p.session).length), 0)

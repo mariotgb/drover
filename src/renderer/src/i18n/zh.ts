@@ -1,6 +1,13 @@
 import type { Dict } from './index'
 
 export const zh: Dict = {
+  "The Codex agent list changed — review it and confirm again.": "Codex 智能体列表已更改 — 请检查并再次确认。",
+  "Could not reinstall Codex integration. Check the herdr connection and try again.": "无法重新安装 Codex 集成。请检查 herdr 连接并重试。",
+  "Could not load the Codex agent list. Check the herdr connection and try again.": "无法加载 Codex 智能体列表。请检查 herdr 连接并重试。",
+  "Could not restart the Codex service. Refresh the agent list and try again.": "无法重启 Codex 服务。请刷新智能体列表并重试。",
+  "Could not inspect all running herdr sessions": "无法检查所有运行中的 herdr 会话。请检查连接并刷新智能体列表。",
+  "The shared Codex service is not running": "共享 Codex 服务未运行。",
+  "Cannot safely identify a supported Codex service": "无法安全识别受支持的 Codex 服务。请检查 Codex 版本并刷新智能体列表。",
   "Session switch was cancelled.": "会话切换已取消。",
   "Could not connect to herdr session {session}.": "无法连接到 herdr 会话 {session}。",
   "The boss session changed. Refresh before opening it.": "主管会话已更改，请刷新后再打开。",

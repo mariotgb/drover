@@ -1,7 +1,7 @@
 {
   "name": "drover",
   "productName": "Drover",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Desktop app for herdr: run and chat with coding agents without the terminal",
   "license": "MIT",
   "author": "mariotgb",

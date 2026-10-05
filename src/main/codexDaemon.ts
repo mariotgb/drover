@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentInfo, HerdrSessionInfo, HerdrSnapshot } from '@shared/types'
-import type { CodexDaemonAgent, CodexDaemonRestartPlan } from '@shared/codexIntegration'
+import type { CodexDaemonAgent, CodexDaemonPlanChangedResult, CodexDaemonRestartPlan } from '@shared/codexIntegration'
 import type { HerdrService } from './herdr/service'
 import { HerdrClient } from './herdr/client'
 import { defaultSocketPath } from './herdr/cli'
@@ -81,11 +81,13 @@ export class CodexDaemon {
     occupants.sort((a, b) => a.session.localeCompare(b.session) || a.pane_id.localeCompare(b.pane_id))
     const agents = occupants.map(agent => ({ session: agent.session, paneId: agent.pane_id,
       name: agent.name || agent.pane_id, status: agent.agent_status, hasSession: !!agent.agent_session }))
-    const fingerprint = JSON.stringify([daemon, occupants.map(agent => [agent.session, agent.pane_id, agent.terminal_id, agent.agent_status, agent.agent_session, agent.name])])
+    const fingerprint = JSON.stringify([daemon.identity, occupants.map(agent => [agent.session, agent.pane_id, agent.terminal_id, agent.agent_session, agent.name])])
     return { agents, fingerprint, daemon, supported, complete }
   }
   async plan(): Promise<CodexDaemonRestartPlan> {
-    const inventory = await this.inventory()
+    return this.createPlan(await this.inventory())
+  }
+  private createPlan(inventory: Inventory): CodexDaemonRestartPlan {
     const canRestart = inventory.supported && inventory.complete && inventory.daemon.running && !!inventory.daemon.identity
     const plan: CodexDaemonRestartPlan = { token: randomUUID(), expiresAt: Date.now() + 60_000,
       agents: inventory.agents, busy: inventory.agents.some(agent => ['working', 'blocked', 'unknown'].includes(agent.status)),
@@ -94,14 +96,16 @@ export class CodexDaemon {
     this.pending = { plan, fingerprint: inventory.fingerprint }
     return plan
   }
-  async execute(token: string): Promise<CodexCommandResult> {
+  async execute(token: string): Promise<(CodexCommandResult & { outcome: 'completed' }) | CodexDaemonPlanChangedResult> {
     const pending = this.pending
     this.pending = null
     if (!pending || pending.plan.token !== token || pending.plan.expiresAt < Date.now() || !pending.plan.canRestart) throw new Error('Review a fresh Codex restart plan first')
     const current = await this.inventory()
-    if (!current.complete || current.fingerprint !== pending.fingerprint) throw new Error('Codex agents or service changed. Review a new restart plan before continuing')
+    if (!current.complete || !current.supported || !current.daemon.running || current.fingerprint !== pending.fingerprint) {
+      return { outcome: 'plan_changed', plan: this.createPlan(current) }
+    }
     if (pending.plan.expiresAt <= Date.now()) throw new Error('Review a fresh Codex restart plan first')
     // The one explicit mutation, reachable only through confirmed desktop IPC.
-    return this.run(['app-server', 'daemon', 'restart'])
+    return { ...await this.run(['app-server', 'daemon', 'restart']), outcome: 'completed' }
   }
 }

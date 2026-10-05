@@ -1,6 +1,13 @@
 import type { Dict } from './index'
 
 export const ru: Dict = {
+  "The Codex agent list changed — review it and confirm again.": "Список Codex-агентов изменился — проверьте и подтвердите снова",
+  "Could not reinstall Codex integration. Check the herdr connection and try again.": "Не удалось переустановить интеграцию Codex. Проверьте соединение с herdr и повторите попытку.",
+  "Could not load the Codex agent list. Check the herdr connection and try again.": "Не удалось загрузить список Codex-агентов. Проверьте соединение с herdr и повторите попытку.",
+  "Could not restart the Codex service. Refresh the agent list and try again.": "Не удалось перезапустить службу Codex. Обновите список агентов и повторите попытку.",
+  "Could not inspect all running herdr sessions": "Не удалось проверить все запущенные сессии herdr. Проверьте соединение и обновите список агентов.",
+  "The shared Codex service is not running": "Общая служба Codex не запущена.",
+  "Cannot safely identify a supported Codex service": "Не удалось надёжно определить поддерживаемую службу Codex. Проверьте версию Codex и обновите список агентов.",
   "Session switch was cancelled.": "Переход в другую сессию отменён.",
   "Could not connect to herdr session {session}.": "Не удалось подключиться к сессии herdr {session}.",
   "The boss session changed. Refresh before opening it.": "Сессия босса изменилась. Обновите данные перед открытием.",
