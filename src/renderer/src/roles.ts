@@ -3,8 +3,20 @@ import { agentKindDef } from '@shared/agents'
 import { api } from './api'
 import { t } from './i18n'
 import { useStore } from './store'
+import bossHqInstructions from '@shared/boss-hq.md?raw'
+
+export const BOSS_HQ_INSTRUCTIONS = bossHqInstructions
 
 // Role templates: what an agent is and what it is told right after it starts.
+
+/** A dedicated built-in role: started through HQ, never with a project's team. */
+export function bossRole(kind: string = 'claude'): RoleTemplate {
+  return {
+    id: 'starter:boss', name: 'drover-boss', label: t('Main boss'), kind,
+    args: '', source: 'custom', orchestrator: true,
+    instructions: t('You are the Main boss in Drover HQ. Read AGENTS.md, your agent’s instruction file if present, roster.json and .drover/tasks.json in this folder. Reply in the user’s language. Confirm readiness briefly, then wait for the user’s assignment. Do not wake agents, resume tasks or broadcast on startup. Follow the HQ instructions and use ./bin/boss roster and ./bin/boss send for assignments.')
+  }
+}
 
 export function starterRoles(): RoleTemplate[] {
   const r = (name: string, label: string, kind: string, instructions: string, orchestrator = false): RoleTemplate => ({

@@ -152,3 +152,152 @@ li.office-agent { cursor: default; }
 .office-agent .office-status { margin-top: 2px; }
 .office-help { flex: none; margin: 0; padding: 6px 18px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--text-3); }
 .office-tooltip strong { font-weight: 650; }
+
+/* ================================================================ v2.1 HUD («Общий зал 2.0»)
+ * Root: section.office.office-v2[data-office-theme="cozy"|"neon"] — cozy follows the light Drover theme
+ * («Мастерская»: wood & paper), neon the dark one («Неоновый хаб»: glass & neon).
+ * .office-stage > canvas.office-canvas, .office-world-labels > .office-world-label(-<kind>),
+ * .office-hud(.with-team) >
+ *   header.office-panel.office-toolbar > .office-toolbar-row × 2 (h1.office-title, .office-hall-filter > .office-chip(.active),
+ *     .office-seg > .office-btn(.active), .office-btn(.active|.primary))
+ *   aside.office-panel.office-team > h2.office-team-head > span, .office-filters > button.office-filter.st-<s>(.active) > .office-mark + b,
+ *     label.office-search > input, .office-team-list > section > h3.office-team-dept > span×2,
+ *     ul.office-agents > li.office-member(.selected|.office-terminal) > button.office-member-select > .office-member-face > canvas,
+ *       .office-agent-text > .office-member-name, .office-member-meta, .office-member-status.st-<s> > .office-mark;
+ *       .office-member-event; .office-member-actions > .office-btn
+ *   aside.office-panel.office-journal-panel > h2, ol.office-journal > li.office-journal-item.ev-<kind> > .office-journal-icon, span, time
+ *   aside.office-panel.office-map > h2, button.office-map-view > canvas
+ *   aside.office-panel.office-card > .office-card-close, .office-card-heading (.office-member-face, .office-card-identity >
+ *     .office-card-name, .office-card-meta, .office-member-status), .office-card-task > span + p, .office-card-actions
+ *   .office-tooltip, button.office-btn.office-waiting
+ * Geometry and adaptive layout live in office/hud.css (drover-devops, loaded after this file); this block is only the look.
+ * Selectors carry [data-office-theme] so the theme wins over hud.css fallbacks regardless of load order. */
+
+.office-v2 {
+  --o-bg: #fbf3df; --o-text: #3b2b26; --o-text-2: #8a6a48; --o-head: #8a5a32;
+  --o-edge: #6a4228; --o-inset: #f2e2bd; --o-drop: #4a2e1f; --o-shadow: 0 12px 26px rgba(43, 29, 27, .3);
+  --o-btn: #f6e7c6; --o-btn-text: #4a2e1f; --o-btn-edge: #c9a46e; --o-btn-bevel: #d9bd86;
+  --o-seg: #ead6ad; --o-accent: #c96442; --o-accent-deep: #9c4a2f; --o-accent-text: #fff;
+  --o-chip: #f3e3bf; --o-row-alt: #f8ecd2; --o-row-sel: #fff7e3; --o-face: #ead6ad; --o-face-edge: #d6b77f;
+  --o-search: #f1dfb8; --o-stage: #6f9f4c; --o-warn-bg: #ffe9b8;
+  --o-head-font: 700 11px/1 var(--font-ui); --o-head-spacing: .08em; --o-radius: 9px;
+}
+.office-v2[data-office-theme='neon'] {
+  --o-bg: rgba(9, 13, 22, .9); --o-text: #dffbff; --o-text-2: #7f9aaa; --o-head: #5ef2ff;
+  --o-edge: rgba(94, 242, 255, .26); --o-inset: transparent; --o-drop: transparent; --o-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 14px 34px rgba(0, 0, 0, .5);
+  --o-btn: rgba(255, 255, 255, .06); --o-btn-text: #cfe9f2; --o-btn-edge: rgba(94, 242, 255, .2); --o-btn-bevel: transparent;
+  --o-seg: rgba(255, 255, 255, .05); --o-accent: #5ef2ff; --o-accent-deep: rgba(94, 242, 255, .55); --o-accent-text: #5ef2ff;
+  --o-chip: rgba(255, 255, 255, .05); --o-row-alt: transparent; --o-row-sel: rgba(94, 242, 255, .08); --o-face: #1b2236; --o-face-edge: rgba(94, 242, 255, .2);
+  --o-search: rgba(255, 255, 255, .05); --o-stage: #20263a; --o-warn-bg: rgba(245, 184, 61, .12);
+  --o-head-font: 600 10.5px/1 var(--font-mono); --o-head-spacing: .16em; --o-radius: 7px;
+}
+.office-v2[data-office-theme] .office-stage { background: var(--o-stage); background-image: none; }
+.office-v2[data-office-theme] .office-stage::after { display: none; }
+.office-v2[data-office-theme] .office-world-label { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; background: var(--o-bg); color: var(--o-text); box-shadow: 0 0 0 1px var(--o-edge); }
+
+/* ---- panels */
+.office-v2[data-office-theme] .office-panel { background: var(--o-bg); color: var(--o-text); border-radius: var(--o-radius); border: 2px solid var(--o-edge); box-shadow: inset 0 0 0 2px var(--o-inset), 0 3px 0 var(--o-drop), var(--o-shadow); font-size: 12.5px; }
+.office-v2[data-office-theme='neon'] .office-panel { border-width: 1px; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.office-v2[data-office-theme='neon'] .office-panel::before {
+  content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+  background: linear-gradient(#5ef2ff, #5ef2ff) top left / 12px 2px, linear-gradient(#5ef2ff, #5ef2ff) top left / 2px 12px,
+    linear-gradient(#5ef2ff, #5ef2ff) bottom right / 12px 2px, linear-gradient(#5ef2ff, #5ef2ff) bottom right / 2px 12px;
+  background-repeat: no-repeat; filter: drop-shadow(0 0 4px rgba(94, 242, 255, .7));
+}
+.office-v2[data-office-theme] .office-title, .office-v2[data-office-theme] .office-panel h2 { margin: 0 4px 8px 2px; font: var(--o-head-font); letter-spacing: var(--o-head-spacing); text-transform: uppercase; color: var(--o-head); display: flex; align-items: center; gap: 8px; }
+.office-v2[data-office-theme] .office-title { margin: 0 6px 0 2px; white-space: nowrap; }
+.office-v2[data-office-theme='neon'] .office-title, .office-v2[data-office-theme='neon'] .office-panel h2 { text-shadow: 0 0 8px rgba(94, 242, 255, .5); }
+.office-v2[data-office-theme] .office-team-head span { margin-left: auto; font-weight: 500; opacity: .7; }
+
+/* ---- buttons, chips, segments */
+.office-v2[data-office-theme] .office-btn, .office-v2[data-office-theme] .office-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 0; border-radius: 7px;
+  font: inherit; font-size: 12.5px; font-weight: 550; white-space: nowrap; cursor: pointer;
+  background: var(--o-btn); color: var(--o-btn-text); box-shadow: inset 0 -2px 0 var(--o-btn-bevel), 0 0 0 1px var(--o-btn-edge);
+}
+.office-v2[data-office-theme] .office-chip { height: 26px; border-radius: 13px; background: var(--o-chip); }
+.office-v2[data-office-theme] .office-chip span { font-weight: 500; opacity: .7; }
+.office-v2[data-office-theme] .office-btn:hover:not(:disabled), .office-v2[data-office-theme] .office-chip:hover { filter: brightness(1.04); }
+.office-v2[data-office-theme] .office-btn:disabled { opacity: .5; cursor: default; }
+.office-v2[data-office-theme] .office-btn.primary { background: var(--o-accent); color: #fff; box-shadow: inset 0 -2px 0 var(--o-accent-deep), 0 0 0 1px var(--o-accent-deep); }
+.office-v2[data-office-theme='neon'] .office-btn.primary { background: #d97757; color: #fff; box-shadow: 0 0 16px rgba(217, 119, 87, .45); }
+.office-v2[data-office-theme] .office-chip.active { background: var(--o-accent); color: #fff; box-shadow: inset 0 -2px 0 var(--o-accent-deep); }
+.office-v2[data-office-theme='neon'] .office-chip.active { background: rgba(255, 122, 217, .14); color: #ff9ae3; box-shadow: inset 0 0 0 1px rgba(255, 122, 217, .6), 0 0 14px rgba(255, 122, 217, .3); }
+.office-v2[data-office-theme] .office-btn.active, .office-v2[data-office-theme] .office-btn[aria-pressed='true'] { background: #fffaf0; color: var(--o-text); box-shadow: inset 0 -2px 0 var(--o-btn-bevel), 0 0 0 1.5px var(--o-accent); }
+.office-v2[data-office-theme='neon'] .office-btn.active, .office-v2[data-office-theme='neon'] .office-btn[aria-pressed='true'] { background: rgba(94, 242, 255, .14); color: #5ef2ff; box-shadow: inset 0 0 0 1px rgba(94, 242, 255, .55), 0 0 14px rgba(94, 242, 255, .3); }
+.office-v2[data-office-theme] .office-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--o-seg); }
+.office-v2[data-office-theme] .office-seg .office-btn { height: 24px; padding: 0 9px; background: transparent; box-shadow: none; font-variant-numeric: tabular-nums; }
+.office-v2[data-office-theme] .office-seg .office-btn.active { background: var(--o-bg); box-shadow: inset 0 -2px 0 var(--o-btn-bevel), 0 0 0 1px var(--o-btn-edge); }
+.office-v2[data-office-theme='neon'] .office-seg .office-btn.active { background: rgba(94, 242, 255, .14); box-shadow: inset 0 0 0 1px rgba(94, 242, 255, .55), 0 0 14px rgba(94, 242, 255, .3); color: #5ef2ff; }
+.office-v2[data-office-theme] .office-btn:focus-visible, .office-v2[data-office-theme] .office-chip:focus-visible, .office-v2[data-office-theme] .office-filter:focus-visible, .office-v2[data-office-theme] .office-member-select:focus-visible, .office-v2[data-office-theme] .office-map-view:focus-visible { outline: 2px solid var(--o-accent); outline-offset: 2px; }
+
+/* ---- team: filters (legend), search, members */
+.office-v2[data-office-theme] .office-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; }
+.office-v2[data-office-theme] .office-filter { display: flex; align-items: center; gap: 7px; padding: 5px 10px 5px 8px; border: 0; border-radius: 8px; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; color: var(--o-text-2); background: var(--o-chip); box-shadow: inset 0 0 0 1px var(--o-btn-edge); }
+.office-v2[data-office-theme] .office-filter b { font-size: 15px; color: var(--o-text); font-variant-numeric: tabular-nums; }
+.office-v2[data-office-theme] .office-filter.st-blocked { background: var(--o-warn-bg); box-shadow: inset 0 0 0 1.5px var(--blocked); }
+.office-v2[data-office-theme] .office-filter.active { box-shadow: inset 0 0 0 2px var(--o-accent); }
+.office-v2[data-office-theme] .office-search { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px; margin: 0 0 8px; border-radius: 8px; background: var(--o-search); color: var(--o-text-2); box-shadow: inset 0 1px 0 var(--o-btn-bevel); }
+.office-v2[data-office-theme] .office-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: none; color: var(--o-text); font: inherit; font-size: 12.5px; }
+.office-v2[data-office-theme] .office-team-dept { display: flex; justify-content: space-between; margin: 8px 6px 4px; font: var(--o-head-font); letter-spacing: var(--o-head-spacing); text-transform: uppercase; color: var(--o-head); }
+.office-v2[data-office-theme] .office-team-dept span:last-child { font-weight: 500; opacity: .7; }
+.office-v2[data-office-theme] .office-agents { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.office-v2[data-office-theme] .office-member { padding: 6px 8px; border-radius: 9px; }
+.office-v2[data-office-theme] .office-member:nth-child(odd):not(.selected) { background: var(--o-row-alt); }
+.office-v2[data-office-theme] .office-member.selected { background: var(--o-row-sel); box-shadow: inset 3px 0 0 var(--o-accent), 0 0 0 1px var(--o-btn-edge); }
+.office-v2[data-office-theme='neon'] .office-member.selected { box-shadow: inset 0 0 0 1px rgba(94, 242, 255, .5), 0 0 18px rgba(94, 242, 255, .15); }
+.office-v2[data-office-theme] .office-member-select { display: flex; align-items: center; gap: 10px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.office-v2[data-office-theme] .office-member-face { flex: none; width: 40px; height: 43px; border-radius: 7px; overflow: hidden; position: relative; background: var(--o-face); box-shadow: inset 0 0 0 1px var(--o-face-edge); }
+/* 32×48 sprite at ×2, cropped to head and shoulders — integer scale keeps pixels square. */
+.office-v2[data-office-theme] .office-member-face canvas { position: absolute; left: -12px; top: -9px; width: 64px; height: 96px; image-rendering: pixelated; }
+.office-v2[data-office-theme] .office-agent-text { flex: 1; min-width: 0; display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; align-items: baseline; }
+.office-v2[data-office-theme] .office-member-name { font-size: 13px; font-weight: 620; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.office-v2[data-office-theme] .office-member-meta { grid-column: 1 / -1; font-size: 11.5px; color: var(--o-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.office-v2[data-office-theme] .office-member-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.office-v2[data-office-theme] .office-agent-text .office-member-status { grid-row: 1; grid-column: 2; }
+.office-v2[data-office-theme] .st-working.office-member-status { color: var(--working); } .office-v2[data-office-theme] .st-blocked.office-member-status { color: var(--blocked); }
+.office-v2[data-office-theme] .st-done.office-member-status { color: var(--done); } .office-v2[data-office-theme] .st-idle.office-member-status, .office-v2[data-office-theme] .st-unknown.office-member-status, .office-v2[data-office-theme] .st-disconnect.office-member-status { color: var(--o-text-2); }
+.office-v2[data-office-theme] .office-member-event { display: block; margin: 4px 0 0 50px; font-size: 11.5px; color: var(--o-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.office-v2[data-office-theme] .office-member-actions, .office-v2[data-office-theme] .office-card-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.office-v2[data-office-theme] .office-member.office-terminal { display: flex; align-items: center; gap: 8px; color: var(--o-text-2); }
+.office-v2[data-office-theme] .office-member.office-terminal .office-btn { margin-left: auto; height: 24px; }
+
+/* ---- journal */
+.office-v2[data-office-theme] .office-journal { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.office-v2[data-office-theme] .office-journal-item { display: flex; align-items: center; gap: 9px; font-size: 12.5px; min-width: 0; }
+.office-v2[data-office-theme] .office-journal-item > span:nth-child(2) { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.office-v2[data-office-theme] .office-journal-item time { flex: none; font-size: 11.5px; color: var(--o-text-2); font-variant-numeric: tabular-nums; }
+.office-v2[data-office-theme] .office-journal-icon { flex: none; width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; background: var(--o-chip); color: var(--o-head); box-shadow: inset 0 0 0 1px var(--o-btn-edge); }
+.office-v2[data-office-theme] .ev-prompt_attempt .office-journal-icon { color: #c0402a; }
+.office-v2[data-office-theme] .ev-user_prompt .office-journal-icon { color: #2f6fd6; background: #dceeff; }
+.office-v2[data-office-theme] .ev-agent_status .office-journal-icon { color: var(--done); }
+.office-v2[data-office-theme] .ev-ssh_attempt .office-journal-icon { color: #3a6fb0; }
+.office-v2[data-office-theme='neon'] .office-journal-icon { background: rgba(94, 242, 255, .1); color: #5ef2ff; box-shadow: inset 0 0 0 1px rgba(94, 242, 255, .3); }
+.office-v2[data-office-theme='neon'] .ev-prompt_attempt .office-journal-icon { background: rgba(255, 107, 107, .12); color: #ff8a8a; box-shadow: inset 0 0 0 1px rgba(255, 107, 107, .4); }
+.office-v2[data-office-theme='neon'] .ev-user_prompt .office-journal-icon { background: rgba(255, 154, 107, .12); color: #ff9a6b; box-shadow: inset 0 0 0 1px rgba(255, 154, 107, .4); }
+.office-v2[data-office-theme='neon'] .ev-agent_status .office-journal-icon { background: rgba(62, 207, 122, .12); color: #3ecf7a; box-shadow: inset 0 0 0 1px rgba(62, 207, 122, .4); }
+.office-v2[data-office-theme='neon'] .ev-ssh_attempt .office-journal-icon { background: rgba(124, 242, 140, .12); color: #7cf28c; box-shadow: inset 0 0 0 1px rgba(124, 242, 140, .4); }
+.office-v2[data-office-theme] .office-journal-panel > p { margin: 0; color: var(--o-text-2); font-size: 12px; }
+
+/* ---- map */
+.office-v2[data-office-theme] .office-map-view { border-radius: 4px; }
+
+/* ---- agent card */
+.office-v2[data-office-theme] .office-card-close { height: 24px; min-height: 24px; padding: 0 6px; }
+.office-v2[data-office-theme] .office-card-heading { display: flex; gap: 10px; align-items: center; }
+.office-v2[data-office-theme] .office-card-heading .office-member-face { width: 46px; height: 50px; border-radius: 8px; }
+.office-v2[data-office-theme] .office-card-heading .office-member-face canvas { left: -9px; top: -8px; }
+.office-v2[data-office-theme] .office-card-identity { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.office-v2[data-office-theme] .office-card-name { font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-v2[data-office-theme] .office-card-meta { font-size: 12px; color: var(--o-text-2); margin: 0; }
+.office-v2[data-office-theme] .office-card-task { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--o-chip); box-shadow: inset 0 0 0 1px var(--o-btn-edge); }
+.office-v2[data-office-theme] .office-card-task span { display: block; margin-bottom: 2px; font-size: 11px; color: var(--o-head); }
+.office-v2[data-office-theme='neon'] .office-card-task span { font: 600 9.5px/1.4 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+.office-v2[data-office-theme] .office-card-task p { margin: 0; font-size: 12.5px; }
+
+/* ---- waiting badge, tooltip, banners */
+.office-v2[data-office-theme] .office-btn.office-waiting { background: var(--o-warn-bg); color: var(--o-text); box-shadow: inset 0 -2px 0 var(--o-btn-bevel), 0 0 0 1.5px var(--blocked); animation: office-waiting 1.6s ease-in-out infinite; }
+@keyframes office-waiting { 50% { box-shadow: inset 0 -2px 0 var(--o-btn-bevel), 0 0 0 1.5px var(--blocked), 0 0 0 5px color-mix(in srgb, var(--blocked) 25%, transparent); } }
+.office-v2[data-office-theme] .office-tooltip { background: var(--o-bg); color: var(--o-text); border: 2px solid var(--o-edge); box-shadow: 0 2px 0 var(--o-drop), var(--o-shadow); }
+.office-v2[data-office-theme='neon'] .office-tooltip, .office-v2[data-office-theme='neon'] .office-stale, .office-v2[data-office-theme='neon'] .office-empty { border: 1px solid rgba(94, 242, 255, .35); background: rgba(9, 13, 22, .92); color: #dffbff; box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
+@media (prefers-reduced-motion: reduce) { .office-v2[data-office-theme] .office-waiting { animation: none; } }

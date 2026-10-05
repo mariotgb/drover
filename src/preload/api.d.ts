@@ -1,5 +1,6 @@
 import type { ModelCatalog, ModelChoice } from '../shared/models'
 import type { OfficeState, OfficeUpdate } from '../shared/office'
+import type { BossBroadcastRequest, BossDelivery, BossOpenRequest, BossOpenResult, BossRoster, BossSettings } from '../shared/boss'
 import type {
   BoardTask,
   TaskBoard,
@@ -52,6 +53,11 @@ export interface DroverApi {
   /** Local Mac renderer only; initial state never includes historical animations. */
   officeInit(): Promise<OfficeState | null>
   officeStop(): void
+  bossRoster(): Promise<BossRoster>
+  bossSettings(): Promise<BossSettings>
+  setBossSettings(patch: Partial<BossSettings>): Promise<BossSettings>
+  openBoss(req: BossOpenRequest): Promise<BossOpenResult>
+  broadcastBoss(req: BossBroadcastRequest): Promise<BossDelivery[]>
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
 
   request<T = Record<string, unknown>>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<ApiResult<T>>
@@ -113,6 +119,7 @@ export interface DroverApi {
   on: {
     /** Desktop-only compact state and fresh, confirmed effects. */
     office(fn: (update: OfficeUpdate) => void): Unsub
+    bossDelivery(fn: (delivery: BossDelivery) => void): Unsub
     snapshot(fn: (s: HerdrSnapshot) => void): Unsub
     connection(fn: (c: ConnectionState) => void): Unsub
     termFrames(fn: (id: string, frames: TerminalFrame[]) => void): Unsub

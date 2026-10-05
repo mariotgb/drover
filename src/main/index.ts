@@ -27,6 +27,10 @@ import {
   type TranscriptUpdate
 } from '@shared/types'
 import { createAgent, sendPrompt } from './actions'
+import { BossService } from './boss/service'
+import { BossSettingsStore } from './boss/store'
+import bossHqInstructions from '@shared/boss-hq.md?raw'
+import type { BossBroadcastRequest, BossOpenRequest, BossSettings } from '@shared/boss'
 import { ATTACHMENTS_DIR, cleanupAttachments, CONVERT_EXTS, IMAGE_EXTS, saveImage, stageFile } from './attachments'
 import { modelCatalog, switchAgentModel } from './models'
 import { addTask, ensureBoard, removeTask, TaskBoards, updateTask, normalizeStatus, type BoardWriteEvidence } from './tasks'
@@ -112,6 +116,8 @@ const office = new OfficeCollector({
   session: () => service.sessionName,
   snapshot: () => service.snapshot,
   settings: () => settings.get(),
+  isBoss: (paneId) => boss.isBoss(paneId),
+  confirmedPrompt: (from, to, text) => boss.observeConfirmedReply(from, to, text),
   subscribe: (paneId) => transcripts.subscribeOffice(paneId),
   unsubscribe: (paneId) => transcripts.unsubscribeOffice(paneId),
   watchBoard: (cwd) => boards.watchOffice(cwd),
@@ -121,6 +127,14 @@ const office = new OfficeCollector({
   // Explicitly local: never call send(), which also broadcasts to phones.
   if (win && !win.isDestroyed()) win.webContents.send('office:update', update)
 })
+// An isolated development profile must also isolate HQ's writable roster/board.
+const boss = new BossService(service, BossSettingsStore.at(userData, process.env.DROVER_USER_DATA ? userData : homedir()),
+  () => settings.get().projectLeads,
+  (delivery) => { if (win && !win.isDestroyed()) win.webContents.send('boss:delivery', delivery) },
+  (paneId, text, from) => from ? office.agentPrompt(office.endpoint(from), office.endpoint(paneId), text) : office.userPrompt(office.endpoint(paneId), text),
+  { instructions: bossHqInstructions, version: app.getVersion(), executable: process.execPath,
+    replyAccepted: (from, to, id, ts) => office.agentPrompt(office.endpoint(from), office.endpoint(to), undefined, id, ts) })
+settings.onChange(() => boss.onChange())
 const limits = new LimitsService({
   env: () => loginEnv(),
   enabled: () => settings.get().showLimits
@@ -131,10 +145,12 @@ limits.on('limits', (s) => send('limits:update', s))
 // herdr service wiring
 
 service.on('connection', (c) => {
+  boss.onChange()
   office.onConnection(c.status === 'connected')
   send('herdr:connection', c)
 })
 service.on('snapshot', (s) => {
+  boss.onChange()
   send('herdr:snapshot', s)
   office.onSnapshot(s)
   transcripts.onSnapshot(s)
@@ -317,15 +333,18 @@ function readonlyBlocked(method: string): boolean {
 }
 
 function registerIpc() {
-  handle('app:init', async () => ({
-    settings: settings.get(),
-    connection: service.connection,
-    snapshot: service.snapshot,
-    home: homedir(),
-    attachmentsDir: ATTACHMENTS_DIR,
-    platform: process.platform,
-    appVersion: app.getVersion()
-  }))
+  handle('app:init', async () => {
+    await boss.settings()
+    return {
+      settings: settings.get(),
+      connection: service.connection,
+      snapshot: service.snapshot,
+      home: homedir(),
+      attachmentsDir: ATTACHMENTS_DIR,
+      platform: process.platform,
+      appVersion: app.getVersion()
+    }
+  })
 
   handle('settings:set', async (ctx, patch: Partial<AppSettings & RemoteAccessSettings>) => {
     const remotePatch = Object.fromEntries(Object.entries(patch).filter(([key]) => key.startsWith('remote')))
@@ -417,6 +436,20 @@ function registerIpc() {
   // Register local Electron channels directly, outside the remote RPC table.
   ipcMain.handle('office:init', () => process.platform === 'darwin' ? office.init() : null)
   ipcMain.on('office:stop', () => office.stop())
+  ipcMain.handle('boss:roster', () => boss.roster())
+  ipcMain.handle('boss:settings', () => boss.settings())
+  ipcMain.handle('boss:configure', (_event, patch: Partial<BossSettings>) => {
+    if (READONLY) throw new Error('read-only mode')
+    return boss.setSettings(patch)
+  })
+  ipcMain.handle('boss:open', (_event, req: BossOpenRequest) => {
+    if (READONLY) throw new Error('read-only mode')
+    return boss.open(req)
+  })
+  ipcMain.handle('boss:broadcast', (_event, req: BossBroadcastRequest) => {
+    if (READONLY) throw new Error('read-only mode')
+    return boss.broadcast(req)
+  })
   handle('tasks:watch', (ctx, cwd: string) => (TaskBoards.valid(cwd) ? boards.watch(cwd, !ctx.existingSubscription) : null))
   listen('tasks:unwatch', (_e, cwd: string) => TaskBoards.valid(cwd) && boards.unwatch(cwd))
   const boardWrite = async (cwd: unknown, fn: (cwd: string) => Promise<unknown>, evidence?: (result: unknown) => BoardWriteEvidence) => {
@@ -663,6 +696,7 @@ app.on('before-quit', (e) => {
   void remote?.stop()
   bridges.closeAll()
   office.dispose()
+  boss.dispose()
   transcripts.dispose()
   boards.dispose()
   limits.stop()

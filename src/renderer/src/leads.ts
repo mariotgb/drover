@@ -1,12 +1,11 @@
 import type { Thread, WorkspaceGroup } from './model'
+import { isLeadName, leadProjectKey, selectProjectLead } from '@shared/boss'
 
 // "Show only the project lead": each project shows its lead agent; the others
 // fold into one row. Agents waiting for an answer always stay in sight.
 
-const LEAD_NAME = /orchestr|lead|boss|manager|coordinator|оркестр|тимлид/i
-
 export function isLead(th: Thread): boolean {
-  return LEAD_NAME.test(th.agent?.name ?? th.name)
+  return isLeadName(agentName(th))
 }
 
 export function agentName(th: Thread): string {
@@ -15,14 +14,14 @@ export function agentName(th: Thread): string {
 
 /** Lead choices are stored per project folder, so they survive herdr restarts. */
 export function projectKey(group: WorkspaceGroup): string {
-  return group.cwd ?? `workspace:${group.workspace.label || group.workspace.workspace_id}`
+  return leadProjectKey(group.cwd, group.workspace.label, group.workspace.workspace_id)
 }
 
 /** The agent picked by hand, else the orchestrator/team lead by name, else the first agent. */
 export function projectLead(group: WorkspaceGroup, leads: Record<string, string>): Thread | null {
   const agents = group.threads.filter((th) => !!th.kind)
   const chosen = leads[projectKey(group)]
-  return (chosen ? agents.find((th) => agentName(th) === chosen) : undefined) ?? agents.find(isLead) ?? agents[0] ?? null
+  return selectProjectLead(agents, chosen, agentName)
 }
 
 /** Rows to show (lead first, then waiting agents and `keep`) and rows folded away, in project order. */

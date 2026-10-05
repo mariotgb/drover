@@ -13,6 +13,7 @@ import { Spinner } from './primitives'
 import { RolesSettingsPane } from './RolesSettings'
 import appIcon from '../assets/app-icon.png'
 import { logoutRemote } from '../remote-session'
+import { BossSettingsPane } from './BossDialogs'
 
 export function SettingsDialog({ initialTab }: { initialTab?: string }) {
   const [tab, setTab] = useState(initialTab ?? 'general')
@@ -22,6 +23,7 @@ export function SettingsDialog({ initialTab }: { initialTab?: string }) {
     { id: 'general', label: t('General') },
     { id: 'appearance', label: t('Appearance') },
     { id: 'roles', label: t('Roles') },
+    ...(!isRemote ? [{ id: 'boss', label: t('Main boss') }] : []),
     { id: 'notifications', label: t('Notifications') },
     ...(!isRemote ? [{ id: 'remote', label: t('Remote access') }, { id: 'herdr', label: 'herdr' }] : []),
     { id: 'integrations', label: t('Integrations') },
@@ -48,6 +50,7 @@ export function SettingsDialog({ initialTab }: { initialTab?: string }) {
           {tab === 'general' && <General />}
           {tab === 'appearance' && <AppearanceSettingsPane />}
           {tab === 'roles' && <RolesSettingsPane />}
+          {tab === 'boss' && !isRemote && <BossSettingsPane />}
           {tab === 'notifications' && (isRemote ? <PushSettings /> : <Notifications />)}
           {tab === 'herdr' && <HerdrTab />}
           {tab === 'integrations' && <Integrations />}

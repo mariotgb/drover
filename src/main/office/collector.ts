@@ -1,17 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   OFFICE_LIMITS as L, type OfficeAgent, type OfficeAnimation, type OfficeEventEnvelope,
-  type OfficeEventKind, type OfficeLink, type OfficeRole, type OfficeRoleSource,
+  type OfficeLink, type OfficeRole, type OfficeRoleSource,
   type OfficeState, type OfficeUIEvent, type OfficeUpdate
 } from '@shared/office'
 import type { AppSettings, HerdrSnapshot, RoleTemplate, TaskBoard, TranscriptUpdate } from '@shared/types'
+import { AGENT_NAME_RE } from '@shared/agents'
 import { analyzeTranscriptTool, diffTaskBoard } from './analyze'
 import type { BoardWriteEvidence } from '../tasks'
+import { officeProjects } from './projects'
+import { boardTaskTitle, journalSummary, statusCounts } from './hud'
 
 export interface OfficeSources {
   session(): string
   snapshot(): HerdrSnapshot | null
   settings(): Pick<AppSettings, 'roles' | 'projectLeads'>
+  isBoss?(paneId: string): boolean
+  confirmedPrompt?(fromPaneId: string, toPaneId: string, text: string): void
   subscribe(paneId: string): Promise<TranscriptUpdate>
   unsubscribe(paneId: string): void
   watchBoard(cwd: string): Promise<TaskBoard>
@@ -22,12 +27,6 @@ interface PaneWatch { baseline: boolean; token: string; seen: Map<string, string
 interface BoardWatch { board: TaskBoard | null; version: number; department: string; epoch: number }
 interface Aggregate { link: Omit<OfficeLink, 'count' | 'weight' | 'lastAt'>; times: Map<number, number> }
 const digest = (s: string) => createHash('sha256').update(s).digest('hex')
-const SUMMARIES: Record<OfficeEventKind, string> = {
-  prompt: 'Сообщение доставлено', prompt_attempt: 'Попытка отправки', user_prompt: 'Сообщение пользователя',
-  input_observed: 'Наблюдается входящее сообщение', task_created: 'Новая задача',
-  task_assigned: 'Задача назначена', task_status: 'Статус задачи изменён',
-  ssh_attempt: 'Запущена SSH-команда', agent_status: 'Статус агента изменён'
-}
 
 /** One light observer over the existing transcript tailers and project board refs. */
 export class OfficeCollector {
@@ -61,7 +60,7 @@ export class OfficeCollector {
     return { session: this.sources.session(), generation: randomUUID(), departments: [], seats: [], agents: [],
       externalNodes: [{ id: 'user', kind: 'user', name: 'User' },
         { id: 'machine:pc', kind: 'machine', name: 'pc' }, { id: 'machine:homeserver', kind: 'machine', name: 'homeserver' }],
-      links: [], recentEvents: [] }
+      links: [], recentEvents: [], statusCounts: statusCounts([]) }
   }
   /** Idempotent for the single local renderer. Reopening never replays queued effects. */
   init(): OfficeState {
@@ -107,6 +106,7 @@ export class OfficeCollector {
   }
   getState(): OfficeState {
     this.prune()
+    this.state.statusCounts = statusCounts(this.state.agents)
     return structuredClone(this.state)
   }
   endpoint(paneId: string): string | null { return this.state.agents.find(a => a.paneId === paneId)?.id ?? null }
@@ -133,9 +133,8 @@ export class OfficeCollector {
     if (!this.watching || !snapshot) return
     if (this.state.session !== this.sources.session()) { this.resetSession(); return }
     const now = this.now()
-    this.state.departments = [...snapshot.workspaces].sort((a,b) => a.number-b.number).map(w => ({
-      id: `${this.state.session}:department:${w.workspace_id}`, workspaceId: w.workspace_id, name: w.label, number: w.number
-    }))
+    const projects = officeProjects(snapshot, this.state.session)
+    this.state.departments = projects.map(p => p.department)
     const previous = new Map(this.state.agents.map(a => [a.id, a]))
     const agents: OfficeAgent[] = []
     const live = new Set(snapshot.panes.map(p => p.pane_id))
@@ -144,11 +143,12 @@ export class OfficeCollector {
     }
     for (const id of this.incarnations.keys()) if (!live.has(id)) { this.incarnations.delete(id) }
     const neededBoards = new Map<string, string>()
-    for (const department of this.state.departments) {
-      const panes = snapshot.panes.filter(p => p.workspace_id === department.workspaceId).sort((a,b) => a.pane_id.localeCompare(b.pane_id))
+    const statuses: OfficeEventEnvelope[] = []
+    for (const { department, root } of projects) {
+      if (root) neededBoards.set(root, department.id)
+      const panes = snapshot.panes.filter(p => department.workspaceIds.includes(p.workspace_id)).sort((a,b) => a.pane_id.localeCompare(b.pane_id))
       for (const pane of panes) {
-        const cwd = pane.cwd || pane.foreground_cwd
-        if (cwd && !neededBoards.has(cwd)) neededBoards.set(cwd, department.id)
+        const cwd = root
         let seat = this.state.seats.find(s => s.paneId === pane.pane_id && s.departmentId === department.id)
         for (const moved of this.state.seats) if (moved.paneId === pane.pane_id && moved.departmentId !== department.id) {
           moved.paneId = null; moved.agentId = null; moved.terminal = false
@@ -169,23 +169,28 @@ export class OfficeCollector {
         if (!inc || inc.kind !== kind || (exact && inc.token !== exact)) {
           inc = { token: exact || randomUUID(), kind }; this.incarnations.set(pane.pane_id, inc)
         }
-        const id = `${this.state.session}:agent:${kind}:${inc.token}`
+        const incarnation = digest(inc.token)
+        const id = `${this.state.session}:agent:${kind}:${incarnation}`
         const old = previous.get(id)
-        const name = snapshot.agents.find(a=>a.pane_id === pane.pane_id)?.name || pane.label || kind
+        const candidate = snapshot.agents.find(a=>a.pane_id === pane.pane_id)?.name || pane.label
+        const name = candidate && AGENT_NAME_RE.test(candidate) ? candidate : kind
         const [role, roleSource] = this.role(inc.token, name, cwd || '')
         const same = old?.id === id
         const statusChanged = same && old.status !== pane.agent_status && old.status !== 'disconnect'
-        const agent: OfficeAgent = { id, paneId: pane.pane_id, incarnation: inc.token, kind, name, role, roleSource,
+        const agent: OfficeAgent = { id, paneId: pane.pane_id, incarnation, kind, name, role, roleSource,
+          ...(this.sources.isBoss?.(pane.pane_id) ? { isBoss: true } : {}),
           departmentId: department.id, seatId: seat.id, status: this.connected ? pane.agent_status : 'disconnect',
           lastStatusAt: same && old.status === pane.agent_status ? old.lastStatusAt : now,
+          lastEventAt: old?.lastEventAt ?? null, lastTask: null,
           transcriptCoverage: same ? old.transcriptCoverage : exact && ['claude','codex'].includes(kind) ? 'loading' : 'unavailable' }
         agents.push(agent); seat.agentId = id
-        if (this.connected && !baseline && statusChanged) this.accept({ id: digest(`${id}:status:${now}:${pane.agent_status}`),
+        if (this.connected && !baseline && statusChanged) statuses.push({ id: digest(`${id}:status:${now}:${pane.agent_status}`),
           from: id, to: null, kind: 'agent_status', ts: now, summary: '', source: 'herdr',
-          sourceRef: id, observedAt: now, confidence: 'observed' })
+          status: pane.agent_status, sourceRef: id, observedAt: now, confidence: 'observed' })
       }
     }
     this.state.agents = agents
+    for (const event of statuses) this.accept(event)
     const departments = new Set(this.state.departments.map(d => d.id))
     this.state.seats = this.state.seats.filter(s => departments.has(s.departmentId))
     const needed = new Set(agents.filter(a=> ['claude','codex'].includes(a.kind)).map(a=>a.paneId))
@@ -205,7 +210,9 @@ export class OfficeCollector {
       const watch: BoardWatch = { board: null, version: 0, department, epoch: this.epoch }
       this.boards.set(cwd, watch)
       void this.sources.watchBoard(cwd).then(board => {
-        if (this.boards.get(cwd) === watch && watch.epoch === this.epoch && !watch.board && !board.error) watch.board = structuredClone(board)
+        if (this.boards.get(cwd) === watch && watch.epoch === this.epoch && !watch.board && !board.error) {
+          watch.board = structuredClone(board); this.refreshTasks(); this.dirty = true
+        }
       }).catch(()=>undefined)
       if (this.sources.roles && !this.projectRoles.has(cwd)) {
         const epoch = this.epoch
@@ -215,6 +222,7 @@ export class OfficeCollector {
         }).catch(()=>undefined)
       }
     }
+    this.refreshTasks()
     this.dirty = true
   }
   private pump(): void {
@@ -248,7 +256,7 @@ export class OfficeCollector {
     if (watch.limited) return
     const pane = this.sources.snapshot()?.panes.find(p=>p.pane_id === update.paneId)
     if (!update.meta || update.meta.located !== 'exact' || !pane?.agent_session?.value ||
-      update.meta.sessionId !== pane.agent_session.value || update.meta.sessionId !== agent.incarnation) return
+      update.meta.sessionId !== pane.agent_session.value || update.meta.sessionId !== this.incarnations.get(update.paneId)?.token) return
     if (!this.connected || update.reset || !watch.baseline) {
       for (const item of update.items) watch.seen.set(item.id, 'baseline')
       watch.baseline = true
@@ -289,6 +297,10 @@ export class OfficeCollector {
   }
   private analysisContext(from: string | null) {
     return { session: this.state.session, from, observedAt: this.now(), sshAliases: ['pc','homeserver'],
+      onConfirmedPrompt: (targetPaneId: string, text: string) => {
+        const sender = this.state.agents.find(a => a.id === from)
+        if (sender) this.sources.confirmedPrompt?.(sender.paneId, targetPaneId, text)
+      },
       resolveAgent: (session: string, target: string) => {
         if (session !== this.state.session) return null
         const matches = this.state.agents.filter(a=>a.paneId === target || a.name === target)
@@ -298,13 +310,19 @@ export class OfficeCollector {
   onBoard(board: TaskBoard, write?: BoardWriteEvidence): void {
     const watch = this.boards.get(board.cwd)
     if (!watch || !this.watching || board.error) return
-    if (!this.connected || !watch.board) { watch.board = structuredClone(board); return }
+    if (!this.connected || !watch.board) { watch.board = structuredClone(board); this.refreshTasks(); this.dirty = true; return }
     const previous = watch.board
     // Ignore since/title/notes noise; version only accepted semantic diffs.
     const signature = (b: TaskBoard) => JSON.stringify([b.exists,b.tasks.map(t=>[t.id,t.assignee,t.status])])
-    if (signature(previous) === signature(board)) { watch.board = structuredClone(board); return }
+    if (signature(previous) === signature(board)) { watch.board = structuredClone(board); this.refreshTasks(); this.dirty = true; return }
     watch.board = structuredClone(board); watch.version++
-    const candidates = diffTaskBoard(previous, board, { ...this.analysisContext(null), departmentId: watch.department })
+    this.refreshTasks()
+    const candidates = diffTaskBoard(previous, board, { ...this.analysisContext(null), departmentId: watch.department,
+      resolveAgent: (session, target) => {
+        if (session !== this.state.session) return null
+        const matches = this.state.agents.filter(a => a.departmentId === watch.department && (a.name === target || a.paneId === target))
+        return matches.length === 1 ? matches[0] : null
+      } })
     for (const [i,c] of candidates.entries()) {
       const task = board.tasks.find(t=>t.id === c.taskId)
       const user = write?.taskId === c.taskId && task && (
@@ -313,6 +331,17 @@ export class OfficeCollector {
         (c.kind === 'task_status' && write.status !== undefined && task.status === write.status))
       this.accept({ ...c, from: user ? 'user' : c.from, id: digest(`${this.state.generation}:${board.cwd}:${watch.version}:${i}`),
       source: 'board', sourceRef: digest(`${board.cwd}:${watch.version}:${i}`), observedAt: this.now() })
+    }
+  }
+  private refreshTasks(): void {
+    for (const agent of this.state.agents) {
+      const board = [...this.boards.values()].find(w => w.department === agent.departmentId)?.board
+      const tasks = (board?.tasks || []).filter(t => t.assignee === agent.name)
+      // Equal names in one project cannot establish which agent owns a task.
+      const unique = this.state.agents.filter(a => a.departmentId === agent.departmentId && a.name === agent.name).length === 1
+      const latest = tasks.reduce<typeof tasks[number] | null>((last, task) =>
+        !last || (task.since ?? 0) >= (last.since ?? 0) ? task : last, null)
+      agent.lastTask = unique && latest ? boardTaskTitle(latest.title) : null
     }
   }
   /** Call only after a specific agent.prompt acceptance. No shell/fallback/startup calls. */
@@ -325,15 +354,30 @@ export class OfficeCollector {
     this.accept({ id: randomUUID(), from: 'user', to: agent, kind: 'user_prompt', ts: this.now(), summary: '',
       source: 'ui', sourceRef: 'agent:send', observedAt: this.now(), confidence: 'confirmed' })
   }
+  /** A specific acceptance by the local HQ helper, backed by agent.prompt. */
+  agentPrompt(from: string | null, to: string | null, text?: string, receiptId: string = randomUUID(), ts = this.now()): void {
+    if (!this.watching || !from || !to || !this.state.agents.some(a => a.id === from) || !this.state.agents.some(a => a.id === to)) return
+    if (text) {
+      const key = JSON.stringify([to, digest(text.replace(/\r\n/g,'\n').trim())])
+      const queue = this.recentInput.get(key) || []
+      queue.push(this.now() + 30_000); this.recentInput.set(key, queue)
+    }
+    this.accept({ id: receiptId, from, to, kind: 'prompt', ts, summary: '', source: 'ui',
+      sourceRef: 'boss-helper', observedAt: this.now(), confidence: 'confirmed' })
+  }
   private accept(envelope: OfficeEventEnvelope): void {
     if (!Number.isFinite(envelope.ts) || envelope.ts < this.now()-L.historyMs || envelope.ts > this.now()+1000) return
     const event: OfficeUIEvent = { id: envelope.id, from: envelope.from, to: envelope.to, kind: envelope.kind,
-      ts: Math.min(envelope.ts,this.now()), summary: SUMMARIES[envelope.kind] }
+      ts: Math.min(envelope.ts,this.now()), summary: journalSummary(envelope, this.state),
+      ...(envelope.kind === 'agent_status' && envelope.status ? { status: envelope.status } : {}) }
     const index = this.state.recentEvents.findIndex(e=>e.id === event.id)
     if (index >= 0) {
       if (this.state.recentEvents[index].kind === event.kind) return
       this.state.recentEvents[index] = event
     } else this.state.recentEvents.push(event)
+    for (const agent of this.state.agents) if (agent.id === event.from || agent.id === event.to) {
+      agent.lastEventAt = Math.max(agent.lastEventAt ?? 0, event.ts)
+    }
     if (event.kind === 'prompt') {
       const attempt = this.attempts.get(event.id)
       if (attempt) {

@@ -1,4 +1,4 @@
-/** Desktop-only office protocol. No transcript text, commands or filesystem paths. */
+/** Desktop-only office protocol. Board titles are the only task text; no prompts, commands or filesystem paths. */
 export const OFFICE_LIMITS = {
   historyMs: 30 * 60_000, decayMs: 5 * 60_000, maxEvents: 1000,
   updateMs: 100, graceMs: 30_000, lookupConcurrency: 4, maxHistoryBytes: 10 * 1024 * 1024,
@@ -21,6 +21,8 @@ export interface OfficeEvent {
   ts: number
   /** Template only, never a truncated prompt/command/task title. */
   summary: string
+  /** Present only for agent_status; preserves the status at the event time. */
+  status?: OfficeStatus
 }
 export interface OfficeUIEvent extends OfficeEvent { id: string }
 /** Main-only provenance. Never serialize this envelope to the renderer. */
@@ -41,8 +43,12 @@ export interface OfficeToolEvidence {
 export interface OfficePoint { x: number; y: number }
 export interface OfficeRect extends OfficePoint { width: number; height: number }
 export interface OfficeDepartment {
+  /** Session + hash of the normalized sidebar project folder; independent of workspace IDs. */
   id: OfficeNodeId
+  /** Representative workspace for compatibility; use workspaceIds for navigation. */
   workspaceId: string
+  /** All workspaces sharing the sidebar project folder. No project paths in IPC. */
+  workspaceIds: string[]
   name: string
   number: number
 }
@@ -56,8 +62,11 @@ export interface OfficeSeat {
   terminal: boolean
 }
 export interface OfficeAgent {
+  /** Desktop headquarters agent, drawn in the boss office. */
+  isBoss?: boolean
   id: OfficeNodeId
   paneId: string
+  /** Opaque hash of the process/session identity; never raw provider metadata. */
   incarnation: string
   kind: OfficeAgentKind
   name: string
@@ -67,6 +76,12 @@ export interface OfficeAgent {
   seatId: string
   status: OfficeStatus
   lastStatusAt: number
+  /** Last event involving this incarnation, or null when none has been observed. */
+  lastEventAt: number | null
+  /** Assigned board title, <=160 chars; unsafe path/command labels become null.
+   * Latest since wins, then the last board row; never prompt text.
+   */
+  lastTask: string | null
   transcriptCoverage: OfficeTranscriptCoverage
 }
 export interface OfficeExternalNode {
@@ -101,7 +116,10 @@ export interface OfficeState {
   agents: OfficeAgent[]
   externalNodes: OfficeExternalNode[]
   links: OfficeLink[]
+  /** Bounded journal, oldest first. summary is ready to display, with fixed phrases and node names. */
   recentEvents: OfficeUIEvent[]
+  /** Across every department, including stale/disconnected agents. */
+  statusCounts: Record<OfficeStatus, number>
 }
 /** Full compact state at <=10Hz, with only fresh effects. init has no animations. */
 export interface OfficeUpdate { state: OfficeState; animations: OfficeAnimation[] }

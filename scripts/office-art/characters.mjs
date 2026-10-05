@@ -9,14 +9,16 @@ export const KINDS = ['claude', 'codex', 'gemini', 'general']
 export const ROLES = ['lead', 'reviewer', 'devops', 'frontend', 'backend', 'docs', 'designer', 'general']
 const OUT = '#2b1d1b'
 
-const SKIN = { claude: ['#f2c6a3', '#d99c78'], codex: ['#ecc19d', '#cf9d78'], gemini: ['#c98e66', '#a8704d'], general: ['#f4d2b4', '#dcae8c'], user: ['#e8b48e', '#c99470'] }
+const SKIN = { claude: ['#f2c6a3', '#d99c78'], codex: ['#ecc19d', '#cf9d78'], gemini: ['#c98e66', '#a8704d'], general: ['#f4d2b4', '#dcae8c'], user: ['#e8b48e', '#c99470'], boss: ['#f0c8a8', '#d4a382'] }
 const STYLE = {
   claude: { shirt: ['#ef9a76', '#d97757', '#b55a3e'], hair: ['#c7703f', '#9c4a2a', '#7a3720'], pants: ['#4b4a6b', '#36354f'], collar: '#fbe6d4', logo: '#fbe6d4' },
   codex: { shirt: ['#4a4a50', '#2c2c31', '#19191c'], hair: ['#f4f4f4', '#d2d2d6', '#a9a9b0'], pants: ['#3b3b40', '#26262a'], collar: '#f2f2f2', logo: '#f2f2f2' },
   gemini: { shirt: ['#8eaaff', '#5b7cf0', '#4258c2'], hair: ['#4a4580', '#2f2a5c', '#211d45'], pants: ['#3e3a66', '#2b284c'], collar: '#c9b6ff', logo: '#f3ecff', accent: '#a983f0' },
   general: { shirt: ['#8fc2aa', '#5f9e86', '#467a66'], hair: ['#7a5136', '#5c3a28', '#45291c'], pants: ['#4a5470', '#353d55'], collar: '#e9f3ee', logo: null },
   // «Вы»: the person at the Mac, a mustard sweater no agent kind wears.
-  user: { shirt: ['#f2cf73', '#dcab45', '#b5852c'], hair: ['#5a4a42', '#3a2c26', '#271c18'], pants: ['#4a5a80', '#36425f'], collar: '#fff4dc', logo: null }
+  user: { shirt: ['#f2cf73', '#dcab45', '#b5852c'], hair: ['#5a4a42', '#3a2c26', '#271c18'], pants: ['#4a5a80', '#36425f'], collar: '#fff4dc', logo: null },
+  // «Главный босс»: navy suit, red tie, gold crown pin, silver hair.
+  boss: { shirt: ['#3d4870', '#2c3557', '#1d2440'], hair: ['#d4d7e0', '#a9adba', '#7d8292'], pants: ['#2a2f45', '#1e2235'], collar: '#ffffff', logo: null }
 }
 const LOGOS = {
   claude: ['..x..', 'x.x.x', '.xxx.', 'x.x.x', '..x..'],
@@ -41,13 +43,15 @@ function geometry(p) {
   return { H: 6 + bob, T: 24 + Math.max(0, bob) }
 }
 
-function legs(c, s, dir) {
+function legs(c, s, dir, p = {}) {
   const [pants, pantsShade] = s.pants
   for (const x0 of [11, 17]) {
-    c.rect(x0, 36, 4, 6, pants)
-    c.vline(x0 === 11 ? 14 : 17, 37, 41, pantsShade)
-    c.rect(x0, 42, 4, 2, dir === 'front' ? '#4a3329' : '#3b2b26')
-    c.hline(x0, x0 + 3, 42, dir === 'front' ? '#6b4a3a' : '#4a3329')
+    // Walking: one foot is lifted on frames 0 and 2.
+    const lift = p.walk === undefined ? 0 : (p.walk === 0 && x0 === 11) || (p.walk === 2 && x0 === 17) ? 1 : 0
+    c.rect(x0, 36, 4, 6 - lift, pants)
+    c.vline(x0 === 11 ? 14 : 17, 37, 41 - lift, pantsShade)
+    c.rect(x0, 42 - lift, 4, 2, dir === 'front' ? '#4a3329' : '#3b2b26')
+    c.hline(x0, x0 + 3, 42 - lift, dir === 'front' ? '#6b4a3a' : '#4a3329')
   }
   c.rect(11, 36, 10, 2, pants)
 }
@@ -74,7 +78,15 @@ function torso(c, kind, s, g, dir) {
     const logo = LOGOS[kind]
     if (logo) c.stamp(kind === 'codex' ? 13 : 13, top + (kind === 'codex' ? 4 : 5), logo, { x: s.logo })
     if (kind === 'general') { c.rect(17, top + 4, 3, 3, shade); c.hline(17, 19, top + 4, s.collar) }
+    if (kind === 'boss') {
+      for (let j = 0; j < 5; j++) c.hline(15 - Math.floor(j / 2), 16 + Math.floor(j / 2), top + j, s.collar)
+      c.rect(15, top + 1, 2, 2, '#c0392b'); c.vline(15, top + 3, top + 9, '#c0392b'); c.vline(16, top + 3, top + 10, '#a5281f')
+      c.line(13, top + 1, 12, top + 6, light); c.line(18, top + 1, 19, top + 6, shade)
+      c.set(11, top + 4, '#f2c230'); c.set(13, top + 4, '#f2c230'); c.hline(11, 13, top + 5, '#f2c230'); c.set(12, top + 4, '#fff3a8')
+      c.set(17, top + 8, '#1d2440'); c.set(17, top + 11, '#1d2440')
+    }
   } else {
+    if (kind === 'boss') c.vline(15, top + 6, 35, shade)
     if (kind === 'codex') { c.round(11, top, 10, 4, 1, '#3a3a40'); c.hline(12, 19, top + 3, '#19191c') }
     if (kind === 'gemini') c.stamp(14, top + 6, ['..x..', '.xxx.', '..x..'], { x: STYLE.gemini.logo })
   }
@@ -101,7 +113,14 @@ function arm(c, s, skin, side, kind, p, g, dir) {
     }
     return
   }
-  if (p.arms === 'raise' && !L) {
+  if (p.arms === 'throw' && !L && p.phase === 1) {
+    // Release: the arm swings out to the side, hand open.
+    c.rect(22, top, 3, 3, sleeve)
+    c.rect(24, top + 1, 5, 3, sleeve); c.hline(24, 28, top + 3, mix(sleeve, OUT, 0.25))
+    c.rect(29, top + 1, 3, 3, hand); c.vline(31, top + 1, top + 3, handShade)
+    return
+  }
+  if ((p.arms === 'raise' || p.arms === 'throw') && !L) {
     const w = p.wave ?? 0
     c.rect(22, top, 3, 3, sleeve)
     c.rect(24, g.H + 1, 3, top - g.H + 1, sleeve)
@@ -120,11 +139,12 @@ function arm(c, s, skin, side, kind, p, g, dir) {
     c.vline(L ? x : x + 2, g.H - 2 - r, g.H + 1 - r, handShade)
     return
   }
-  // Arms down at the sides.
-  c.rect(sx, top + 1, 3, 9, sleeve)
-  c.vline(L ? sx : sx + 2, top + 2, top + 9, L ? mix(base, '#ffffff', 0.12) : mix(shade, OUT, 0.15))
-  c.rect(sx, top + 10, 3, 2, hand)
-  c.hline(sx, sx + 2, top + 11, handShade)
+  // Arms down at the sides (swinging a little while walking).
+  const sw = p.walk === undefined ? 0 : p.walk === 0 ? (L ? -1 : 1) : p.walk === 2 ? (L ? 1 : -1) : 0
+  c.rect(sx, top + 1, 3, 9 + sw, sleeve)
+  c.vline(L ? sx : sx + 2, top + 2, top + 9 + sw, L ? mix(base, '#ffffff', 0.12) : mix(shade, OUT, 0.15))
+  c.rect(sx, top + 10 + sw, 3, 2, hand)
+  c.hline(sx, sx + 2, top + 11 + sw, handShade)
   void kind
 }
 
@@ -149,7 +169,8 @@ function hair(c, kind, s, g, dir) {
     codex: ['xxxxxxxxxxxxxxxx', 'xx.xx.xxx.xx.xxx', '.x..x...x..x..x.'],
     gemini: ['xxxxxxxxxxxxxxxx', 'xxxxxxxxx....xxx', 'xxxxxx.......xxx'],
     general: ['xxxxxxxxxxxxxxxx', 'xxxxxxx.xxxxxxxx', 'xx.xxx...xxx.xxx'],
-    user: ['xxxxxxxxxxxxxxxx', 'xxxxxxxxxxx..xxx', 'xxxxxx.......xxx']
+    user: ['xxxxxxxxxxxxxxxx', 'xxxxxxxxxxx..xxx', 'xxxxxx.......xxx'],
+    boss: ['xxxxxxxxxxxxxxxx', 'xxx..........xxx', 'xx............xx']
   }[kind]
   c.stamp(8, H + 5, fringe, { x: base })
   c.hline(9, 22, H + 7, mix(base, dark, 0.5))
@@ -175,6 +196,7 @@ function face(c, kind, g, p) {
     else if (eyes === 'dot') c.rect(x + 1, H + 10, 1, 2, eye)
   }
   c.hline(9, 10, H + 13, '#eaa08a'); c.hline(21, 22, H + 13, '#e3957f')
+  if (kind === 'boss') { c.hline(13, 18, H + 12, '#a9adba'); c.set(12, H + 13, '#a9adba'); c.set(19, H + 13, '#a9adba') }
   const mouth = p.mouth ?? 'smile', lip = '#8a3b33'
   if (mouth === 'smile') { c.set(14, H + 13, lip); c.hline(15, 16, H + 14, lip); c.set(17, H + 13, lip) }
   else if (mouth === 'flat') c.hline(15, 16, H + 14, lip)
@@ -200,11 +222,11 @@ function askBubble(c, p) {
 export function drawBody(kind, dir, pose) {
   const c = new Pix(FRAME.w, FRAME.h)
   const s = STYLE[kind], skin = SKIN[kind], g = geometry(pose)
-  legs(c, s, dir)
+  legs(c, s, dir, pose)
   if (dir === 'back') {
     arm(c, s, skin, -1, kind, pose, g, dir); arm(c, s, skin, 1, kind, pose, g, dir)
     torso(c, kind, s, g, dir)
-    if (pose.arms === 'raise' || pose.arms === 'stretch') { arm(c, s, skin, 1, kind, pose, g, dir); if (pose.arms === 'stretch') arm(c, s, skin, -1, kind, pose, g, dir) }
+    if (pose.arms === 'raise' || pose.arms === 'stretch' || pose.arms === 'throw') { arm(c, s, skin, 1, kind, pose, g, dir); if (pose.arms === 'stretch') arm(c, s, skin, -1, kind, pose, g, dir) }
     backHead(c, kind, g)
     hair(c, kind, s, g, dir)
   } else {
@@ -213,7 +235,7 @@ export function drawBody(kind, dir, pose) {
     hair(c, kind, s, g, dir)
     arm(c, s, skin, -1, kind, pose, g, dir); arm(c, s, skin, 1, kind, pose, g, dir)
   }
-  if (pose.arms === 'raise') askBubble(c, pose)
+  if (pose.arms === 'raise' && !pose.noAsk) askBubble(c, pose)
   c.outline(OUT, 0.62)
   if (pose.grey) c.desaturate(0.55)
   contactShadow(c)
@@ -227,6 +249,8 @@ function contactShadow(c) {
     if (nx * nx + ny * ny <= 1 && !c.alpha(x, y)) c.set(x, y, '#2b1d1b40')
   }
 }
+
+const H = (g) => g.H
 
 /** «Вы» (object.user): standing, a closed laptop hugged to the chest, a mug of tea.
  *  Same frame and anchor as the agents; frame 0 is the still pose. */
@@ -248,6 +272,14 @@ export function drawUser(pose) {
   c.vline(18, T + 3, T + 8, '#a9b3bb'); c.hline(9, 18, T + 8, '#8a96a3')
   c.rect(15, T + 4, 2, 2, '#e06a9b'); c.set(11, T + 6, '#4fb3e0'); c.set(12, T + 6, '#4fb3e0')
   c.rect(16, T + 8, 3, 2, hand); c.hline(16, 18, T + 9, handShade)
+  if (pose.throw !== undefined) {
+    // Throw (user_prompt): the mug is put down, the right hand lifts a note / sends it.
+    if (pose.throw === 0) { c.rect(22, T, 3, 3, shade); c.rect(24, H(g) + 2, 3, T - H(g) - 1, shade); c.rect(24, H(g) - 2, 3, 4, hand); c.rect(23, H(g) - 6, 7, 5, '#cfe6ff'); c.hline(23, 29, H(g) - 6, '#ffffff'); c.line(23, H(g) - 2, 29, H(g) - 6, '#5a8fd0') }
+    else { c.rect(22, T, 3, 3, shade); c.rect(24, T + 1, 5, 3, shade); c.rect(29, T + 1, 3, 3, hand) }
+    c.outline(OUT, 0.62)
+    contactShadow(c)
+    return c
+  }
   // Right arm bent forward with the mug.
   c.rect(22, T + 1, 3, 6, shade); c.rect(22, T + 6, 2, 2, shade)
   const mx = 24, my = T + 3
@@ -338,5 +370,121 @@ export function drawRole(role, dir, pose) {
   }
   c.outline(OUT, 0.55)
   if (pose.grey) c.desaturate(0.55)
+  return c
+}
+
+// ---------------------------------------------------------------- side view (facing right)
+
+function hairSide(c, kind, s, g) {
+  const [light, base, dark] = s.hair, H = g.H
+  c.round(9, H, 14, 8, 4, base)
+  c.rect(9, H + 4, 6, 8, base)
+  c.hline(12, 18, H + 1, light); c.hline(11, 14, H + 2, light)
+  c.rect(18, H + 4, 4, 2, base); c.set(21, H + 6, base)
+  c.vline(9, H + 5, H + 11, dark)
+  if (kind === 'claude') { c.rect(8, H + 6, 4, 11, base); c.vline(8, H + 8, H + 16, dark); c.hline(9, 11, H + 16, dark) }
+  if (kind === 'codex') for (const x of [10, 13, 16, 19]) c.set(x, H - 1, base)
+  if (kind === 'gemini') { c.rect(19, H + 4, 4, 3, base); c.set(22, H + 7, base) }
+  if (kind === 'user') { c.set(16, H - 1, base); c.set(17, H - 2, base) }
+}
+
+/** Side view, facing right; the engine mirrors it for walking left. pose: { walk?: 0..3, bob?, eyes?, mouth?, grey? } */
+export function drawSide(kind, pose = {}) {
+  const k = STYLE[kind] ? kind : 'general'
+  const c = new Pix(FRAME.w, FRAME.h)
+  const s = STYLE[k], [skin, skinShade] = SKIN[k], g = geometry(pose), Hh = g.H, T = g.T
+  const [light, base, shade] = s.shirt, [pants, pantsShade] = s.pants
+  const w = pose.walk
+  const off = w === undefined ? [1, -1] : [[3, -3], [0, 0], [-3, 3], [0, 0]][w]
+  const lift = w === undefined ? [0, 0] : [[0, 0], [1, 0], [0, 0], [0, 1]][w]
+  const leg = (dx, lifted, col, shoe) => {
+    for (let y = 35; y <= 41 - lifted; y++) c.rect(14 + Math.round((dx * (y - 35)) / 6), y, 4, 1, col)
+    const fx = 14 + dx
+    c.rect(fx, 42 - lifted, 5, 2, shoe); c.hline(fx, fx + 4, 42 - lifted, mix(shoe, '#ffffff', 0.18))
+  }
+  leg(off[1], lift[1], pantsShade, '#3b2b26')
+  leg(off[0], lift[0], pants, '#4a3329')
+  c.rect(12, T, 9, 36 - T, base); c.vline(12, T + 1, 35, light); c.vline(20, T + 1, 35, shade); c.hline(12, 20, 35, shade)
+  c.hline(17, 19, T, s.collar)
+  if (k === 'boss') { c.vline(19, T + 1, T + 3, s.collar); c.vline(20, T + 1, T + 8, '#c0392b'); c.set(18, T + 4, '#f2c230') }
+  if (k === 'gemini') for (let y = T + 7; y < 35; y++) for (let x = 12; x <= 20; x++) if ((x + y) % 2 === 0) c.set(x, y, mix(c.get(x, y), STYLE.gemini.accent, 0.45))
+  if (k === 'codex') { c.round(11, T - 1, 6, 4, 1, '#3a3a40') }
+  c.rect(15, Hh + 16, 3, Math.max(1, T - Hh - 16), skinShade)
+  c.round(10, Hh + 3, 13, 14, 5, skin)
+  c.vline(22, Hh + 8, Hh + 13, skinShade)
+  c.set(23, Hh + 10, skin); c.set(23, Hh + 11, skinShade)
+  c.rect(15, Hh + 9, 2, 3, skinShade)
+  const eye = '#2b1d1b', eyes = pose.eyes ?? 'open'
+  if (eyes === 'open') { c.rect(19, Hh + 9, 2, 3, eye); c.set(19, Hh + 9, '#ffffff') }
+  else if (eyes === 'closed') c.hline(19, 20, Hh + 11, eye)
+  else if (eyes === 'happy') { c.set(19, Hh + 11, eye); c.set(20, Hh + 10, eye); c.set(21, Hh + 11, eye) }
+  else c.rect(20, Hh + 10, 1, 2, eye)
+  c.set(18, Hh + 13, '#eaa08a')
+  const mouth = pose.mouth ?? 'smile', lip = '#8a3b33'
+  if (mouth === 'smile') { c.set(20, Hh + 13, lip); c.set(21, Hh + 14, lip) }
+  else if (mouth === 'o') c.rect(20, Hh + 13, 2, 2, lip)
+  else c.hline(20, 21, Hh + 14, lip)
+  hairSide(c, k, s, g)
+  const a = w === undefined ? 0 : [-2, 0, 2, 0][w]
+  for (let y = T + 1; y <= T + 9; y++) c.rect(15 + Math.round((a * (y - T)) / 9), y, 3, 1, y === T + 1 ? light : base)
+  c.rect(15 + a, T + 10, 3, 2, skin); c.hline(15 + a, 17 + a, T + 11, skinShade)
+  c.outline(OUT, 0.62)
+  if (pose.grey) c.desaturate(0.55)
+  contactShadow(c)
+  return c
+}
+
+/** Role overlay for drawSide (same geometry). */
+export function drawRoleSide(role, pose = {}) {
+  const c = new Pix(FRAME.w, FRAME.h)
+  const g = geometry(pose), Hh = g.H, T = g.T
+  switch (role) {
+    case 'lead':
+      c.hline(11, 19, Hh - 1, '#59607a'); c.hline(10, 20, Hh, '#3d4250'); c.vline(13, Hh + 1, Hh + 7, '#3d4250')
+      c.round(12, Hh + 7, 4, 5, 1, '#d97757'); c.vline(12, Hh + 8, Hh + 10, '#f2a57f')
+      c.line(15, Hh + 12, 20, Hh + 14, '#3d4250'); c.rect(20, Hh + 14, 2, 1, '#2b1d1b')
+      break
+    case 'reviewer':
+      c.rect(18, Hh + 8, 5, 5, '#8a5a32'); c.rect(19, Hh + 9, 3, 3, '#dff3ff'); c.set(19, Hh + 9, '#ffffff'); c.hline(15, 17, Hh + 9, '#8a5a32')
+      break
+    case 'devops':
+      c.round(9, Hh - 2, 14, 7, 4, '#f2c230'); c.hline(12, 18, Hh - 1, '#ffe27a'); c.vline(16, Hh - 2, Hh + 4, '#d9a21b')
+      c.hline(8, 25, Hh + 5, '#d9a21b'); c.hline(9, 24, Hh + 4, '#f2c230')
+      break
+    case 'frontend':
+      c.round(9, Hh - 1, 13, 7, 4, '#3fb6c9'); c.hline(12, 18, Hh, '#7fe0ec'); c.rect(21, Hh + 4, 6, 2, '#2a8a9b'); c.hline(21, 26, Hh + 4, '#3fb6c9')
+      break
+    case 'backend':
+      c.round(9, Hh - 2, 14, 8, 5, '#5d6f8c'); c.hline(12, 18, Hh - 1, '#7f92b0')
+      for (let x = 9; x <= 22; x++) c.set(x, Hh + 4, x % 2 ? '#7f92b0' : '#4a5a74'); c.hline(9, 22, Hh + 5, '#4a5a74')
+      c.round(13, Hh - 5, 4, 4, 1, '#e9eef5'); c.set(14, Hh - 4, '#ffffff')
+      break
+    case 'docs':
+      c.line(12, Hh + 4, 15, Hh + 9, '#f2c230'); c.line(13, Hh + 4, 16, Hh + 9, '#d9a21b'); c.set(12, Hh + 3, '#e88aa0'); c.set(16, Hh + 10, '#2b1d1b')
+      break
+    case 'designer':
+      c.ellipse(15, Hh + 1, 8, 3, '#c2447a'); c.hline(9, 18, Hh, '#e06a9b'); c.rect(14, Hh - 3, 2, 2, '#9c2f5e')
+      break
+    case 'general':
+      c.line(18, T, 19, T + 4, '#3a6fb0'); c.rect(18, T + 5, 3, 4, '#fffaf0'); c.hline(18, 20, T + 5, '#3a6fb0')
+      break
+  }
+  c.outline(OUT, 0.55)
+  if (pose.grey) c.desaturate(0.55)
+  return c
+}
+
+/** «Главный босс». pose: sit | stand | dispatch (phase 0 windup, 1 fan release, 2 follow-through) | pleased | walk (side). */
+export function drawBoss({ pose = 'stand', phase = 0, bob = 0, eyes, walk } = {}) {
+  if (pose === 'walk') return drawSide('boss', { walk, bob })
+  const p = { bob, eyes }
+  if (pose === 'dispatch') Object.assign(p, { arms: 'stretch', reach: phase === 0 ? 0 : 1, mouth: phase === 2 ? 'grin' : 'smile', eyes: phase === 2 ? 'happy' : eyes })
+  if (pose === 'pleased') Object.assign(p, { eyes: 'happy', mouth: 'grin', bob: phase })
+  const c = drawBody('boss', 'front', p)
+  const env = (x, y, gold) => { c.rect(x - 1, y - 1, 8, 6, OUT); c.rect(x, y, 6, 4, gold ? '#f6e3a0' : '#fffaf0'); c.line(x, y, x + 3, y + 2, '#c9a24a'); c.line(x + 5, y, x + 3, y + 2, '#c9a24a'); c.set(x + 3, y + 3, '#c0392b') }
+  const H = 6 + bob
+  if (pose === 'dispatch' && phase === 0) { env(21, 5, true); env(23, 3, true); env(25, 1, true) }
+  if (pose === 'dispatch' && phase === 1) { env(1, 8, true); env(13, 1, true); env(25, 8, true) }
+  if (pose === 'pleased') { c.set(12, 28 + bob, '#ffffff'); c.set(11, 27 + bob, '#fff3a8'); c.set(13, 27 + bob, '#fff3a8') }
   return c
 }

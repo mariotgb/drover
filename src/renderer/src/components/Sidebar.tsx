@@ -24,15 +24,18 @@ import { AgentAvatar, IconButton, StatusDot } from './primitives'
 import { UsageWidget } from './Usage'
 import { t, tp } from '../i18n'
 import { splitByLead, projectKey } from '../leads'
+import { isRemote } from '../api'
+import { BossBroadcastDialog, BossDialog } from './BossDialogs'
 
 export function Sidebar() {
   const { groups, threads } = useModel()
   const mode = useStore((s) => s.settings.sidebarMode)
   const connection = useStore((s) => s.connection)
   const width = useStore((s) => s.settings.sidebarWidth)
+  const dialog = useStore((s) => s.dialog)
 
   return (
-    <aside className="sidebar" style={{ width }}>
+    <><aside className="sidebar" style={{ width }}>
       <div className="sidebar-top drag">
         <div className="traffic-space" />
         <div className="sidebar-top-actions no-drag">
@@ -51,6 +54,10 @@ export function Sidebar() {
           <span>{t('New agent')}</span>
           <span className="shortcut">⌘N</span>
         </button>
+        {!isRemote && <button type="button" className="sidebar-new" onClick={() => useStore.setState({ dialog: { type: 'boss' } })}>
+          <Crown size={16} />
+          <span>{t('Main boss')}</span>
+        </button>}
       </div>
 
       <div className="sidebar-section-head">
@@ -84,6 +91,9 @@ export function Sidebar() {
       <SidebarFooter />
       <ResizeHandle />
     </aside>
+    {!isRemote && dialog?.type === 'boss' && <BossDialog />}
+    {!isRemote && dialog?.type === 'boss-broadcast' && <BossBroadcastDialog />}
+    </>
   )
 }
 

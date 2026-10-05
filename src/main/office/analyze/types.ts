@@ -23,6 +23,8 @@ export interface OfficeAnalyzeContext {
   resolveAgent: (session: string, target: string) => ResolvedOfficeAgent | null
   resolveMachine?: (alias: string) => OfficeNodeId | null
   sshAliases?: readonly string[]
+  /** Main-only receipt callback. Never add prompt text to an office event. */
+  onConfirmedPrompt?: (targetPaneId: string, text: string) => void
 }
 export interface OfficeEventCandidate extends OfficeEvent {
   commandIndex: number

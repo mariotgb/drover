@@ -7,8 +7,7 @@ export function zoomAt(c: Camera, zoom: number, screen: Point): Camera {
   return { x: screen.x - p.x * zoom, y: screen.y - p.y * zoom, zoom }
 }
 export function fitCamera(bounds: Rect, width: number, height: number): Camera {
-  const fit = Math.max(0.05, Math.min(3, (width - 48) / bounds.width, (height - 48) / bounds.height))
-  const zoom = fit >= 0.5 ? Math.floor(fit * 2) / 2 : fit
+  const zoom = Math.max(1, Math.min(3, Math.floor(Math.min((width - 48) / bounds.width, (height - 48) / bounds.height))))
   return { zoom, x: (width - bounds.width * zoom) / 2 - bounds.x * zoom, y: (height - bounds.height * zoom) / 2 - bounds.y * zoom }
 }
 export const contains = (r: Rect, p: Point) => p.x >= r.x && p.y >= r.y && p.x < r.x + r.width && p.y < r.y + r.height

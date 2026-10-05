@@ -107,6 +107,7 @@ export function analyzeToolCall(call: OfficeToolCall, context: OfficeAnalyzeCont
   // Herdr's CLI receipt has no session field. Equal pane IDs in different
   // sessions make combined results ambiguous even if one name is known locally.
   const singleSession = new Set(allCommands.filter((c) => c.kind === 'prompt').map((c) => c.session)).size === 1
+  const parsedCommands = sources.flatMap(source => parseShellCommands(source))
   for (const command of allCommands) {
     const ts = call.ts ?? context.observedAt
     const commandIndex = command.commandIndex
@@ -126,6 +127,11 @@ export function analyzeToolCall(call: OfficeToolCall, context: OfficeAnalyzeCont
     const receipt = matching.length === sameTarget ? matching.find(({ index }) => !used.has(index)) : undefined
     if (receipt) used.add(receipt.index)
     const confirmed = !!receipt
+    if (confirmed && target && context.onConfirmedPrompt) {
+      const argv = parsedCommands[commandIndex]?.argv ?? []
+      const agentIndex = argv.indexOf('agent')
+      if (agentIndex >= 0 && argv[agentIndex + 1] === 'prompt') context.onConfirmedPrompt(target.paneId, argv[agentIndex + 3])
+    }
     events.push({ from: context.from, to: target?.id ?? null, kind: confirmed ? 'prompt' : 'prompt_attempt',
       ts, summary: confirmed ? 'Сообщение доставлено' : 'Попытка отправки', commandIndex,
       confidence: confirmed ? 'confirmed' : 'attempt' })

@@ -59,6 +59,8 @@ export type DialogState =
   | { type: 'settings'; tab?: string }
   | { type: 'team'; workspaceId: string }
   | { type: 'broadcast'; workspaceId: string }
+  | { type: 'boss' }
+  | { type: 'boss-broadcast' }
   | { type: 'prompt'; title: string; label?: string; value: string; placeholder?: string; confirm: string; validate?: (v: string) => string | null; onSubmit: (v: string) => Promise<void> | void }
   | { type: 'confirm'; title: string; message: string; confirm: string; danger?: boolean; onConfirm: () => Promise<void> | void }
 

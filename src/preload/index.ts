@@ -1,4 +1,5 @@
 import type { OfficeState, OfficeUpdate } from '@shared/office'
+import type { BossBroadcastRequest, BossDelivery, BossOpenRequest, BossSettings } from '@shared/boss'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { TranscriptCursor } from '@shared/types'
 import type {
@@ -18,6 +19,11 @@ const api = {
   init: () => ipcRenderer.invoke('app:init'),
   officeInit: (): Promise<OfficeState | null> => ipcRenderer.invoke('office:init'),
   officeStop: (): void => ipcRenderer.send('office:stop'),
+  bossRoster: () => ipcRenderer.invoke('boss:roster'),
+  bossSettings: () => ipcRenderer.invoke('boss:settings'),
+  setBossSettings: (patch: Partial<BossSettings>) => ipcRenderer.invoke('boss:configure', patch),
+  openBoss: (req: BossOpenRequest) => ipcRenderer.invoke('boss:open', req),
+  broadcastBoss: (req: BossBroadcastRequest) => ipcRenderer.invoke('boss:broadcast', req),
   setSettings: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
   remoteStatus: (): Promise<RemoteStatus> => ipcRenderer.invoke('remote:status'),
   setRemoteAccess: (patch: Partial<RemoteAccessSettings>): Promise<RemoteStatus> => ipcRenderer.invoke('remote:configure', patch),
@@ -93,6 +99,7 @@ const api = {
 
   on: {
     office: (fn: (update: OfficeUpdate) => void) => on('office:update', fn),
+    bossDelivery: (fn: (delivery: BossDelivery) => void) => on('boss:delivery', fn),
     snapshot: (fn: Listener) => on('herdr:snapshot', fn),
     connection: (fn: Listener) => on('herdr:connection', fn),
     termFrames: (fn: Listener) => on('term:frames', fn),

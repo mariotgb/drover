@@ -142,11 +142,11 @@ export function App() {
   useEffect(() => api.on.selectPane(() => setOfficeOpen(false)), [])
 
   const showOffice = officeAllowed && !window.droverRemote && !mobile && officeOpen
-  const openOfficePane = (paneId: string) => {
+  const openOfficePane = (paneId: string, mode?: 'chat' | 'terminal') => {
     const target = getModel().byPane.get(paneId)
     if (!target) return
     select(paneId)
-    setViewMode(paneId, agentKindDef(target.kind)?.transcript ? 'chat' : 'terminal')
+    setViewMode(paneId, mode ?? (agentKindDef(target.kind)?.transcript ? 'chat' : 'terminal'))
     setOfficeOpen(false)
   }
 

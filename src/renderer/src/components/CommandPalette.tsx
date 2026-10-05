@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { Bot, FolderPlus, Globe, Megaphone, PanelBottomOpen, PanelLeft, Settings, SquareTerminal, Users, Zap } from 'lucide-react'
+import { Bot, Crown, FolderPlus, Globe, Megaphone, PanelBottomOpen, PanelLeft, Settings, SquareTerminal, Users, Zap } from 'lucide-react'
+import { isRemote } from '../api'
 import { newTerminalTab, openNewAgent, openSettings } from '../actions'
 import { t } from '../i18n'
 import { fuzzyScore, statusLabel } from '../model'
@@ -46,6 +47,10 @@ export function CommandPalette() {
       })
     }
     const cmds: Omit<Entry, 'score'>[] = [
+      ...(!isRemote ? [
+        { id: 'cmd:boss', title: t('Main boss'), icon: <Crown size={16} />, run: () => useStore.setState({ sidebarHidden: false, dialog: { type: 'boss' } }) },
+        { id: 'cmd:boss-broadcast', title: t('Assignment to all project leads'), icon: <Megaphone size={16} />, run: () => useStore.setState({ sidebarHidden: false, dialog: { type: 'boss-broadcast' } }) }
+      ] : []),
       { id: 'cmd:new-agent', title: t('New agent…'), icon: <Bot size={16} />, right: <span className="kbd">⌘N</span>, run: () => openNewAgent({}) },
       { id: 'cmd:new-project', title: t('New project from folder…'), icon: <FolderPlus size={16} />, right: <span className="kbd">⌘⇧N</span>, run: () => openNewAgent({ workspaceId: null, pickFolder: true }) },
       { id: 'cmd:new-terminal', title: t('New terminal tab'), icon: <SquareTerminal size={16} />, run: () => void newTerminalTab(cur?.workspaceId ?? null, cur?.cwd) },

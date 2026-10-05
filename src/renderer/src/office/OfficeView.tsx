@@ -1,127 +1,188 @@
 import '../styles/office.css'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { List, Maximize, RotateCcw, Search } from 'lucide-react'
+import './hud.css'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { Check, Crosshair, Link2, List, Maximize, MessageSquare, Search, Send, Terminal, X } from 'lucide-react'
 import { t } from '../i18n'
-import type { OfficeState, OfficeUpdate } from '@shared/office'
-import { useStore } from '../store'
+import type { OfficeAgent, OfficeState, OfficeStatus, OfficeUpdate } from '@shared/office'
+import { useModel, useSelectedThread, useStore, watchBoard } from '../store'
+import { isDarkTheme, onAppearanceChange } from '../appearance'
 import { officeBridge } from './api'
-import { OfficeEngine, type WorldLabel } from './engine'
+import { OfficeEngine, type MapSnapshot, type WorldLabel } from './engine'
 import { roleLabel, statusLabel, coverageLabel, kindLabel, opensChat } from './labels'
+import { eventAge, journalText, officeText } from './text'
 
-export interface OfficeViewProps { active: boolean; onOpen(paneId: string): void }
-export function OfficeView({ active, onOpen }: OfficeViewProps) {
+export interface OfficeViewProps { active: boolean; onOpen(paneId: string, mode?: 'chat' | 'terminal'): void }
+function AgentPortrait({ agent, engine, revision }: { agent: OfficeAgent; engine: RefObject<OfficeEngine | null>; revision: unknown }) {
   const canvas = useRef<HTMLCanvasElement>(null)
-  const engine = useRef<OfficeEngine | null>(null)
-  const onOpenRef = useRef(onOpen)
-  onOpenRef.current = onOpen
-  const [worldLabels, setWorldLabels] = useState<WorldLabel[]>([])
-  const [state, setState] = useState<OfficeState | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [hovered, setHovered] = useState<string | null>(null)
-  const [showList, setShowList] = useState(true)
-  const [showTerminals, setShowTerminals] = useState(false)
-  const [search, setSearch] = useState('')
-  const [documentVisible, setDocumentVisible] = useState(!document.hidden)
+  useEffect(() => { if (canvas.current) engine.current?.portrait(agent.paneId, canvas.current) }, [agent.paneId, agent.kind, agent.role, engine, revision])
+  return <span className="office-member-face"><canvas ref={canvas} width={32} height={48} aria-hidden="true" /></span>
+}
+export function OfficeView({ active, onOpen }: OfficeViewProps) {
+  const canvas = useRef<HTMLCanvasElement>(null), mapCanvas = useRef<HTMLCanvasElement>(null), engine = useRef<OfficeEngine | null>(null)
+  const open = useRef(onOpen), initialHall = useRef(false); open.current = onOpen
+  const [worldLabels, setWorldLabels] = useState<WorldLabel[]>([]), [map, setMap] = useState<MapSnapshot | null>(null)
+  const [state, setState] = useState<OfficeState | null>(null), [error, setError] = useState<string | null>(null)
+  const [hovered, setHovered] = useState<string | null>(null), [selected, setSelected] = useState<string | null>(null)
+  const [showList, setShowList] = useState(true), [showTerminals, setShowTerminals] = useState(false), [showLinks, setShowLinks] = useState(true)
+  const [search, setSearch] = useState(''), [hall, setHall] = useState<string | null>(null), [status, setStatus] = useState<OfficeStatus | null>(null)
+  const [documentVisible, setDocumentVisible] = useState(!document.hidden), [dark, setDark] = useState(isDarkTheme)
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
-  const focused = useStore(s => s.windowFocused)
-  const connected = useStore(s => s.connection.status === 'connected')
-  const visible = active && documentVisible
-
+  const [now, setNow] = useState(Date.now), [retry, setRetry] = useState(0)
+  const focused = useStore(s => s.windowFocused), connected = useStore(s => s.connection.status === 'connected'), lang = useStore(s => s.settings.language)
+  const groups = useModel(m => m.groups), boards = useStore(s => s.boards)
+  const selectedThread = useSelectedThread(), visible = active && documentVisible
+  const boardRoots = [...new Set(state?.departments.flatMap(d => groups.filter(g => (d.workspaceIds ?? [d.workspaceId]).includes(g.workspace.workspace_id)).flatMap(g => g.cwd ? [g.cwd] : [])) ?? [])].sort().join('\0')
+  const myHall = state?.departments.find(d => d.workspaceIds.includes(selectedThread?.workspaceId ?? ''))?.id ?? state?.departments[0]?.id ?? null
   useEffect(() => {
-    const visibility = () => setDocumentVisible(!document.hidden)
-    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const motion = () => setReducedMotion(media.matches)
+    const visibility = () => setDocumentVisible(!document.hidden), media = window.matchMedia('(prefers-reduced-motion: reduce)'), motion = () => setReducedMotion(media.matches)
     document.addEventListener('visibilitychange', visibility); media.addEventListener('change', motion)
-    return () => { document.removeEventListener('visibilitychange', visibility); media.removeEventListener('change', motion) }
+    const off = onAppearanceChange(() => setDark(isDarkTheme()))
+    return () => { document.removeEventListener('visibilitychange', visibility); media.removeEventListener('change', motion); off() }
   }, [])
+  useEffect(() => { if (!visible) return; const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer) }, [visible])
   useEffect(() => {
     if (!canvas.current) return
-    const renderer = new OfficeEngine(canvas.current, { onOpen: id => onOpenRef.current(id), onHover: setHovered, onLabels: setWorldLabels })
+    const renderer = new OfficeEngine(canvas.current, { onOpen: id => open.current(id), onSelect: setSelected, onHover: setHovered, onLabels: setWorldLabels, onMap: setMap })
     engine.current = renderer
     return () => { engine.current = null; renderer.dispose() }
   }, [])
-  useEffect(() => { engine.current?.setOptions(showTerminals, reducedMotion) }, [showTerminals, reducedMotion])
+  useEffect(() => {
+    const target = canvas.current; if (!target) return
+    const apply = () => engine.current?.setOptions(showTerminals, reducedMotion, showLinks, showList ? target.getBoundingClientRect().width <= 900 ? 274 : 312 : 0)
+    apply(); const observer = new ResizeObserver(apply); observer.observe(target)
+    return () => observer.disconnect()
+  }, [showTerminals, reducedMotion, showLinks, showList])
+  useEffect(() => { void engine.current?.setTheme(dark) }, [dark])
   useEffect(() => { engine.current?.setConnected(connected) }, [connected])
   useEffect(() => { engine.current?.setVisibility(visible, focused) }, [visible, focused])
+  useEffect(() => { if (!visible || !connected || !boardRoots) return; const release = boardRoots.split('\0').map(watchBoard); return () => release.forEach(off => off()) }, [visible, connected, boardRoots])
+  useEffect(() => {
+    const counts = new Map<string, [number, number, number]>()
+    for (const d of state?.departments ?? []) {
+      const roots = [...new Set(groups.filter(g => d.workspaceIds.includes(g.workspace.workspace_id)).flatMap(g => g.cwd ? [g.cwd] : []))]
+      const tasks = roots.flatMap(root => boards[root]?.tasks ?? [])
+      counts.set(d.id, [tasks.filter(task => task.status === 'todo').length, tasks.filter(task => ['in_progress', 'review', 'blocked'].includes(task.status)).length, tasks.filter(task => task.status === 'done').length])
+    }
+    engine.current?.setBoardCounts(counts)
+  }, [boards, groups, state?.departments])
+  useEffect(() => {
+    engine.current?.setDepartment(myHall)
+    if (myHall && !initialHall.current) { initialHall.current = true; engine.current?.home() }
+  }, [myHall])
+  useEffect(() => { engine.current?.select(selected) }, [selected])
+  useEffect(() => { if (mapCanvas.current) engine.current?.paintMap(mapCanvas.current) }, [map, dark])
   useEffect(() => {
     if (!visible || !connected) return
-    const bridge = officeBridge()
-    if (!bridge) { setError(t('The office is currently unavailable.')); return }
-    let cancelled = false, received = false
-    setError(null)
+    const bridge = officeBridge(); if (!bridge) { setError(t('The office is currently unavailable.')); return }
+    let cancelled = false, received = false; setError(null)
     const accept = (update: OfficeUpdate) => {
       if (cancelled) return
-      engine.current?.update(received ? update : { ...update, animations: [] })
-      received = true
-      setState(update.state)
+      engine.current?.update(received ? update : { ...update, animations: [] }); received = true; setState(update.state)
     }
-    const unsubscribe = bridge.on.office(accept)
-    void bridge.officeInit().then(initial => { if (initial && !received) accept({ state: initial, animations: [] }); else if (!initial && !cancelled) setError(t('The office is only available in the Mac app.')) }).catch(() => { if (!cancelled) setError(t('Could not load the office. Close this tab and open it again.')) })
-    return () => { cancelled = true; unsubscribe(); bridge.officeStop() }
-  }, [visible, connected])
-
+    const off = bridge.on.office(accept)
+    void bridge.officeInit().then(initial => {
+      if (cancelled) return
+      if (initial && !received) accept({ state: initial, animations: [] })
+      else if (!initial) setError(t('The office is only available in the Mac app.'))
+    }).catch(() => { if (!cancelled) setError(t('Could not load the office. Close this tab and open it again.')) })
+    return () => { cancelled = true; off(); bridge.officeStop() }
+  }, [visible, connected, retry])
+  // Closing panes/projects also closes stale cards and filters.
+  useEffect(() => {
+    if (!state) return
+    if (selected && !state.agents.some(a => a.paneId === selected)) setSelected(null)
+    if (hall && !state.departments.some(d => d.id === hall)) setHall(null)
+  }, [state, selected, hall])
   const departments = useMemo(() => {
     const query = search.trim().toLocaleLowerCase()
-    return state?.departments.map(department => {
-      const matchDepartment = department.name.toLocaleLowerCase().includes(query)
-      const agents = state.agents.filter(a => a.departmentId === department.id && (matchDepartment || `${a.name} ${kindLabel(a.kind)} ${roleLabel(a)} ${statusLabel(a.status)}`.toLocaleLowerCase().includes(query)))
-      const terminals = showTerminals ? state.seats.filter(s => s.departmentId === department.id && s.terminal && s.paneId && (matchDepartment || s.paneId.toLocaleLowerCase().includes(query))) : []
-      return { department, agents, terminals, visible: !query || matchDepartment || agents.length > 0 || terminals.length > 0 }
-    }).filter(d => d.visible) ?? []
-  }, [state, search, showTerminals])
-  const hoverAgent = state?.agents.find(a => a.paneId === hovered)
-
-  return (
-    <section className="office office-view" hidden={!active} aria-label={t('Shared office')} style={{ display: active ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <header className="office-head office-toolbar" style={{ flexWrap: 'wrap' }}>
-        <h1 className="office-title">{t('Shared office')}</h1>
-        <div className="office-tools office-camera-controls" role="group" aria-label={t('Camera')}>
-          {[1, 2, 3].map(zoom => <button type="button" className="office-tool" key={zoom} onClick={() => engine.current?.zoom(zoom)} aria-label={t('Zoom {zoom}', { zoom })}>×{zoom}</button>)}
-          <button type="button" className="office-tool" onClick={() => engine.current?.fit()}><Maximize size={14} />{t('Fit office')}</button>
-          <button type="button" className="office-tool" onClick={() => engine.current?.reset()}><RotateCcw size={14} />{t('Reset camera')}</button>
-        </div>
-        <button type="button" className="office-tool" onClick={() => engine.current?.repack()}>{t('Rearrange seats')}</button>
-        <button type="button" className="office-tool" aria-pressed={showList} aria-controls="office-agent-list" onClick={() => setShowList(v => !v)}><List size={14} />{t('List')}</button>
-        <label className="check small"><input type="checkbox" checked={showTerminals} onChange={e => setShowTerminals(e.target.checked)} />{t('Show terminals')}</label>
-        <ul className="office-legend" aria-label={t('Agent statuses')}>
-          {(['working', 'blocked', 'idle', 'done', 'unknown', 'disconnect'] as const).map(status => <li key={status} className={`office-legend-item st-${status}`}><span className="office-mark" aria-hidden="true" />{statusLabel(status)}</li>)}
-        </ul>
-      </header>
-      <div className="office-body" style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <div className="office-stage office-world">
-          <canvas ref={canvas} aria-hidden="true" className="office-canvas" style={{ display: 'block', width: '100%', height: '100%', touchAction: 'none', imageRendering: 'pixelated' }} />
-          <div aria-hidden="true" style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-            {worldLabels.map(label => <span key={label.id} title={label.kind === 'user' ? t('You') : label.name} style={{ position: 'absolute', left: label.x, top: label.y, transform: 'translate(-50%, -50%)', fontSize: 11, lineHeight: '14px', color: '#fbe6c4', background: '#5b3d2a', padding: '0 3px', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label.kind === 'user' ? t('You') : label.name}</span>)}
+    return state?.departments.filter(d => !hall || d.id === hall).map(department => ({
+      department,
+      agents: state.agents.filter(a => a.departmentId === department.id && (!status || (connected ? a.status : 'disconnect') === status) && (!query || `${department.name} ${a.name} ${kindLabel(a.kind)} ${roleLabel(a)} ${statusLabel(connected ? a.status : 'disconnect')}`.toLocaleLowerCase().includes(query))),
+      terminals: showTerminals && !status ? state.seats.filter(s => s.departmentId === department.id && s.terminal && s.paneId && (!query || `${department.name} ${s.paneId}`.toLocaleLowerCase().includes(query))) : []
+    })) ?? []
+  }, [state, search, hall, status, showTerminals, lang, connected])
+  const cardAgent = state?.agents.find(a => a.paneId === selected), hoverAgent = state?.agents.find(a => a.paneId === hovered)
+  const counts = connected ? state?.statusCounts ?? { working: 0, blocked: 0, done: 0, idle: 0, unknown: 0, disconnect: 0 } : { working: 0, blocked: 0, done: 0, idle: 0, unknown: 0, disconnect: state?.agents.length ?? 0 }
+  const events = useMemo(() => state?.recentEvents.filter(e => !hall || e.from === hall || e.to === hall || state.agents.some(a => a.departmentId === hall && (a.id === e.from || a.id === e.to))).slice(-8).reverse() ?? [], [state, hall])
+  const actions = (a: OfficeAgent, className = 'office-member-actions') => <div className={className}>
+    {opensChat(a) && <button type="button" className="office-btn primary" disabled={!connected} onClick={() => onOpen(a.paneId, 'chat')}><MessageSquare size={14} />{t('Open chat')}</button>}
+    <button type="button" className="office-btn" onClick={() => { setSelected(a.paneId); engine.current?.locate(a.paneId) }}><Crosshair size={14} />{officeText('On map')}</button>
+    <button type="button" className="office-btn" disabled={!connected} aria-label={t('Open terminal: {name}', { name: a.name })} title={t('Terminal')} onClick={() => onOpen(a.paneId, 'terminal')}><Terminal size={14} /></button>
+  </div>
+  const visitHall = (id: string | null) => { setHall(id); if (id) { engine.current?.setDepartment(id); engine.current?.home() } else engine.current?.fit() }
+  return <section className="office office-view office-v2" hidden={!active} aria-label={t('Shared office')} data-office-theme={dark ? 'neon' : 'cozy'}>
+    <div className="office-stage office-world">
+      <canvas ref={canvas} className="office-canvas" aria-hidden="true" />
+      <div className="office-world-labels" aria-hidden="true">{worldLabels.map(label => <span key={label.id} className={`office-world-label office-world-label-${label.kind}`} style={{ left: label.x, top: label.y }}>{label.kind === 'user' ? t('You') : label.name}</span>)}</div>
+      <div className={`office-hud${showList ? ' with-team' : ''}`}>
+        <header className="office-panel office-toolbar">
+          <div className="office-toolbar-row">
+            <h1 className="office-title">{t('Shared office')}</h1>
+            <div className="office-hall-filter" role="group" aria-label={officeText('Hall filter')}>
+              <button type="button" className={`office-chip${!hall ? ' active' : ''}`} aria-pressed={!hall} onClick={() => visitHall(null)}>{officeText('All halls')}</button>
+              {state?.departments.map(d => <button key={d.id} type="button" className={`office-chip${hall === d.id ? ' active' : ''}`} aria-pressed={hall === d.id} onClick={() => visitHall(d.id)}>{d.name} <span>{state.agents.filter(a => a.departmentId === d.id).length}</span></button>)}
+            </div>
           </div>
-          {hoverAgent && <div className="office-tooltip" role="tooltip" style={{ bottom: 12, left: 12, transform: 'none' }}>
-            <strong>{hoverAgent.name}</strong> · {kindLabel(hoverAgent.kind)}<br />{roleLabel(hoverAgent)} · {statusLabel(connected ? hoverAgent.status : 'disconnect')}
-          </div>}
-          {(!connected || error || !state || !state.departments.length) && <div className={connected ? 'office-empty' : 'office-stale'} role="status">
-            {!connected ? t('Connection lost. The displayed data is stale.') : error ?? (!state ? t('Loading departments…') : t('No projects yet. Open a project to see it in the office.'))}
-          </div>}
-        </div>
-        <aside id="office-agent-list" className="office-list" aria-label={t('Departments and agents')} hidden={!showList} style={{ display: showList ? 'flex' : 'none' }}>
-          <label className="office-search"><Search size={14} /><span className="office-live">{t('Search departments and agents')}</span><input className="input" type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder={t('Name, role or status')} /></label>
-          {departments.map(({ department, agents, terminals }) => <section className="office-dept office-department" key={department.id} aria-label={department.name}>
-            <h2 className="office-dept-head" style={{ margin: 0 }}><span className="office-dept-name">{department.name}</span><span className="office-dept-count" aria-hidden="true">{agents.length + terminals.length}</span></h2>
-            {!agents.length && !terminals.length && <p className="muted">{t('No agents')}</p>}
-            <ul className="office-agents" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-              {agents.map(a => <li key={a.id} className="office-agent" data-status={a.status}>
-                <span className="office-agent-text">
-                  <strong className="office-agent-name">{a.name}</strong>
-                  <span className="office-agent-meta" title={roleLabel(a)}>{kindLabel(a.kind)} · {roleLabel(a)}</span>
-                  <span className={`office-status st-${connected ? a.status : 'disconnect'}`}><span className="office-mark" aria-hidden="true" />{connected ? statusLabel(a.status) : statusLabel('disconnect')}</span>
-                  {coverageLabel(a.transcriptCoverage) && <span className="office-agent-meta" title={coverageLabel(a.transcriptCoverage)}>{coverageLabel(a.transcriptCoverage)}</span>}
-                </span>
-                <button type="button" className="office-agent-open" disabled={!connected} onClick={() => onOpen(a.paneId)} aria-label={opensChat(a) ? t('Open chat: {name}', { name: a.name }) : t('Open terminal: {name}', { name: a.name })}>{opensChat(a) ? t('Open chat') : t('Open terminal')}</button>
-              </li>)}
-              {terminals.map(s => <li className="office-agent office-terminal" key={s.id}><span className="office-agent-text"><strong className="office-agent-name">{t('Terminal')}</strong><span className="office-agent-meta">{s.paneId}</span></span><button type="button" className="office-agent-open" disabled={!connected} onClick={() => onOpen(s.paneId!)} aria-label={t('Open terminal: {name}', { name: s.paneId! })}>{t('Open terminal')}</button></li>)}
-            </ul>
-          </section>)}
-          {state && search && !departments.length && <p role="status">{t('No matches')}</p>}
+          <div className="office-toolbar-row" role="group" aria-label={t('Camera')}>
+            <div className="office-seg">{[1, 2, 3].map(z => <button type="button" className={`office-btn${map?.camera.zoom === z ? ' active' : ''}`} key={z} aria-pressed={map?.camera.zoom === z} onClick={() => engine.current?.zoom(z)} aria-label={t('Zoom {zoom}', { zoom: z })}>×{z}</button>)}</div>
+            <button type="button" className="office-btn" onClick={() => engine.current?.fit()}><Maximize size={14} />{t('Fit office')}</button>
+            <button type="button" className="office-btn" onClick={() => { engine.current?.setDepartment(myHall); engine.current?.home() }}><Crosshair size={14} />{officeText('My hall')}</button>
+            <button type="button" className={`office-btn${showLinks ? ' active' : ''}`} aria-pressed={showLinks} onClick={() => setShowLinks(v => !v)}><Link2 size={14} />{officeText('Links')}</button>
+            <button type="button" className={`office-btn${showTerminals ? ' active' : ''}`} aria-pressed={showTerminals} aria-label={t('Show terminals')} title={t('Show terminals')} onClick={() => setShowTerminals(v => !v)}><Terminal size={14} /></button>
+            <button type="button" className="office-btn" aria-pressed={showList} aria-controls="office-agent-list" onClick={() => setShowList(v => !v)}><List size={14} />{officeText('Team')}</button>
+          </div>
+        </header>
+        {showList && <aside id="office-agent-list" className="office-panel office-team" aria-label={officeText('Team')}>
+          <h2 className="office-team-head">{officeText('Team')} <span>{state?.agents.length ?? 0}</span></h2>
+          <div className="office-filters" role="group" aria-label={officeText('Status filter')}>
+            {(['working', 'blocked', 'done', 'idle', 'unknown', 'disconnect'] as const).filter(s => counts[s] || ['working', 'blocked', 'done', 'idle'].includes(s)).map(s => <button key={s} type="button" className={`office-filter st-${s}${status === s ? ' active' : ''}`} aria-pressed={status === s} onClick={() => setStatus(previous => previous === s ? null : s)}><span className="office-mark" aria-hidden="true" /><b>{counts[s]}</b>{statusLabel(s)}</button>)}
+          </div>
+          <label className="office-search"><Search size={14} /><input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('Name, role or status')} aria-label={t('Search departments and agents')} /></label>
+          <div className="office-team-list">{departments.filter(d => d.agents.length || d.terminals.length).map(({ department, agents, terminals }) => <section key={department.id} aria-label={department.name}>
+            <h3 className="office-team-dept"><span>{department.name}</span><span>{agents.length}</span></h3>
+            <ul className="office-agents">{agents.map(a => <li key={a.id} className={`office-member${selected === a.paneId ? ' selected' : ''}`}>
+              <button type="button" className="office-member-select" aria-label={`${officeText('Agent card')} · ${a.name}`} aria-pressed={selected === a.paneId} onClick={() => setSelected(a.paneId)}>
+                <AgentPortrait agent={a} engine={engine} revision={map} />
+                <span className="office-agent-text"><strong className="office-member-name">{a.name}</strong><span className="office-member-meta">{kindLabel(a.kind)} · {roleLabel(a)}</span><span className={`office-member-status st-${connected ? a.status : 'disconnect'}`}><span className="office-mark" aria-hidden="true" />{statusLabel(connected ? a.status : 'disconnect')}</span></span>
+              </button>
+              <span className="office-member-event">{a.lastEventAt === null ? officeText('No events in 30 minutes') : eventAge(a.lastEventAt, now)}</span>
+              {(selected === a.paneId || !opensChat(a)) && actions(a)}
+            </li>)}{terminals.map(s => <li key={s.id} className="office-member office-terminal"><Terminal size={16} /><span>{t('Terminal')}</span><button type="button" className="office-btn" disabled={!connected} onClick={() => onOpen(s.paneId!, 'terminal')}>{t('Open terminal')}</button></li>)}</ul>
+          </section>)}</div>
+          {state && !departments.some(d => d.agents.length || d.terminals.length) && <p>{officeText('No matching agents')}</p>}
+        </aside>}
+        <aside className="office-panel office-journal-panel" aria-label={officeText('Journal')}>
+          <h2>{officeText('Journal')}</h2>
+          {!events.length && <p>{officeText('No events in 30 minutes')}</p>}
+          <ol className="office-journal">{events.map(e => <li key={e.id} className={`office-journal-item ev-${e.kind}`}>
+            <span className="office-journal-icon" aria-hidden="true">{e.kind === 'prompt_attempt' ? <X size={13} /> : e.kind === 'ssh_attempt' ? <Terminal size={13} /> : e.kind === 'agent_status' && e.status === 'done' ? <Check size={13} /> : <Send size={13} />}</span>
+            <span>{state && journalText(e, state)}</span><time dateTime={new Date(e.ts).toISOString()}>{eventAge(e.ts, now)}</time>
+          </li>)}</ol>
         </aside>
+        <aside className="office-panel office-map" aria-label={officeText('Map')}>
+          <h2>{officeText('Map')}</h2>
+          <button type="button" className="office-map-view" aria-label={officeText('Move camera on map')} onClick={e => { if (!mapCanvas.current) return; if (e.detail === 0) { if (map) engine.current?.center({ x: map.bounds.x + map.bounds.width / 2, y: map.bounds.y + map.bounds.height / 2 }); return }; const r = mapCanvas.current.getBoundingClientRect(); engine.current?.mapPoint(e.clientX - r.left, e.clientY - r.top, r.width, r.height) }} onKeyDown={e => {
+            if (!map || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return
+            e.preventDefault(); const p = { x: (map.width / 2 - map.camera.x) / map.camera.zoom, y: (map.height / 2 - map.camera.y) / map.camera.zoom }
+            p.x += e.key === 'ArrowLeft' ? -48 : e.key === 'ArrowRight' ? 48 : 0; p.y += e.key === 'ArrowUp' ? -48 : e.key === 'ArrowDown' ? 48 : 0
+            engine.current?.center(p)
+          }}><canvas ref={mapCanvas} width={210} height={112} aria-hidden="true" /></button>
+        </aside>
+        {cardAgent && <aside className="office-panel office-card" aria-label={officeText('Agent card')} onKeyDown={e => { if (e.key === 'Escape') setSelected(null) }}>
+          <button type="button" className="office-btn office-card-close" aria-label={officeText('Close card')} onClick={() => setSelected(null)}><X size={14} /></button>
+          <div className="office-card-heading"><AgentPortrait agent={cardAgent} engine={engine} revision={map} /><div className="office-card-identity"><strong className="office-card-name">{cardAgent.name}</strong><div className="office-card-meta">{kindLabel(cardAgent.kind)} · {roleLabel(cardAgent)}</div><span className={`office-member-status st-${connected ? cardAgent.status : 'disconnect'}`}><span className="office-mark" aria-hidden="true" />{statusLabel(connected ? cardAgent.status : 'disconnect')}</span></div></div>
+          <div className="office-card-task"><span>{officeText('Last task')}</span><p>{cardAgent.lastTask ?? officeText('No assigned task')}</p></div>
+          {coverageLabel(cardAgent.transcriptCoverage) && <p className="office-card-meta">{coverageLabel(cardAgent.transcriptCoverage)}</p>}
+          {actions(cardAgent, 'office-card-actions')}
+        </aside>}
+        {hoverAgent && !cardAgent && <div className="office-tooltip" role="tooltip"><strong>{hoverAgent.name}</strong><br />{roleLabel(hoverAgent)} · {statusLabel(connected ? hoverAgent.status : 'disconnect')}</div>}
+        {!!counts.blocked && connected && <button type="button" className="office-btn office-waiting" onClick={() => { setStatus('blocked'); setShowList(true); setHall(null) }}>{officeText('{n} waiting', { n: counts.blocked })}</button>}
       </div>
-      <p className="office-help muted">{t('Drag the office or scroll your trackpad to move. Links show observed events.')}</p>
-    </section>
-  )
+      {!connected && <div className="office-stale" role="status">{t('Connection lost. The displayed data is stale.')}</div>}
+      {error && <div className="office-empty" role="alert">{error}<br /><button type="button" className="office-btn" onClick={() => setRetry(n => n + 1)}>{officeText('Retry')}</button></div>}
+      {!error && state && !state.departments.length && <div className="office-empty">{t('No projects yet. Open a project to see it in the office.')}</div>}
+      {!error && !state && <div className="office-empty" role="status">{t('Loading departments…')}</div>}
+      <div className="office-live" role="status" aria-live="polite">{cardAgent ? `${cardAgent.name}: ${statusLabel(connected ? cardAgent.status : 'disconnect')}` : ''}</div>
+    </div>
+  </section>
 }

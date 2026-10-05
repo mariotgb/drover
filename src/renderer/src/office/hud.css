@@ -1,0 +1,77 @@
+/* HUD geometry and accessibility. The art team owns its theme in office.css. */
+.office-v2 { min-height: 0; flex: 1; --office-paper: #fcf3df; }
+.office-v2[data-office-theme='neon'] { --office-paper: #111b2e; }
+.office-v2[hidden] { display: none; }
+.office-v2 .office-stage { flex: 1; min-height: 0; container-type: inline-size; }
+.office-v2 .office-hud { position: absolute; inset: 12px; pointer-events: none; }
+.office-v2 .office-hud > * { pointer-events: auto; }
+.office-v2 .office-panel { position: absolute; padding: 12px; border-radius: 10px; background: var(--office-paper, var(--bg-elev)); color: var(--text); box-shadow: 0 4px 14px #0003; }
+.office-v2 .office-toolbar { top: 0; left: 0; right: 0; display: flex; flex-direction: column; align-items: stretch; gap: 8px; -webkit-app-region: no-drag; }
+.office-v2 .with-team .office-toolbar { right: 312px; }
+.office-toolbar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.office-hall-filter { display: flex; gap: 6px; flex: 1; min-width: 0; max-width: 100%; overflow-x: auto; }
+.office-chip { flex: none; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-v2 :is(.office-btn, .office-chip, .office-filter) { display: inline-flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; font: inherit; font-size: 12px; min-height: 30px; padding: 4px 8px; color: inherit; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.office-v2 :is(.office-btn, .office-chip, .office-filter):hover:not(:disabled) { background: var(--bg-hover); }
+.office-v2 :is(.office-btn, .office-chip, .office-filter).active { background: var(--accent-soft); }
+.office-v2 button:disabled { opacity: .5; cursor: default; }
+.office-v2 :is(button, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.office-seg, .office-member-actions, .office-card-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.office-v2 .office-team { right: 0; top: 0; bottom: 0; width: 288px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+.office-team-head, .office-team-dept { display: flex; justify-content: space-between; gap: 8px; margin: 0; }
+.office-team-head, .office-v2 .office-panel > h2 { font-size: 13px; font-weight: 650; margin: 0 0 8px; }
+.office-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.office-v2 .office-filter { justify-content: flex-start; white-space: normal; text-align: left; }
+.office-team-list { overflow: auto; min-height: 0; overscroll-behavior: contain; }
+.office-team-dept { font-size: 12px; margin: 12px 0 6px; overflow-wrap: anywhere; }
+.office-agents { list-style: none; padding: 0; margin: 0; }
+.office-member { padding: 8px; border-radius: 8px; min-width: 0; }
+.office-member.selected { background: var(--bg-selected); }
+.office-member-select { display: flex; align-items: center; gap: 8px; border: 0; padding: 0; background: transparent; color: inherit; width: 100%; text-align: left; cursor: pointer; }
+.office-member-face { flex: none; display: inline-flex; width: 40px; height: 48px; align-items: center; justify-content: center; }
+.office-member-face canvas { display: block; width: 32px; height: 48px; image-rendering: pixelated; }
+.office-member-name, .office-member-meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-member-name { font-size: 13px; }
+.office-member-meta, .office-member-event, .office-card-meta { font-size: 11px; opacity: .85; }
+.office-member-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+.office-member-event { display: block; margin: 4px 0 4px 48px; overflow-wrap: anywhere; }
+.office-terminal { display: flex; gap: 8px; align-items: center; }
+.office-terminal .office-btn { margin-inline-start: auto; }
+.office-v2 .office-search { flex: none; min-height: 32px; }
+.office-search input { min-width: 0; }
+.office-v2 .office-journal-panel { left: 0; bottom: 0; width: min(360px, calc(100% - 244px)); max-height: 24%; overflow: auto; overflow-x: hidden; }
+.office-v2 .with-team .office-journal-panel { width: min(360px, calc(100% - 556px)); }
+.office-journal { list-style: none; padding: 0; margin: 0; }
+.office-journal-item { display: flex; gap: 6px; align-items: baseline; font-size: 11px; padding: 3px 0; }
+.office-journal-item > span:nth-child(2) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.office-journal-icon { flex: none; }
+.office-journal-item time { white-space: nowrap; font-variant-numeric: tabular-nums; opacity: .75; }
+.office-v2 .office-map { right: 0; bottom: 0; width: 210px; }
+.office-v2 .with-team .office-map { right: 312px; }
+.office-map-view { display: block; width: 100%; border: 0; padding: 0; background: transparent; cursor: crosshair; overflow: hidden; }
+.office-map-view canvas { display: block; width: 100%; height: 112px; image-rendering: pixelated; }
+.office-v2 .office-card { left: 8px; top: 142px; width: 270px; max-width: calc(100% - 32px); max-height: calc(100% - 180px); overflow: auto; z-index: 4; }
+.office-card-close { position: absolute; right: 8px; top: 8px; z-index: 2; }
+.office-card-heading { display: flex; gap: 8px; padding-right: 22px; }
+.office-card-identity { min-width: 0; }
+.office-card-name { overflow-wrap: anywhere; }
+.office-card-task { margin: 12px 0; font-size: 12px; overflow-wrap: anywhere; }
+.office-card-task > span { opacity: .8; }
+.office-card-task p { margin: 6px 0 0; }
+.office-world-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.office-world-label { position: absolute; transform: translate(-50%, -50%); max-width: 160px; padding: 1px 4px; background: var(--office-paper); color: var(--text); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-v2 .office-tooltip { top: 142px; left: 8px; transform: none; }
+.office-v2 .office-waiting { position: absolute; left: 0; top: 110px; }
+.office-v2 .office-stale { top: 130px; }
+@container (max-width: 900px) {
+  .office-v2 .with-team .office-toolbar { right: 0; }
+  .office-v2 .office-team { top: 140px; width: 250px; }
+  .office-v2 .with-team .office-map { right: 274px; width: 168px; }
+  .office-v2 .with-team .office-journal-panel { width: calc(100% - 478px); }
+}
+@container (max-width: 720px) {
+  .office-v2 .office-toolbar { max-height: 120px; overflow: auto; }
+  .office-v2 .office-journal-panel { max-height: 20%; width: calc(100% - 274px); }
+  .office-v2 .office-map { display: none; }
+  .office-v2 .office-card { width: 240px; }
+}

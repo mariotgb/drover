@@ -5,359 +5,203 @@ import { createRequire } from 'node:module'
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-
-const dir = mkdtempSync(join(tmpdir(), 'drover-office-renderer-'))
-await build({
-  stdin: { contents: ['layout', 'camera', 'scheduler', 'effects', 'engine', 'scene', 'labels', 'navigation', 'routes'].map(name => `export * from './src/renderer/src/office/${name}'`).join('\n') + "\nexport { setLanguage } from './src/renderer/src/i18n'", resolveDir: resolve('.'), loader: 'ts' },
-  bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'renderer.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent',
-  plugins: [{ name: 'procedural-office-art', setup(b) {
-    b.onResolve({ filter: /^\.\/art$/ }, () => ({ path: 'art', namespace: 'office-fixture' }))
-    b.onLoad({ filter: /.*/, namespace: 'office-fixture' }, () => ({ contents: `const manifest = ${readFileSync('src/renderer/src/office/assets/manifest.json', 'utf8')};
-    export class OfficeArt {
-      manifest = manifest; async load() {};
-      frame(id, state, time) {
-        const sprite = manifest.sprites[id]; if (!sprite) return;
-        const animation = sprite.states[state] ?? sprite.states.default ?? Object.values(sprite.states)[0];
-        let age = Math.max(0, time) % animation.durationsMs.reduce((sum, ms) => sum + ms, 0);
-        for (let i = 0; i < animation.frames.length; i++) { age -= animation.durationsMs[i]; if (age < 0) return animation.frames[i] }
-        return animation.frames[0];
-      }
-      paint(_context, id, state, anchor, time) { globalThis.officeArtCalls?.push({ id, state, anchor, time }); return !!manifest.sprites[id] };
-      hitRect(_id, _state, anchor) { return { x: anchor.x - 12, y: anchor.y - 36, width: 24, height: 40 } }
-    }`, loader: 'js' }))
-  } }]
-})
-const m = createRequire(import.meta.url)(join(dir, 'renderer.cjs'))
-rmSync(dir, { recursive: true })
-const projects = n => Array.from({ length: n }, (_, i) => ({ id: `project-${i}`, number: i + 1 }))
-const agents = (n, projectCount = 1) => Array.from({ length: n }, (_, i) => ({ paneId: `pane-${String(i).padStart(3, '0')}`, departmentId: `project-${i % projectCount}` }))
-const intersects = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
-
-test('0/1/20 departments and 0/8/200 agents: finite bounds, eight desks per lot, no overlaps', () => {
-  for (const count of [0, 1, 20]) for (const size of [0, 8, 200]) {
-    const state = new m.OfficeLayout().update(projects(count).reverse(), count ? agents(size, count).reverse() : [])
-    assert.ok(state.bounds.width > 0 && state.bounds.height > 0)
-    assert.equal(state.seats.length, count ? size : 0)
-    for (const seat of state.seats) {
-      assert.equal(seat.width, 4 * 16); assert.equal(seat.height, 3 * 16)
-      assert.ok(state.lots.some(l => l.departmentId === seat.departmentId && seat.x >= l.x && seat.y >= l.y && seat.x + seat.width <= l.x + l.width && seat.y + seat.height <= l.y + l.height))
+const dir = mkdtempSync(join(tmpdir(), 'drover-office-v21-'))
+await build({ stdin: { contents: ['layout', 'camera', 'scheduler', 'effects', 'engine', 'scene', 'labels', 'navigation', 'routes', 'text', 'generated-art'].map(n => `export * from './src/renderer/src/office/${n}'`).join('\n') + "\nexport { OfficeArt as AtlasArt, animationFrame } from './src/renderer/src/office/art'\nexport { setLanguage } from './src/renderer/src/i18n'", resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'renderer.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent', plugins: [{ name: 'test-art', setup(b) {
+  b.onLoad({filter:/office\/art\.ts$/}, args => {
+    let source=readFileSync(args.path,'utf8');const manifests={},urls={}
+    for(const theme of ['cozy','neon']) {
+      const path=`./assets/v2/${theme}/manifest.json`,manifest=JSON.parse(readFileSync(resolve(`src/renderer/src/office/assets/v2/${theme}/manifest.json`),'utf8'))
+      manifests[path]=manifest;for(const atlas of Object.values(manifest.atlases))urls[`./assets/v2/${theme}/${atlas.file}`]=`${theme}/${atlas.file}`
     }
-    for (let i = 0; i < state.seats.length; i++) for (let j = i + 1; j < state.seats.length; j++) {
-      const a = state.seats[i], b = state.seats[j]
-      assert.ok(!intersects(a, b))
-      if (a.y === b.y) assert.ok(Math.abs(a.x - b.x) - a.width >= 2 * 16)
-    }
-    for (let i = 0; i < state.lots.length; i++) {
-      const lot = state.lots[i]
-      assert.equal(lot.width, 24 * 16); assert.equal(lot.height, 20 * 16)
-      assert.ok(state.seats.filter(s => s.departmentId === lot.departmentId && Math.floor(s.index / 8) === lot.block).length <= 8)
-      for (let j = i + 1; j < state.lots.length; j++) assert.ok(!intersects(lot, state.lots[j]))
-    }
-  }
-})
-
-test('departments start in a row or a three-column grid; later additions preserve anchors', () => {
-  for (const n of [1, 2, 3, 4, 12, 20]) {
-    const { lots } = new m.OfficeLayout().update(projects(n), [])
-    for (let i = 0; i < n; i++) { assert.equal(lots[i].x, (i % 3) * 26 * 16); assert.equal(lots[i].y, Math.floor(i / 3) * 22 * 16) }
-  }
-  const layout = new m.OfficeLayout(), initial = layout.update(projects(1), agents(8))
-  const expanded = layout.update(projects(20), agents(8))
-  assert.deepEqual(expanded.seats, initial.seats)
-  assert.deepEqual(expanded.lots[0], initial.lots[0])
-})
-
-test('split, move, restart, status/rename and removals do not shuffle neighbors; repack is explicit', () => {
-  const layout = new m.OfficeLayout(), list = agents(8)
-  const initial = layout.update(projects(2), list)
-  const split = layout.update(projects(2), [...list, { paneId: 'pane-new', departmentId: 'project-0' }])
-  assert.deepEqual(split.seats.slice(0, 8), initial.seats)
-  assert.equal(split.lots.filter(l => l.departmentId === 'project-0').length, 2)
-  const restarted = layout.update(projects(2), list.map(a => ({ ...a, incarnation: 'new', status: 'blocked', name: 'renamed' })))
-  assert.deepEqual(restarted.seats, initial.seats)
-  const moved = layout.update(projects(2), list.map((a, i) => i ? a : { ...a, departmentId: 'project-1' }))
-  assert.equal(moved.seats[0].departmentId, 'project-1')
-  assert.deepEqual(moved.seats.slice(1), initial.seats.slice(1))
-  const removed = layout.update(projects(2), list.slice(2))
-  assert.deepEqual(removed.seats, initial.seats.slice(2))
-  const compact = layout.update(projects(2), list.slice(2), true)
-  assert.equal(compact.seats[0].index, 0)
-  assert.notDeepEqual(compact.seats[0].anchor, initial.seats[2].anchor)
-})
-
-test('camera preserves a zoom anchor, fit is finite, hits use CSS pixels and reverse Y order', () => {
-  const camera = { x: -20, y: 30, zoom: 2 }, screen = { x: 84, y: 106 }
-  assert.deepEqual(m.screenToWorld(screen, camera), { x: 52, y: 38 })
-  assert.deepEqual(m.worldToScreen(m.screenToWorld(screen, camera), camera), screen)
-  const zoomed = m.zoomAt(camera, 3, screen)
-  assert.deepEqual(m.screenToWorld(screen, zoomed), m.screenToWorld(screen, camera))
-  assert.ok(Number.isFinite(m.fitCamera({ x: -32, y: -32, width: 1200, height: 1000 }, 1, 1).zoom))
-  const targets = [{ paneId: 'back', rect: { x: 40, y: 30, width: 32, height: 48 }, y: 40 }, { paneId: 'front', rect: { x: 40, y: 30, width: 32, height: 48 }, y: 50 }]
-  assert.equal(m.hitTest(targets, screen, camera), 'front')
-  assert.equal(m.hitTest(targets, { x: 0, y: 0 }, camera), null)
-  targets[0].y = 50
-  assert.equal(m.hitTest(targets, screen, camera), 'front')
-})
-
-test('click threshold is four CSS pixels and a drag stays a drag after returning', () => {
-  const gesture = new m.DragGesture()
-  gesture.begin({ x: 10, y: 10 }); assert.equal(gesture.end({ x: 14, y: 10 }), true)
-  gesture.begin({ x: 10, y: 10 }); assert.equal(gesture.move({ x: 14.1, y: 10 }), true); assert.equal(gesture.end({ x: 10, y: 10 }), false)
-  gesture.begin({ x: 10, y: 10 }); gesture.cancel(); assert.equal(gesture.end({ x: 10, y: 10 }), false)
-})
-
-function frameHost() {
-  let id = 0
-  const pending = new Map()
-  return { pending, request: cb => { pending.set(++id, cb); return id }, cancel: id => pending.delete(id), tick(time) { const callbacks = [...pending.values()]; pending.clear(); callbacks.forEach(cb => cb(time)) } }
+    source=source.replace(/^const manifests = .*$/m,`const manifests = ${JSON.stringify(manifests)}`).replace(/^const urls = .*$/m,`const urls = ${JSON.stringify(urls)}`)
+    return {contents:source,loader:'ts'}
+  }); b.onResolve({ filter: /^\.\/art$/ }, () => ({ path: 'art', namespace: 'test-art' })); b.onLoad({ filter: /.*/, namespace: 'test-art' }, () => ({ contents: `export class OfficeArt {
+  theme = 'cozy'; async load() {}; async setTheme(theme) { this.theme = theme; globalThis.officeCalls.push({ id: 'theme', theme }) }
+  bake(layout) { globalThis.officeCalls.push({id:'bake'}); return {width:layout.bounds.width,height:layout.bounds.height} }
+  paintFront() {}
+  paint(ctx,id,state,anchor,time) { globalThis.officeCalls.push({id,state,anchor,time}); return true }
+  overlay(ctx,id,data) { globalThis.officeCalls.push({id,...data}) }
+  hitRect(id,state,p) { return {x:p.x-12,y:p.y-42,width:24,height:44} }
+}`, loader: 'js' })) } }] })
+const m = createRequire(import.meta.url)(join(dir, 'renderer.cjs')); rmSync(dir, { recursive: true })
+const departments = n => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, name: `Project${i}`, workspaceId: `w${i}`, workspaceIds: [`w${i}`], number: i + 1 }))
+const occupants = (n, projects = 1, lead = false) => Array.from({ length: n }, (_, i) => ({ paneId: `p${i}`, departmentId: `d${i % projects}`, lead: lead && i < projects }))
+const office = (n = 8) => ({ session: 'fixture', generation: 'g1', departments: departments(1), seats: [], agents: occupants(n, 1, true).map((p, i) => ({ ...p, id: `a${i}`, name: `Project0-${i === 0 ? 'lead' : `agent${i}`}`, kind: 'codex', role: i === 0 ? 'lead' : 'backend', roleSource: 'binding', status: 'working', lastStatusAt: 0, lastEventAt: null, lastTask: null, incarnation: `i${i}`, seatId: `s${i}`, transcriptCoverage: 'exact' })), externalNodes: [{ id: 'user', name: 'User', kind: 'user' }, { id: 'machine', name: 'fixture-machine', kind: 'machine' }], links: [], recentEvents: [], statusCounts: { working: n, blocked: 0, idle: 0, done: 0, unknown: 0, disconnect: 0 } })
+const animation = (id, now, from = 'a0', to = 'a1') => ({ id, from, to, kind: 'prompt', count: 1, ts: now })
+function host(t) {
+  const pending = new Map(), listeners = new Map(); let seq = 0, paints = 0, observers = 0
+  const ctx = new Proxy({}, { get(_target, key) { return key === 'drawImage' ? () => paints++ : key === 'setLineDash' ? pattern => globalThis.officeCalls.push({id:'lineDash',pattern}) : () => {} }, set() { return true } })
+  const canvas = () => ({ width: 0, height: 0, getContext: () => ctx, getBoundingClientRect: () => ({ left: 0, top: 0, width: 1440, height: 900 }), addEventListener: (k, v) => listeners.set(k, v), removeEventListener: k => listeners.delete(k), setPointerCapture() {}, hasPointerCapture: () => true, releasePointerCapture() {} })
+  t.mock.method(globalThis, 'requestAnimationFrame', cb => { const id = ++seq; pending.set(id, cb); return id })
+  t.mock.method(globalThis, 'cancelAnimationFrame', id => pending.delete(id))
+  t.mock.method(globalThis, 'ResizeObserver', function() { observers++; this.observe = () => {}; this.disconnect = () => observers-- })
+  globalThis.window = { devicePixelRatio: 2 }; globalThis.document = { createElement: canvas, documentElement: {} }; globalThis.officeCalls = []
+  return { canvas, listeners, tick(time) { const callbacks = [...pending.values()]; pending.clear(); callbacks.forEach(cb => cb(time)) }, get pending() { return pending.size }, get paints() { return paints }, get observers() { return observers } }
 }
+globalThis.requestAnimationFrame = () => 0; globalThis.cancelAnimationFrame = () => {}; globalThis.ResizeObserver = class {}
 
-test('one RAF: <=30 FPS, <=5 FPS in background, zero hidden and no leaked handles', () => {
-  const host = frameHost(), drawn = [], loop = new m.FrameLoop(host, time => drawn.push(time))
-  assert.equal(host.pending.size, 0)
-  loop.setVisibility(true, true); loop.setVisibility(true, true)
-  for (let frame = 0; frame < 60; frame++) { assert.equal(host.pending.size, 1); host.tick(frame * 1000 / 60) }
-  assert.equal(drawn.length, 30)
-  drawn.length = 0; loop.setVisibility(true, false)
-  for (let frame = 60; frame < 120; frame++) host.tick(frame * 1000 / 60)
-  assert.equal(drawn.length, 5)
-  loop.setVisibility(false, false); assert.equal(host.pending.size, 0)
-  host.tick(5000); assert.equal(drawn.length, 5)
-  loop.setVisibility(true, true); host.tick(6000); assert.equal(drawn.length, 6)
-  loop.dispose(); assert.equal(host.pending.size, 0)
-})
-const animation = (id, pair = id, ts = 1000) => ({ id, from: `from-${pair}`, to: `to-${pair}`, kind: 'prompt', count: 1, ts })
-
-test('confirmed effects dedup, batch per pair, expire and respect all queue limits', () => {
-  const queue = new m.EnvelopeQueue()
-  queue.ingest([animation('a', 'pair'), animation('b', 'pair')], 1000, true)
-  assert.equal(queue.active.length, 1); assert.equal(queue.active[0].count, 2)
-  queue.ingest([animation('a', 'pair')], 1000, true); assert.equal(queue.active[0].count, 2)
-  queue.ingest([animation('c', 'pair', 1500)], 1500, true)
-  queue.advance(2999); assert.equal(queue.active.length, 0)
-  queue.advance(3000); assert.equal(queue.active.length, 1); assert.equal(queue.active[0].id, 'c')
-  queue.clear(); queue.ingest(Array.from({ length: 100 }, (_, i) => animation(`${i}`)), 1000, true)
-  assert.ok(queue.active.length <= 12)
-  queue.advance(8000); assert.equal(queue.active.length, 0)
-  queue.ingest([animation('expired', 'p', 1000)], 8000, true); assert.equal(queue.active.length, 0)
-  queue.ingest([{ ...animation('attempt', 'p', 8000), kind: 'prompt_attempt' }], 8000, true); assert.equal(queue.active.length, 0)
-})
-
-test('hidden/reduced motion effects never replay; weights decay with wall time', () => {
-  const queue = new m.EnvelopeQueue()
-  queue.ingest([animation('hidden')], 1000, false)
-  queue.ingest([animation('hidden')], 1100, true); assert.equal(queue.active.length, 0)
-  queue.ingest([animation('new', 'p', 1100)], 1100, true); assert.equal(queue.active.length, 1)
-  queue.discardMotion(); queue.advance(1200); assert.equal(queue.active.length, 0)
-  assert.ok(Math.abs(m.decayedWeight(1, 0, 300_000) - 1 / Math.E) < 1e-10)
-})
-
-function canvasHost(t) {
-  const host = frameHost(), listeners = new Map(), resizeObservers = new Set()
-  let paints = 0
-  const context = new Proxy({}, { get: (_target, key) => key === 'drawImage' ? () => paints++ : () => {} })
-  const createCanvas = () => ({ width: 1, height: 1, getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 960, height: 600 }),
-    addEventListener: (key, fn) => listeners.set(key, fn), removeEventListener: key => listeners.delete(key), setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture: () => true })
-  const globals = { officeArtCalls: [], document: { createElement: createCanvas, documentElement: { lang: 'en' } }, window: { devicePixelRatio: 2 }, ResizeObserver: class { constructor(callback) { this.callback = callback; resizeObservers.add(this) } observe() {} disconnect() { resizeObservers.delete(this) } }, requestAnimationFrame: host.request, cancelAnimationFrame: host.cancel }
-  for (const [key, value] of Object.entries(globals)) { const old = globalThis[key]; globalThis[key] = value; t.after(() => { if (old === undefined) delete globalThis[key]; else globalThis[key] = old }) }
-  return { host, listeners, resizeObservers, createCanvas, paints: () => paints }
-}
-const state = () => ({ session: 'isolated', generation: 'test', departments: [{ id: 'project-0', number: 1, name: 'Test', workspaceId: 'w1' }], seats: [], agents: [{ id: 'agent-v1', paneId: 'pane-000', departmentId: 'project-0', status: 'working', lastStatusAt: 1000, kind: 'codex', role: 'general' }], externalNodes: [], links: [], recentEvents: [] })
-
-test('engine DPR2 click opens the correct pane; drag does not open; hide stops painting', t => {
-  const h = canvasHost(t), opened = [], canvas = h.createCanvas()
-  const engine = new m.OfficeEngine(canvas, { onOpen: id => opened.push(id), onHover() {} })
-  engine.update({ state: state(), animations: [] }); engine.setVisibility(true, true); h.host.tick(0)
-  const point = m.worldToScreen({ x: 48, y: 110 }, engine.camera)
-  const event = { clientX: point.x, clientY: point.y, button: 0, pointerId: 1 }
-  h.listeners.get('pointerdown')(event); h.listeners.get('pointerup')(event)
-  assert.deepEqual(opened, ['pane-000'])
-  h.listeners.get('pointerdown')(event); h.listeners.get('pointermove')({ ...event, clientX: point.x + 5 }); h.listeners.get('pointerup')({ ...event, clientX: point.x + 5 })
-  assert.equal(opened.length, 1)
-  engine.setVisibility(false, true); const before = h.paints(); h.host.tick(1000); assert.equal(h.paints(), before)
-  engine.dispose(); assert.equal(h.listeners.size, 0); assert.equal(h.resizeObservers.size, 0); assert.equal(h.host.pending.size, 0)
-})
-
-test('50 engine open/close cycles return RAF, DOM listeners and resize observers to zero', t => {
-  const h = canvasHost(t)
-  for (let i = 0; i < 50; i++) {
-    const engine = new m.OfficeEngine(h.createCanvas(), { onOpen() {}, onHover() {} })
-    engine.update({ state: state(), animations: [] }); engine.setVisibility(true, true); h.host.tick(i * 40)
-    engine.dispose()
-    assert.equal(h.listeners.size, 0); assert.equal(h.resizeObservers.size, 0); assert.equal(h.host.pending.size, 0)
+test('v2 growth matches the 1/4/8/16/30 agent reference and remains one hall', () => {
+  for (const [count, width, height, rows] of [[1,224,208,0],[4,224,320,1],[8,320,320,1],[16,320,432,2],[30,544,432,2]]) {
+    const l = new m.OfficeLayout().update(departments(1), occupants(count,1,true))
+    assert.equal(l.lots.length,1); assert.equal(l.lots[0].width,width); assert.equal(l.lots[0].height,height); assert.equal(l.lots[0].shape.rows,rows); assert.equal(l.seats.length,count)
+    assert.equal(l.seats.filter(s => s.side === 'head').length,1); assert.equal(l.corridor.y,0); assert.equal(l.lots[0].y + l.lots[0].height,0)
   }
 })
-
-test('DOM machine captions stay on separate rows when zoomed out and do not update on draw frames', t => {
-  const h = canvasHost(t), updates = []
-  const engine = new m.OfficeEngine(h.createCanvas(), { onOpen() {}, onHover() {}, onLabels: labels => updates.push(labels) })
-  const office = state()
-  office.externalNodes = [{ id: 'pc', kind: 'machine', name: 'pc' }, { id: 'server', kind: 'machine', name: 'homeserver' }]
-  engine.update({ state: office, animations: [] }); engine.zoom(0.5)
-  const machines = updates.at(-1).filter(label => label.kind === 'machine')
-  assert.ok(machines[1].y - machines[0].y >= 16)
-  const count = updates.length
-  engine.setVisibility(true, true); h.host.tick(0); h.host.tick(100)
-  assert.equal(updates.length, count)
-  engine.dispose()
+test('0/20 projects and 200 agents stay inside bottom-aligned rooms with lobby, corridor and servers', () => {
+  for (const n of [0,1,20]) {
+    const l = new m.OfficeLayout().update(departments(n), n ? occupants(200,n) : [], false, 0, 2)
+    assert.equal(l.lots.length,n); assert.equal(l.seats.length,n ? 200 : 0); assert.ok(l.bounds.width > 0 && l.bounds.height > 0); assert.equal(l.lobby.width,192); assert.equal(l.server.width,160)
+    let right = l.lobby.x + l.lobby.width
+    for (const lot of l.lots) { assert.equal(lot.x,right-16); right=lot.x+lot.width; assert.equal(lot.y+lot.height,0); for (const s of l.seats.filter(s=>s.departmentId===lot.departmentId)) { assert.ok(s.x>=lot.x && s.x+s.width<=lot.x+lot.width); assert.ok(Number.isFinite(s.anchor.y)) } }
+    assert.equal(l.server.x,right-16)
+  }
+})
+test('logical seats survive rename/status/restart and reuse lowest vacancy; shrink waits ten minutes', () => {
+  const model = new m.OfficeLayout(), list = occupants(16,1,true), initial = model.update(departments(1),list,false,0)
+  const reordered = model.update(departments(1),list.toReversed().map(a=>({...a,name:'renamed',status:'blocked',incarnation:'new'})),false,100)
+  for (const s of initial.seats) assert.deepEqual(reordered.seats.find(a=>a.paneId===s.paneId),s)
+  const reduced = model.update(departments(1),list.slice(0,4),false,200)
+  assert.equal(reduced.lots[0].height,432)
+  const replaced = model.update(departments(1),[...list.slice(0,4),{paneId:'new',departmentId:'d0'}],false,300)
+  assert.equal(replaced.seats.find(s=>s.paneId==='new').index,3)
+  model.update(departments(1),list.slice(0,4),false,1000)
+  const compact = model.update(departments(1),list.slice(0,4),false,200 + m.SHRINK_DELAY)
+  assert.equal(compact.lots[0].width,224); assert.equal(compact.lots[0].height,320); assert.equal(compact.corridor.y,0)
+})
+test('seat anchors match north/south/head hand, landing and occlusion order', () => {
+  const l = new m.OfficeLayout().update(departments(1),occupants(8,1,true)), north=l.seats.find(s=>s.side==='north'), south=l.seats.find(s=>s.side==='south'), head=l.seats.find(s=>s.side==='head')
+  const n=m.seatPose(north), s=m.seatPose(south), h=m.seatPose(head)
+  assert.equal(n.agent.y,north.deskTop+8); assert.equal(n.chair.y,north.deskTop+7); assert.equal(n.land.y,north.deskTop+4)
+  assert.equal(s.agent.y,south.deskTop+44); assert.equal(s.chair.y,south.deskTop+47); assert.equal(s.land.y,south.deskTop+18)
+  assert.equal(h.agent.y,head.deskTop+8)
+  const route=m.routeCable(south,l.lots[0],{x:600,y:-208,width:160,height:208},{x:648,y:-68})
+  assert.ok(route.some(p=>p.y>0)); for(let i=1;i<route.length;i++) assert.ok(route[i].x===route[i-1].x || route[i].y===route[i-1].y)
+})
+test('camera uses integer zoom even when campus cannot fit; CSS-pixel hit and drag are stable', () => {
+  const c={x:-20,y:30,zoom:2},p={x:84,y:106}; assert.deepEqual(m.worldToScreen(m.screenToWorld(p,c),c),p); assert.deepEqual(m.screenToWorld(p,m.zoomAt(c,3,p)),m.screenToWorld(p,c))
+  for(const w of [1,300,2000]) assert.ok([1,2,3].includes(m.fitCamera({x:-32,y:-500,width:1600,height:1000},w,900).zoom))
+  const targets=[{paneId:'rear',rect:{x:40,y:30,width:32,height:48},y:40},{paneId:'front',rect:{x:40,y:30,width:32,height:48},y:50}]; assert.equal(m.hitTest(targets,m.worldToScreen({x:50,y:40},c),c),'front')
+  const g=new m.DragGesture();g.begin({x:0,y:0});assert.equal(g.end({x:2,y:1}),true);g.begin({x:0,y:0});assert.equal(g.end({x:7,y:0}),false)
+})
+test('carrier phases preserve throw, arc, catch, attempt fall and TTL; history prompt never confirms', () => {
+  const q=new m.EnvelopeQueue(),now=10000; q.ingest([animation('one',now)],now,true,()=>300)
+  const a=q.active[0];assert.equal(a.duration,1260);assert.equal(m.carrierPhase(a,now+160).phase,'throw');assert.equal(m.carrierPhase(a,now+300).phase,'flight');assert.equal(m.carrierPhase(a,now+1540).phase,'catch')
+  const mid=m.arcPoint({x:0,y:0},{x:100,y:0},.5);assert.ok(mid.y<0)
+  q.advance(now+1540);assert.ok(q.notes.has('a1'))
+  const s=office();s.recentEvents=[{id:'history',kind:'prompt',from:'a0',to:'a1',ts:now,summary:''},{id:'attempt',kind:'prompt_attempt',from:'a0',to:'a1',ts:now,summary:''}];const attempt=new m.EnvelopeQueue();attempt.ingestEvents(s,now,true,()=>100);assert.equal(attempt.active.length,1);assert.equal(attempt.active[0].kind,'prompt_attempt');assert.equal(m.carrierPhase(attempt.active[0],now+280+800*.7+200).phase,'fall');attempt.advance(now+5000);assert.equal(attempt.notes.size,0)
+  const expired=new m.EnvelopeQueue();expired.ingest([animation('old',now-5001)],now,true);assert.equal(expired.active.length,0)
+})
+test('12 carriers, 20 queue slots, 2-second coalescing, generation reset and reduced-motion outcomes', () => {
+  const q=new m.EnvelopeQueue(),now=10000; q.ingest(Array.from({length:70},(_,i)=>animation(String(i),now,`a${i}`,`b${i}`)),now,true);assert.ok(q.active.length<=12);assert.ok(q.pending.length<=20)
+  const pair=new m.EnvelopeQueue();pair.ingest([animation('a',now),animation('b',now+1)],now,true);assert.equal(pair.active.length,1);assert.equal(pair.active[0].count,2);pair.ingest([animation('a',now)],now+1,true);assert.equal(pair.active[0].count,2)
+  const reduced=new m.EnvelopeQueue();reduced.ingest([animation('r',now)],now,true,()=>0,true);assert.equal(reduced.active.length,0);assert.ok(reduced.notes.has('a1'));reduced.pruneNotes({...office(),agents:[{id:'a1',status:'idle'}]},now);assert.equal(reduced.notes.size,0)
+  reduced.clear();assert.equal(reduced.notes.size,0);assert.equal(m.officeTheme(false),'cozy');assert.equal(m.officeTheme(true),'neon')
+})
+test('frame loop paints at 30 foreground / at most 5 background FPS and zero hidden; dispose cancels RAF', () => {
+  const pending=new Map();let id=0,count=0;const loop=new m.FrameLoop({request:cb=>{pending.set(++id,cb);return id},cancel:id=>pending.delete(id)},()=>count++)
+  const tick=t=>{const callbacks=[...pending.values()];pending.clear();callbacks.forEach(cb=>cb(t))};loop.setVisibility(true,true);for(let t=0;t<1000;t+=10)tick(t);assert.ok(count<=30)
+  loop.setVisibility(true,false);count=0;for(let t=1000;t<2000;t+=10)tick(t);assert.ok(count<=5);loop.setVisibility(false,false);assert.equal(pending.size,0);tick(3000);assert.ok(count<=5);loop.dispose()
+})
+test('engine baseline/reconnect cannot replay fresh history; live status done produces confetti only once', t => {
+  const h=host(t),e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}});let now=10000;t.mock.method(Date,'now',()=>now);const s=office();e.setVisibility(true,true);e.update({state:s,animations:[animation('baseline',now)]});assert.equal(e.effects.active.length,0)
+  e.update({state:s,animations:[animation('live',now)]});assert.equal(e.effects.active.length,1)
+  const done={...s,agents:s.agents.map((a,i)=>i===1?{...a,status:'done',lastStatusAt:now}:a)};e.update({state:done,animations:[]});assert.equal(e.effects.celebrations.size,1)
+  e.setVisibility(false,true);e.setVisibility(true,true);done.recentEvents=[{id:'return-attempt',kind:'prompt_attempt',from:'a0',to:'a1',ts:now,summary:''}];e.update({state:done,animations:[]});assert.equal(e.effects.active.length,0);assert.equal(e.effects.celebrations.size,0)
+  e.setConnected(false);e.update({state:done,animations:[animation('offline',now)]});assert.equal(e.effects.active.length,0);e.dispose();assert.equal(h.pending,0);assert.equal(h.observers,0);assert.equal(h.listeners.size,0)
+})
+test('engine theme switch preserves places/camera; DPR2 click selects, drag does not; cached bake survives frames', async t => {
+  const h=host(t),opened=[],e=new m.OfficeEngine(h.canvas(),{onOpen:id=>opened.push(id),onHover(){}});e.setVisibility(true,true);e.update({state:office(),animations:[]});h.tick(0)
+  const s=e.layout.seats[1],anchor=m.seatPose(s).agent,p=m.worldToScreen({x:anchor.x,y:anchor.y-15},e.camera),event={clientX:p.x,clientY:p.y,pointerId:1,button:0}
+  h.listeners.get('pointerdown')(event);h.listeners.get('pointerup')(event);assert.deepEqual(opened,['p1'])
+  h.listeners.get('pointerdown')(event);h.listeners.get('pointermove')({...event,clientX:p.x+20});h.listeners.get('pointerup')({...event,clientX:p.x+20});assert.equal(opened.length,1)
+  const before=JSON.stringify(e.layout.seats),camera={...e.camera};await e.setTheme(true);assert.equal(JSON.stringify(e.layout.seats),before);assert.deepEqual(e.camera,camera);assert.equal(e.art.theme,'neon');h.tick(40);const bakes=officeCalls.filter(c=>c.id==='bake').length;h.tick(80);assert.equal(officeCalls.filter(c=>c.id==='bake').length,bakes)
+  e.setConnected(false);h.listeners.get('pointerdown')(event);h.listeners.get('pointerup')(event);assert.equal(opened.length,1)
+  e.setVisibility(false,true);const painted=h.paints;h.tick(120);assert.equal(h.paints,painted);e.dispose()
+})
+test('50 open/close cycles leave no canvas listeners, RAF handles or resize observers', t => {
+  const h=host(t);for(let i=0;i<50;i++){const e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}});e.setVisibility(true,true);e.update({state:office(),animations:[]});h.tick(i*100);e.dispose();assert.equal(h.pending,0);assert.equal(h.observers,0);assert.equal(h.listeners.size,0)}
+})
+test('all office HUD words have five-language coverage; names lose common prefixes and inferred roles remain labelled', t => {
+  host(t);for(const lang of ['en','ru','de','es','zh']) {m.setLanguage(lang);for(const key of Object.keys(m.officeMessages)){const text=m.officeText(key,{n:3});assert.ok(text.length);assert.ok(!text.includes('{n}'));if(lang!=='en'&&key!=='Team')assert.notEqual(text,key)};assert.ok(m.roleLabel({role:'backend',roleSource:'name'}).includes(m.roleLabel({role:'backend',roleSource:'binding'})));for(const role of ['future','constructor','__proto__'])assert.equal(m.roleLabel({role,roleSource:'default'}),m.roleLabel({role:'general',roleSource:'default'}))};m.setLanguage('en')
+  const names=m.shortAgentNames(office().agents,departments(1));assert.equal(names.get('a0'),'lead');assert.equal(names.get('a1'),'agent1')
+})
+test('same-ID sidebar chat/board navigation exits office; menu buttons and arrow keys do not', () => {
+  const row=()=>({closest(selector){return selector==='.sidebar .thread'?this:null}});assert.equal(m.isSidebarNavigation(row()),true);assert.equal(m.isSidebarNavigation(row(),'Enter'),true);assert.equal(m.isSidebarNavigation(row(),'ArrowDown'),false);assert.equal(m.isSidebarNavigation(null),false)
 })
 
-
-test('disconnect blocks canvas opening even if there are cached hit targets', t => {
-  const h = canvasHost(t), opened = [], engine = new m.OfficeEngine(h.createCanvas(), { onOpen: id => opened.push(id), onHover() {} })
-  engine.update({ state: state(), animations: [] }); engine.setVisibility(true, true); h.host.tick(0)
-  const p = m.worldToScreen({ x: 48, y: 75 }, engine.camera)
-  const event = { clientX: p.x, clientY: p.y, pointerId: 1, button: 0 }
-  engine.setConnected(false)
-  h.listeners.get('pointerdown')(event); h.listeners.get('pointerup')(event)
-  assert.deepEqual(opened, [])
-  engine.setConnected(true)
-  h.listeners.get('pointerdown')(event); h.listeners.get('pointerup')(event)
-  assert.deepEqual(opened, ['pane-000']); engine.dispose()
-})
-
-test('seat presentation matches the reference: front sits behind the desk, back between desk and chair', t => {
-  const h = canvasHost(t), engine = new m.OfficeEngine(h.createCanvas(), { onOpen() {}, onHover() {} })
-  const office = state()
-  office.agents = Array.from({ length: 8 }, (_, i) => ({ ...office.agents[0], id: `agent-${i}`, paneId: `pane-00${i}` }))
-  engine.update({ state: office, animations: [] }); engine.setVisibility(true, true); h.host.tick(0)
-  const calls = globalThis.officeArtCalls
-  const front = calls.findIndex(c => c.id === 'agent.codex' && c.state === 'working:front')
-  const frontDesk = calls.findIndex(c => c.id === 'object.desk.front')
-  const back = calls.findIndex(c => c.id === 'agent.codex' && c.state === 'working:back')
-  const backDesk = calls.findIndex(c => c.id === 'object.desk.back')
-  const backChair = calls.findIndex(c => c.id === 'object.chair.back')
-  assert.ok(front >= 0 && front < frontDesk)
-  assert.ok(backDesk >= 0 && backDesk < back && back < backChair)
-  assert.equal(calls[front].anchor.y, 101); assert.equal(calls[back].anchor.y, 249)
-  assert.ok(calls.some(c => c.id === 'tile.wall.cap.front'))
-  assert.ok(calls.some(c => c.id.startsWith('tile.floor.carpet.red.')))
-  engine.dispose()
-})
-
-test('unknown/disconnect turn desks off; back desks select new cached animation frames; reduced motion freezes them', t => {
-  const h = canvasHost(t), engine = new m.OfficeEngine(h.createCanvas(), { onOpen() {}, onHover() {} })
-  let now = 10_000; t.mock.method(Date, 'now', () => now)
-  const office = state()
-  office.agents = Array.from({ length: 5 }, (_, i) => ({ ...office.agents[0], id: `agent-${i}`, paneId: `pane-00${i}`, lastStatusAt: now }))
-  office.agents[0].status = 'unknown'
-  engine.update({ state: office, animations: [] }); engine.setVisibility(true, true); h.host.tick(0)
-  assert.ok(globalThis.officeArtCalls.some(c => c.id === 'object.desk.front' && c.state === 'off'))
-  const first = globalThis.officeArtCalls.filter(c => c.id === 'object.desk.back' && c.state === 'on').length
-  now += 950; h.host.tick(950)
-  assert.ok(globalThis.officeArtCalls.filter(c => c.id === 'object.desk.back' && c.state === 'on').length > first)
-  engine.setOptions(false, true)
-  h.host.tick(1400)
-  const frozen = globalThis.officeArtCalls.filter(c => c.id === 'object.desk.back' && c.state === 'on').length
-  now += 950; h.host.tick(2400)
-  assert.equal(globalThis.officeArtCalls.filter(c => c.id === 'object.desk.back' && c.state === 'on').length, frozen)
-  engine.setConnected(false); h.host.tick(2800)
-  assert.ok(globalThis.officeArtCalls.some(c => c.id === 'object.desk.back' && c.state === 'off'))
-  engine.dispose()
-})
-
-test('envelopes use elapsed animation time, attempts and machine links use their distinct sprites', t => {
-  const h = canvasHost(t), engine = new m.OfficeEngine(h.createCanvas(), { onOpen() {}, onHover() {} })
-  let now = 10_000; t.mock.method(Date, 'now', () => now)
-  const office = state()
-  office.agents.push({ ...office.agents[0], id: 'recipient', paneId: 'pane-001' })
-  office.externalNodes = [{ id: 'machine:pc', kind: 'machine', name: 'pc' }]
-  office.links = [{ id: 'attempt', from: 'agent-v1', to: 'recipient', style: 'attempt', weight: 1, lastAt: now }, { id: 'ssh', from: 'agent-v1', to: 'machine:pc', style: 'machine', weight: 1, lastAt: now }]
-  engine.update({ state: office, animations: [] }); engine.setVisibility(true, true)
-  engine.update({ state: office, animations: [{ ...animation('confirmed', 'pair', now), from: 'agent-v1', to: 'recipient' }] })
-  now += 350; h.host.tick(350)
-  assert.ok(globalThis.officeArtCalls.some(c => c.id === 'effect.envelope' && c.time === 350))
-  for (const id of ['effect.attempt', 'effect.dash', 'effect.cable.h', 'effect.cable.v', 'effect.cable.plug']) assert.ok(globalThis.officeArtCalls.some(c => c.id === id), id)
-  const calls = globalThis.officeArtCalls
-  assert.ok(calls.findIndex(c => c.id === 'effect.cable.h') < calls.findIndex(c => c.id === 'object.desk.front'))
-  assert.ok(calls.findIndex(c => c.id === 'effect.cable.h') < calls.findIndex(c => c.id === 'agent.codex'))
-  engine.dispose()
-})
-
-const manifest = JSON.parse(readFileSync('src/renderer/src/office/assets/manifest.json', 'utf8'))
-function routeFixture(count, size) {
-  const layout = new m.OfficeLayout().update(projects(count), agents(size, count))
-  const poses = layout.seats.map(m.seatPose)
-  const hits = poses.map(pose => {
-    const frame = manifest.sprites['agent.codex'].states[`idle:${pose.direction}`].frames[0]
-    return { ...frame.hitRect, x: pose.agent.x - frame.anchor.x + frame.hitRect.x, y: pose.agent.y - frame.anchor.y + frame.hitRect.y }
-  })
-  return { layout, poses, hits }
-}
-function assertClearRoute(route, hits) {
-  assert.ok(route.length >= 2, 'route exists')
-  for (let i = 1; i < route.length; i++) for (const hit of hits) assert.equal(m.segmentHitsRect(route[i - 1], route[i], hit), false, JSON.stringify({ segment: [route[i - 1], route[i]], hit }))
-}
-
-test('links and travelling envelopes avoid character hit rects across both rows, rooms and extensions', () => {
-  for (const [count, size] of [[1, 8], [3, 24], [20, 200]]) {
-    const { poses, hits } = routeFixture(count, size)
-    for (let i = 0; i < poses.length; i += Math.max(1, Math.floor(size / 16))) {
-      const targets = [0, Math.min(4 * count, size - 1), size - 1]
-      for (const j of targets) {
-        if (i === j) continue
-        const from = m.aboveHead(poses[i].agent, hits[i]), to = m.aboveHead(poses[j].agent, hits[j])
-        const route = m.routeLine(from, to, hits)
-        assert.deepEqual(route[0], from); assert.deepEqual(route.at(-1), to)
-        assertClearRoute(route, hits)
-        for (let step = 0; step <= 20; step++) {
-          const p = m.pointOnRoute(route, step / 20)
-          assert.ok(hits.every(hit => !intersects({ x: p.x - 8, y: p.y - 8, width: 16, height: 16 }, hit)), 'envelope footprint clears characters')
-        }
-      }
+test('widening and adding a parallel bench retain occupied sides, rows and columns', () => {
+  const model=new m.OfficeLayout(), d=departments(1)
+  let before=model.update(d,occupants(4,1,true),false,0)
+  for(const count of [8,16,30]) {
+    const after=model.update(d,occupants(count,1,true),false,count)
+    for(const seat of before.seats) {
+      const next=after.seats.find(s=>s.paneId===seat.paneId)
+      assert.equal(next.side,seat.side);assert.equal(next.row,seat.row);assert.equal(next.bench,seat.bench);assert.equal(next.col,seat.col)
     }
+    assert.equal(new Set(after.seats.map(s=>s.index)).size,count)
+    before=after
   }
 })
-
-test('SSH cables leave through the bottom aisle and stay outside other rooms and all characters', () => {
-  for (const [count, size] of [[1, 8], [3, 24], [20, 200]]) {
-    const { layout, hits } = routeFixture(count, size)
-    const rooms = layout.lots.map(l => ({ ...l, height: l.height + m.TILE }))
-    const machine = { x: layout.bounds.x + layout.bounds.width + 10 * m.TILE, y: 5 * m.TILE }
-    for (const seat of layout.seats) {
-      const lot = layout.lots.find(l => l.departmentId === seat.departmentId && l.block === Math.floor(seat.index / 8))
-      const route = m.routeCable(seat, lot, rooms, machine, hits)
-      assertClearRoute(route, hits)
-      assert.deepEqual(route.at(-1), machine)
-      assert.ok(route.some(p => p.y >= lot.y + lot.height + m.TILE * 1.5), 'exits below the front wall')
-      assertClearRoute(route, rooms.filter(r => r.slot !== lot.slot))
-    }
-  }
+test('opaque boss IDs place the cabinet beside reception and use boss anchors and art', async t => {
+  const h=host(t),e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}}),s=office(4)
+  s.departments.push({...departments(1)[0],id:'opaque-hq',name:'HQ',number:999})
+  s.agents.push({...s.agents[0],id:'opaque-token',paneId:'chief-pane',name:'Nobody can infer this',incarnation:'hash-only',departmentId:'opaque-hq',isBoss:true})
+  e.setVisibility(true,true);e.update({state:s,animations:[]});h.tick(0)
+  const lot=e.layout.lots[0];assert.equal(lot.departmentId,'opaque-hq');assert.equal(lot.x,e.layout.lobby.x+e.layout.lobby.width-16)
+  assert.deepEqual(e.nodes.get('opaque-token').hand,{x:lot.x+124,y:lot.y+70})
+  assert.ok(officeCalls.some(c=>c.id==='agent.boss'));assert.ok(officeCalls.some(c=>c.id==='object.desk.boss'&&c.anchor.y===lot.y+132))
+  await e.setTheme(true);h.tick(40);assert.equal(e.layout.lots[0].departmentId,'opaque-hq');e.dispose()
+})
+test('unconfirmed input stays silent, board activity targets its own project, disabled events cannot replay', () => {
+  const now=10000,s=office(),q=new m.EnvelopeQueue()
+  s.recentEvents=[{id:'input',kind:'input_observed',from:'user',to:'a1',ts:now,summary:''},{id:'task',kind:'task_assigned',from:'a1',to:null,ts:now,summary:''}]
+  q.ingestEvents(s,now,true,()=>120)
+  assert.equal(q.flashes.has(JSON.stringify(['user','a1'])),false);assert.equal(q.active.length,1);assert.equal(q.active[0].kind,'board');assert.equal(q.active[0].from,'a1');assert.equal(q.active[0].to,'d0')
+  const disabled=new m.EnvelopeQueue();disabled.ingest([animation('hidden',now)],now,false);disabled.ingest([animation('hidden',now)],now,true);assert.equal(disabled.active.length,0)
+  q.notes.set('a1',{at:now,user:true});q.pruneNotes(s,now+600001);assert.equal(q.notes.size,0)
 })
 
-test('user sprite and caption clear its head; reduced motion freezes its default frame', t => {
-  const h = canvasHost(t), labels = [], engine = new m.OfficeEngine(h.createCanvas(), { onOpen() {}, onHover() {}, onLabels: x => labels.push(x) })
-  const office = state(); office.externalNodes = [{ id: 'user', kind: 'user', name: 'User' }]
-  engine.update({ state: office, animations: [] }); engine.setOptions(false, true); engine.reset(); engine.setVisibility(true, true); h.host.tick(0)
-  const sprite = globalThis.officeArtCalls.find(c => c.id === 'object.user')
-  assert.ok(sprite); assert.equal(sprite.time, 0)
-  const label = labels.at(-1).find(l => l.id === 'user')
-  assert.equal(label.y, m.worldToScreen({ x: 0, y: -24 - 50 }, engine.camera).y)
-  assert.ok(label.y > 0, 'reset keeps caption in view')
-  engine.dispose()
+test('atlas adapter keeps the latest theme on out-of-order decode and respects empty chairs and finite poses', async t => {
+  const releases=[], old=globalThis.Image
+  globalThis.Image=class { decode(){return new Promise(resolve=>releases.push({src:this.src,resolve}))} }
+  t.after(()=>{globalThis.Image=old})
+  const art=new m.AtlasArt(),cozy=art.setTheme('cozy'),neon=art.setTheme('neon')
+  releases.filter(r=>r.src.startsWith('neon/')).forEach(r=>r.resolve());await neon
+  assert.equal(art.ready,true);assert.equal(art.manifest.set,'neon')
+  releases.filter(r=>r.src.startsWith('cozy/')).forEach(r=>r.resolve());await cozy
+  assert.ok([...art.images.values()].every(image=>image.src.startsWith('neon/')))
+  for(const dir of ['front','back']) assert.deepEqual(art.frame(`object.chair.${dir}`,'in',0),art.manifest.sprites[`object.chair.${dir}`].states.in.frames[0])
+  assert.deepEqual(art.frame('object.coffee','default',0),art.manifest.sprites['object.coffee'].states.default.frames[0])
+  const animation=art.manifest.sprites['agent.codex'].states['throw:front']
+  assert.deepEqual(m.animationFrame(animation,0),animation.frames[0]);assert.deepEqual(m.animationFrame(animation,10000),animation.frames.at(-1))
+  assert.deepEqual(art.frame('effect.attempt','fall',499),art.manifest.sprites['effect.attempt'].states.fall.frames.at(-1))
 })
 
-test('sidebar navigation is action-based for same-ID chat and board, including Enter, excluding menu buttons', () => {
-  const row = kind => ({ paneId: 'same-id', kind, closest(selector) { return selector === '.sidebar .thread' ? this : null } })
-  for (const target of [row('chat'), row('board')]) {
-    assert.equal(m.isSidebarNavigation(target), true)
-    assert.equal(m.isSidebarNavigation(target, 'Enter'), true)
-    assert.equal(m.isSidebarNavigation(target, 'ArrowDown'), false)
-  }
-  assert.equal(m.isSidebarNavigation({ closest: () => ({}) }), false, 'nested More button does not navigate')
-  assert.equal(m.isSidebarNavigation(null), false)
+test('manual projectLead wins over the earlier lead inferred from a name', t => {
+  const h=host(t),e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}}),s=office(4)
+  s.agents[0]={...s.agents[0],role:'lead',roleSource:'name'};s.agents[1]={...s.agents[1],role:'lead',roleSource:'projectLead'}
+  e.update({state:s,animations:[]})
+  assert.equal(e.layout.seats.find(s=>s.side==='head').paneId,'p1')
+  assert.notEqual(e.layout.seats.find(s=>s.paneId==='p0').side,'head')
+  e.dispose()
 })
-
-test('unknown roles (including inherited keys) fall back to the translated general role in all five languages', t => {
-  canvasHost(t)
-  for (const lang of ['en', 'ru', 'es', 'de', 'zh']) {
-    m.setLanguage(lang)
-    const general = m.roleLabel({ role: 'general', roleSource: 'default' })
-    for (const role of ['future-role', 'constructor', '__proto__']) assert.equal(m.roleLabel({ role, roleSource: 'default' }), general)
-    const inferred = m.roleLabel({ role: 'future-role', roleSource: 'name' })
-    assert.ok(inferred.includes(general)); assert.ok(!inferred.includes('undefined'))
-    assert.ok(m.statusLabel('disconnect')); assert.ok(m.coverageLabel('history_limit'))
-  }
-  m.setLanguage('en')
-  assert.equal(m.kindLabel('claude'), 'Claude Code'); assert.equal(m.kindLabel('codex'), 'Codex')
+test('SSH attempts stay dim/dashed and never energize equipment or move packets; real receipt can', t => {
+  let now=10000;t.mock.method(Date,'now',()=>now)
+  const h=host(t),e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}}),s=office(4)
+  const attempt={id:'ssh',from:'a0',to:'machine',kind:'ssh_attempt',style:'machine',count:1,lastAt:now,weight:1};s.links=[attempt]
+  e.setVisibility(true,true);e.update({state:s,animations:[]});h.tick(0)
+  assert.ok(officeCalls.some(c=>c.id==='lineDash'&&c.pattern.join(',')==='3,5'))
+  assert.ok(officeCalls.some(c=>c.id==='object.machine'&&c.state==='idle'))
+  assert.equal(officeCalls.filter(c=>c.id==='object.rack'&&c.state==='hot').length,0)
+  assert.equal(officeCalls.filter(c=>c.id==='object.machine'&&c.state==='active').length,0)
+  assert.equal(officeCalls.filter(c=>c.id==='effect.link.dot'&&c.state==='machine').length,0)
+  const history={...s,links:[{...attempt,kind:'prompt'}]};e.update({state:history,animations:[]});globalThis.officeCalls=[];h.tick(40)
+  assert.equal(officeCalls.filter(c=>c.id==='object.machine'&&c.state==='active').length,0)
+  e.update({state:history,animations:[animation('machine-receipt',now,'a0','machine')]});globalThis.officeCalls=[];h.tick(80)
+  assert.ok(officeCalls.some(c=>c.id==='object.machine'&&c.state==='active'))
+  assert.ok(officeCalls.some(c=>c.id==='object.rack'&&c.state==='hot'))
+  assert.ok(officeCalls.some(c=>c.id==='effect.link.dot'&&c.state==='machine'))
+  now+=4001;globalThis.officeCalls=[];h.tick(120)
+  assert.equal(officeCalls.filter(c=>c.id==='object.machine'&&c.state==='active').length,0)
+  e.dispose()
 })

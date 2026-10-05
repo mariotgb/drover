@@ -1020,6 +1020,28 @@ code.path {
 .team-row.muted {
   opacity: 0.55;
 }
+.boss-projects { max-height: 30vh; }
+.boss-projects .team-row { align-items: flex-start; }
+.boss-projects input[type='checkbox'] { margin-top: 5px; flex-shrink: 0; }
+.boss-projects .team-role-name { overflow-wrap: anywhere; }
+.boss-lead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; font-size: 12px; }
+.boss-lead > span { overflow-wrap: anywhere; }
+.boss-folder { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.boss-folder .path { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.boss-folder .btn { flex-shrink: 0; }
+.boss-templates { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.boss-instructions { font-size: 12px; }
+.boss-instructions summary { cursor: pointer; color: var(--text-2); }
+.boss-instructions pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.5; user-select: text; }
+.boss-delivery { display: flex; align-items: flex-start; gap: 5px; max-width: 42%; padding-top: 3px; font-size: 12px; overflow-wrap: anywhere; }
+.boss-delivery > svg { flex-shrink: 0; }
+.boss-delivery.delivered { color: var(--done); }
+.boss-delivery.blocked, .boss-delivery.no_lead { color: var(--blocked); }
+.boss-delivery.error { color: var(--danger); }
+.boss-delivery-error { display: block; margin-top: 4px; user-select: text; }
+.boss-form .field-hint { margin: 0; }
+.boss-form .setting-hint, .boss-form .field-hint:not(.warn), .boss-projects .team-role-sub { color: var(--text-2); }
+.boss-form .form-actions { flex-wrap: wrap; }
 .team-role {
   flex: 1;
   min-width: 0;

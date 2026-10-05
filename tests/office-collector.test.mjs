@@ -10,6 +10,9 @@ const temp = mkdtempSync(join(tmpdir(), 'drover-office-test-'))
 const out = join(temp, 'office.cjs')
 await build({ stdin: { contents: `
  export { OfficeCollector } from './src/main/office/collector'
+ export { officeProjects } from './src/main/office/projects'
+ export { sendPrompt } from './src/main/actions'
+ export { HerdrApiError } from './src/shared/types'
  export { publicTranscript } from './src/main/office/transport'
  export { resolveOfficeRole } from './src/main/office/collector-role'
  export { validateRpcArgs } from './src/main/remote/validation'
@@ -58,6 +61,164 @@ test('synthetic fixture contains three departments, eight kinds/roles and every 
  assert.equal(new Set(fixture.agents.map(a=>a.role)).size,8)
  assert.deepEqual([...new Set(fixture.agents.map(a=>a.status))].sort(),['blocked','disconnect','done','idle','unknown','working'])
  assert.ok(fixture.seats.some(s=>s.terminal && s.agentId === null))
+ assert.deepEqual(fixture.departments[0].workspaceIds,['w1','w4'])
+ assert.equal(Object.values(fixture.statusCounts).reduce((n,v)=>n+v,0),fixture.agents.length)
+ assert.ok(fixture.recentEvents.some(e=>e.summary.endsWith(' · готово')))
+ assert.ok(fixture.agents.every(a=>Object.hasOwn(a,'lastTask') && Object.hasOwn(a,'lastEventAt')))
+})
+
+test('projects merge all workspaces by sidebar folder, retain IDs/seats and one root board',async t=>{
+ const s=setup(t)
+ s.snapshot.workspaces.push({workspace_id:'w2',label:'Second workspace',number:2},{workspace_id:'w3',label:'Same label',number:3})
+ s.snapshot.panes.push({...s.panes[1],pane_id:'w2:p1',workspace_id:'w2',cwd:'/synthetic-only/./',agent_session:{value:'third'}},
+  {...s.panes[1],pane_id:'w3:p1',workspace_id:'w3',cwd:'/different-project',agent_session:{value:'fourth'}})
+ s.office.init();await drain()
+ let state=s.office.getState()
+ assert.equal(state.departments.length,2)
+ assert.deepEqual(state.departments[0].workspaceIds,['w1','w2'])
+ assert.equal(new Set(state.agents.slice(0,3).map(a=>a.departmentId)).size,1)
+ assert.deepEqual(s.boards,['/synthetic-only','/different-project'])
+ const id=state.departments[0].id,seat=state.agents.find(a=>a.paneId==='w2:p1').seatId
+ s.snapshot.workspaces=s.snapshot.workspaces.filter(w=>w.workspace_id!=='w1')
+ s.snapshot.panes=s.snapshot.panes.filter(p=>p.workspace_id!=='w1')
+ s.office.onSnapshot(s.snapshot);await drain();state=s.office.getState()
+ assert.equal(state.departments[0].id,id)
+ assert.equal(state.agents.find(a=>a.paneId==='w2:p1').seatId,seat)
+ assert.equal(s.boards.length,2)
+ assert.ok(!JSON.stringify(state).includes('/synthetic-only'))
+ assert.ok(!JSON.stringify(state).includes('/different-project'))
+})
+
+test('project keys follow sidebar tab/layout order, ignore foreground cwd and do not merge unknown roots',()=>{
+ const snapshot={workspaces:[{workspace_id:'w1',label:'One',number:1},{workspace_id:'w2',label:'One',number:2},{workspace_id:'w3',label:'One',number:3}],
+  panes:[{pane_id:'b',workspace_id:'w1',tab_id:'t2',cwd:'/wrong'},
+   {pane_id:'c',workspace_id:'w1',tab_id:'t1',cwd:'/also-wrong'},
+   {pane_id:'a',workspace_id:'w1',tab_id:'t1',cwd:'/root/',foreground_cwd:'/root/src'},
+   {pane_id:'d',workspace_id:'w2',tab_id:'t3',cwd:'/root',foreground_cwd:'/elsewhere'}],
+  tabs:[{tab_id:'t2',workspace_id:'w1',number:2},{tab_id:'t1',workspace_id:'w1',number:1},{tab_id:'t3',workspace_id:'w2',number:1}],
+  layouts:[{tab_id:'t1',panes:[{pane_id:'c',rect:{x:20,y:0}},{pane_id:'a',rect:{x:0,y:0}}]}]}
+ const projects=m.officeProjects(snapshot,'fixture')
+ assert.equal(projects.length,2);assert.equal(projects[0].root,'/root')
+ assert.deepEqual(projects[0].department.workspaceIds,['w1','w2'])
+ const stable=projects[0].department.id
+ snapshot.workspaces[0].workspace_id='renumbered';snapshot.workspaces[0].number=10
+ snapshot.panes=snapshot.panes.filter(p=>p.workspace_id!=='w1')
+ assert.equal(m.officeProjects(snapshot,'fixture')[0].department.id,stable)
+ snapshot.workspaces.push({workspace_id:'w4',label:'One',number:4})
+ assert.equal(m.officeProjects(snapshot,'fixture').filter(p=>!p.root).length,3)
+ assert.notEqual(m.officeProjects(snapshot,'other-session')[0].department.id,stable)
+})
+
+test('HUD journal uses templates, counters span projects and last-event time survives ring expiry',async t=>{
+ const s=setup(t);s.office.init();await drain()
+ s.snapshot.agents[1].name='designer';s.office.onSnapshot(s.snapshot)
+ s.send(s.tool('sent',{command:'herdr agent prompt designer "SECRET_PROMPT"',output:receipt('w1:p2','designer')}))
+ s.office.userPrompt(s.office.endpoint('w1:p1'),'SECRET_PROMPT')
+ s.panes[1].agent_status='done';s.advance(1200);s.office.onSnapshot(s.snapshot);s.office.flush()
+ let state=s.office.getState()
+ assert.deepEqual(state.recentEvents.map(e=>e.summary),['lead → designer · задача','Вы → lead · задача','designer · готово'])
+ assert.equal(state.recentEvents.at(-1).status,'done')
+ assert.deepEqual(state.statusCounts,{working:1,done:1,blocked:0,idle:0,unknown:0,disconnect:0})
+ assert.equal(state.agents[0].lastEventAt,stamp);assert.equal(state.agents[1].lastEventAt,stamp+1200)
+ s.send(s.tool('attempt',{command:'herdr agent prompt designer "SECRET_COMMAND"',output:null,ts:stamp+1200}))
+ assert.equal(s.office.getState().recentEvents.at(-1).summary,'lead → designer · не подтверждено')
+ s.advance(m.OFFICE_LIMITS.historyMs+1);state=s.office.getState()
+ assert.equal(state.recentEvents.length,0);assert.equal(state.agents[1].lastEventAt,stamp+1200)
+ s.office.onConnection(false)
+ assert.equal(s.office.getState().statusCounts.disconnect,2)
+ assert.ok(!JSON.stringify(s.updates).includes('SECRET'))
+})
+
+test('last task is only an assigned board title, including baseline and title-only edits; private data never enters office IPC',async t=>{
+ const board={cwd:'/synthetic-only',exists:true,tasks:[
+  {id:'old',title:'Old board task',assignee:'lead',status:'done',since:1,notes:'PRIVATE_NOTES'},
+  {id:'latest',title:'Build project hall',assignee:'lead',status:'todo',since:2,notes:'PRIVATE_COMMAND /private/project/path'}]}
+ const s=setup(t,{watchBoard:async()=>board});s.office.init();await drain()
+ assert.equal(s.office.getState().agents[0].lastTask,'Build project hall')
+ assert.equal(s.office.getState().agents[1].lastTask,null)
+ assert.equal(s.office.getState().recentEvents.length,0)
+ s.office.userPrompt(s.office.endpoint('w1:p1'),'PRIVATE_PROMPT /private/project/path')
+ s.send(s.tool('private',{command:'herdr agent prompt backend "PRIVATE_COMMAND /private/project/path"'}))
+ assert.equal(s.office.getState().agents[0].lastTask,'Build project hall')
+ board.tasks[1].title='Refine project hall';s.office.onBoard(board)
+ assert.equal(s.office.getState().agents[0].lastTask,'Refine project hall')
+ for(const title of ['/private/project/path','Fix /private/project/path','npm run private-command','`cat private-file`']){
+  board.tasks[1].title=title;s.office.onBoard(board);s.office.flush()
+  assert.equal(s.office.getState().agents[0].lastTask,null)
+ }
+ board.tasks[1].title='Safe label';board.tasks[1].assignee='backend';s.office.onBoard(board)
+ assert.equal(s.office.getState().agents[0].lastTask,'Old board task')
+ assert.equal(s.office.getState().agents[1].lastTask,'Safe label')
+ s.office.onBoard({...board,tasks:[]});s.office.flush()
+ assert.ok(s.office.getState().agents.every(a=>a.lastTask===null))
+ const wire=JSON.stringify([s.office.getState(),...s.updates])
+ for(const value of ['PRIVATE_PROMPT','PRIVATE_COMMAND','PRIVATE_NOTES','/private/project/path','/synthetic-only','herdr agent prompt','officeEvidence','sourceRef','observedAt','confidence']) assert.ok(!wire.includes(value),value)
+})
+
+test('board assignees resolve inside their project; another project with the same name cannot steal a task',async t=>{
+ const s=setup(t)
+ s.snapshot.workspaces.push({workspace_id:'w2',label:'Other',number:2})
+ s.snapshot.panes.push({...s.panes[1],pane_id:'w2:p1',workspace_id:'w2',cwd:'/other-root',agent_session:{value:'other'}})
+ s.snapshot.agents.push({...s.snapshot.panes.at(-1),name:'backend'})
+ s.office.init();await drain()
+ s.office.onBoard({cwd:'/synthetic-only',exists:true,tasks:[{id:'task',title:'Project task',assignee:'backend',status:'todo'}]})
+ const state=s.office.getState(),target=state.agents.find(a=>a.paneId==='w1:p2')
+ assert.equal(state.recentEvents.find(e=>e.kind==='task_assigned').to,target.id)
+ assert.equal(target.lastTask,'Project task');assert.equal(state.agents.find(a=>a.paneId==='w2:p1').lastTask,null)
+ assert.equal(state.statusCounts.working,3)
+})
+
+test('only accepted Drover agent.prompt sends create user journal events; failure, empty input, shell and fallback do not',async t=>{
+ const s=setup(t);s.office.init();await drain()
+ const req={paneId:'w1:p1',target:'w1:p1',agentKind:'claude',text:'PRIVATE_PROMPT',imagePaths:[],isShell:false}
+ const callback=()=>s.office.userPrompt(s.office.endpoint(req.paneId),req.text)
+ await m.sendPrompt({request:async()=>({})},req,{onAccepted:callback})
+ for(const code of ['agent_blocked','agent_not_found','error']) await m.sendPrompt({request:async(method)=>{
+  if(method==='agent.prompt')throw new m.HerdrApiError(code,'PRIVATE_ERROR')
+  return {}
+ }},req,{onAccepted:callback})
+ await m.sendPrompt({request:async()=>({})},{...req,isShell:true},{onAccepted:callback})
+ await m.sendPrompt({request:async()=>({})},{...req,text:''},{onAccepted:callback})
+ s.office.flush()
+ assert.deepEqual(s.office.getState().recentEvents.map(e=>e.summary),['Вы → lead · задача'])
+ assert.ok(!JSON.stringify(s.updates).includes('PRIVATE'))
+})
+
+test('boss uses the office marker and genuine prompt receipt; quick broadcast remains user-to-lead without text',async t=>{
+ const s=setup(t,{isBoss:paneId=>paneId==='w1:p1'})
+ s.snapshot.agents[0].name='drover-boss'
+ s.office.init();await drain()
+ const boss=s.office.getState().agents.find(a=>a.paneId==='w1:p1')
+ const lead=s.office.getState().agents.find(a=>a.paneId==='w1:p2')
+ assert.equal(boss.isBoss,true);assert.equal(lead.isBoss,undefined)
+ s.send(s.tool('boss-assignment'))
+ s.office.userPrompt(s.office.endpoint('w1:p2'),'PRIVATE_BROADCAST')
+ s.office.flush()
+ const events=s.office.getState().recentEvents
+ assert.ok(events.some(e=>e.kind==='prompt' && e.from===boss.id && e.to===lead.id))
+ assert.ok(events.some(e=>e.kind==='user_prompt' && e.from==='user' && e.to===lead.id))
+ assert.ok(!JSON.stringify(s.updates).includes('PRIVATE'))
+})
+
+test('unsafe pane/workspace labels cannot smuggle commands or paths into names and journal summaries',async t=>{
+ const s=setup(t)
+ s.snapshot.agents=[];s.panes[0].label='npm run PRIVATE_COMMAND';s.panes[1].label='/private/agent/path'
+ s.snapshot.workspaces.push({workspace_id:'empty',label:'/private/project/path',number:3})
+ s.office.init();await drain();s.office.userPrompt(s.office.endpoint('w1:p1'),'PRIVATE_PROMPT');s.office.flush()
+ const state=s.office.getState()
+ assert.deepEqual(state.agents.map(a=>a.name),['claude','codex'])
+ assert.equal(state.departments.at(-1).name,'Проект')
+ assert.equal(state.recentEvents[0].summary,'Вы → claude · задача')
+ for(const text of ['PRIVATE','/private','npm run'])assert.ok(!JSON.stringify(s.updates).includes(text))
+})
+
+test('raw provider session metadata stays main-only while exact transcript provenance still works',async t=>{
+ const s=setup(t);s.panes[0].agent_session.value='/private/provider/session-path'
+ s.office.init();await drain();s.send(s.tool('exact'));s.office.flush()
+ const state=s.office.getState()
+ assert.equal(state.recentEvents[0].kind,'prompt')
+ assert.match(state.agents[0].incarnation,/^[a-f0-9]{64}$/)
+ assert.ok(!JSON.stringify([state,...s.updates]).includes('/private/provider/session-path'))
 })
 test('startup, reset and 100 reopenings create no historical effects or extra refs',async t=>{
  const s=setup(t);s.office.init();await drain()
@@ -116,7 +277,7 @@ test('pending results cannot be reassigned to a restarted occupant of the same t
 test('shared cwd has one board ref; broken files and assignee changes preserve honest endpoints',async t=>{
  const s=setup(t);s.office.init();await drain()
  assert.equal(s.boards.length,1)
- const board={cwd:'/synthetic-only',exists:true,tasks:[{id:'a',title:'SECRET_TITLE',notes:'SECRET_NOTE',status:'todo',assignee:'backend'}]}
+ const board={cwd:'/synthetic-only',exists:true,tasks:[{id:'a',title:'Improve layout',notes:'SECRET_NOTE',status:'todo',assignee:'backend'}]}
  s.office.onBoard(board);s.office.onBoard({...board,error:'SECRET_PATH'})
  s.office.onBoard({...board,tasks:[{...board.tasks[0],status:'done',assignee:'lead'}]})
  const events=s.office.getState().recentEvents
@@ -243,11 +404,13 @@ test('exact incarnation and explicit role follow pane moves, and restarts clear 
  let agent=s.office.getState().agents.find(a=>a.paneId==='w1:p1')
  assert.equal(agent.role,'frontend');assert.equal(agent.roleSource,'binding')
  const id=agent.id
+ const department=agent.departmentId
  s.snapshot.workspaces.push({workspace_id:'w2',label:'Other',number:2})
  s.panes[0].pane_id='w2:p3';s.panes[0].workspace_id='w2';s.snapshot.agents[0]={...s.panes[0],name:'renamed'}
  s.office.onSnapshot(s.snapshot);await drain()
  agent=s.office.getState().agents.find(a=>a.paneId==='w2:p3')
- assert.equal(agent.id,id);assert.equal(agent.roleSource,'binding');assert.equal(agent.departmentId,'isolated-fixture:department:w2')
+ assert.equal(agent.id,id);assert.equal(agent.roleSource,'binding');assert.equal(agent.departmentId,department)
+ assert.deepEqual(s.office.getState().departments[0].workspaceIds,['w1','w2'])
  s.panes[0].agent_session.value='new-process';s.office.onSnapshot(s.snapshot);await drain()
  agent=s.office.getState().agents.find(a=>a.paneId==='w2:p3')
  assert.notEqual(agent.id,id);assert.equal(agent.roleSource,'default')
@@ -390,4 +553,16 @@ test('polling cannot consume a UI write before its attributed refresh',async t=>
  finish.resolve();await mutation;await polling
  const events=s.office.getState().recentEvents
  assert.equal(events.length,1);assert.equal(events[0].kind,'task_status');assert.equal(events[0].from,'user')
+})
+
+test('credential and command shaped assigned titles never enter office snapshots or updates', async t => {
+ const board={cwd:'/synthetic-only',exists:true,tasks:[{id:'private-title',title:'Document API key rotation',assignee:'lead',status:'todo',since:1}]}
+ const s=setup(t,{watchBoard:async()=>board});s.office.init();await drain()
+ assert.equal(s.office.getState().agents[0].lastTask,'Document API key rotation')
+ const unsafe=['API_KEY=fixture-secret-value','SERVICE_AUTH_TOKEN = fixture-secret-value','SECRET=fixture-secret-value','PASSWORD=fixture-secret-value','Bearer fixture-secret-value',`Rotate ${'a1'.repeat(32)}`,`Inspect ${Buffer.from('fixture-secret-value:'.repeat(6)).toString('base64')}`,'make deploy',`${'Safe text '.repeat(20)} TOKEN=fixture-secret-value`]
+ for(const title of unsafe){board.tasks[0].title=title;s.office.onBoard(board);s.office.flush();assert.equal(s.office.getState().agents[0].lastTask,null,title)}
+ for(const title of ['Review token validation','Document password policy','Update the authentication secret rotation guide']){board.tasks[0].title=title;s.office.onBoard(board);assert.equal(s.office.getState().agents[0].lastTask,title)}
+ const wire=JSON.stringify([s.office.getState(),...s.updates])
+ for(const title of unsafe)assert.ok(!wire.includes(title),title)
+ assert.ok(!wire.includes('fixture-secret-value'))
 })

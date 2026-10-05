@@ -1,24 +1,34 @@
 {
   "session": "synthetic-office",
-  "generation": "fixture-v1",
+  "generation": "fixture-v2",
   "departments": [
     {
       "id": "fixture:w1",
       "workspaceId": "w1",
       "name": "Studio",
-      "number": 1
+      "number": 1,
+      "workspaceIds": [
+        "w1",
+        "w4"
+      ]
     },
     {
       "id": "fixture:w2",
       "workspaceId": "w2",
       "name": "Platform",
-      "number": 2
+      "number": 2,
+      "workspaceIds": [
+        "w2"
+      ]
     },
     {
       "id": "fixture:w3",
       "workspaceId": "w3",
       "name": "Research",
-      "number": 3
+      "number": 3,
+      "workspaceIds": [
+        "w3"
+      ]
     }
   ],
   "seats": [
@@ -50,7 +60,7 @@
       "id": "fixture:w1:seat:1",
       "departmentId": "fixture:w1",
       "index": 1,
-      "paneId": "w1:p4",
+      "paneId": "w4:p4",
       "agentId": "fixture:agent:3:v1",
       "terminal": false
     },
@@ -108,7 +118,9 @@
       "seatId": "fixture:w1:seat:0",
       "status": "working",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "exact"
+      "transcriptCoverage": "exact",
+      "lastTask": null,
+      "lastEventAt": 1800000000000
     },
     {
       "id": "fixture:agent:1:v1",
@@ -122,7 +134,9 @@
       "seatId": "fixture:w2:seat:0",
       "status": "blocked",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "exact"
+      "transcriptCoverage": "exact",
+      "lastTask": null,
+      "lastEventAt": 1800000000000
     },
     {
       "id": "fixture:agent:2:v1",
@@ -136,11 +150,13 @@
       "seatId": "fixture:w3:seat:0",
       "status": "idle",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "unavailable"
+      "transcriptCoverage": "unavailable",
+      "lastTask": null,
+      "lastEventAt": 1799999998000
     },
     {
       "id": "fixture:agent:3:v1",
-      "paneId": "w1:p4",
+      "paneId": "w4:p4",
       "incarnation": "synthetic-3",
       "kind": "opencode",
       "name": "fixture-devops",
@@ -150,7 +166,9 @@
       "seatId": "fixture:w1:seat:1",
       "status": "done",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "unavailable"
+      "transcriptCoverage": "unavailable",
+      "lastTask": null,
+      "lastEventAt": 1800000000100
     },
     {
       "id": "fixture:agent:4:v1",
@@ -164,7 +182,9 @@
       "seatId": "fixture:w2:seat:1",
       "status": "unknown",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "unavailable"
+      "transcriptCoverage": "unavailable",
+      "lastTask": null,
+      "lastEventAt": null
     },
     {
       "id": "fixture:agent:5:v1",
@@ -178,7 +198,9 @@
       "seatId": "fixture:w3:seat:1",
       "status": "disconnect",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "unavailable"
+      "transcriptCoverage": "unavailable",
+      "lastTask": "Review office layout",
+      "lastEventAt": null
     },
     {
       "id": "fixture:agent:6:v1",
@@ -192,7 +214,9 @@
       "seatId": "fixture:w1:seat:2",
       "status": "working",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "unavailable"
+      "transcriptCoverage": "unavailable",
+      "lastTask": null,
+      "lastEventAt": null
     },
     {
       "id": "fixture:agent:7:v1",
@@ -206,7 +230,9 @@
       "seatId": "fixture:w2:seat:2",
       "status": "idle",
       "lastStatusAt": 1800000000000,
-      "transcriptCoverage": "unavailable"
+      "transcriptCoverage": "unavailable",
+      "lastTask": null,
+      "lastEventAt": null
     }
   ],
   "externalNodes": [
@@ -284,7 +310,7 @@
       "to": "fixture:agent:1:v1",
       "kind": "prompt",
       "ts": 1800000000000,
-      "summary": "Сообщение доставлено",
+      "summary": "fixture-lead → fixture-backend · задача",
       "from": "fixture:agent:0:v1"
     },
     {
@@ -292,7 +318,7 @@
       "to": "fixture:agent:0:v1",
       "kind": "prompt_attempt",
       "ts": 1799999999000,
-      "summary": "Попытка отправки",
+      "summary": "fixture-backend → fixture-lead · не подтверждено",
       "from": "fixture:agent:1:v1"
     },
     {
@@ -300,7 +326,7 @@
       "to": "fixture:agent:2:v1",
       "kind": "user_prompt",
       "ts": 1799999998000,
-      "summary": "Сообщение пользователя",
+      "summary": "Вы → fixture-frontend · задача",
       "from": "user"
     },
     {
@@ -308,7 +334,7 @@
       "to": "fixture:agent:3:v1",
       "kind": "task_assigned",
       "ts": 1799999997000,
-      "summary": "Задача назначена",
+      "summary": "Platform → fixture-devops · задача назначена",
       "from": "fixture:w2"
     },
     {
@@ -316,7 +342,7 @@
       "to": "machine:pc",
       "kind": "ssh_attempt",
       "ts": 1799999996000,
-      "summary": "Запущена SSH-команда",
+      "summary": "fixture-lead → pc · SSH · не подтверждено",
       "from": "fixture:agent:0:v1"
     },
     {
@@ -324,8 +350,25 @@
       "to": "fixture:agent:1:v1",
       "kind": "input_observed",
       "ts": 1799999995000,
-      "summary": "Наблюдается входящее сообщение",
+      "summary": "fixture-backend · входящее сообщение · не подтверждено",
       "from": null
+    },
+    {
+      "id": "fixture-event-6",
+      "from": "fixture:agent:3:v1",
+      "to": null,
+      "kind": "agent_status",
+      "status": "done",
+      "ts": 1800000000100,
+      "summary": "fixture-devops · готово"
     }
-  ]
+  ],
+  "statusCounts": {
+    "working": 2,
+    "blocked": 1,
+    "idle": 2,
+    "done": 1,
+    "unknown": 1,
+    "disconnect": 1
+  }
 }
