@@ -1,7 +1,8 @@
 /** Desktop-only office protocol. Board titles are the only task text; no prompts, commands or filesystem paths. */
 export const OFFICE_LIMITS = {
   historyMs: 30 * 60_000, decayMs: 5 * 60_000, maxEvents: 1000,
-  updateMs: 100, graceMs: 30_000, lookupConcurrency: 4, maxHistoryBytes: 10 * 1024 * 1024,
+  updateMs: 100, graceMs: 30_000, lookupConcurrency: 2, maxHistoryBytes: 10 * 1024 * 1024,
+  tailBytes: 256 * 1024, maxOfficeRecordBytes: 128 * 1024,
   pairAnimationMs: 2000, maxAnimations: 12, maxAnimationQueue: 20, animationTtlMs: 5000
 } as const
 export type OfficeNodeId = string
@@ -12,7 +13,7 @@ export type OfficeRole = 'lead' | 'backend' | 'frontend' | 'devops' | 'docs' | '
 export type OfficeRoleSource = 'binding' | 'projectLead' | 'template' | 'name' | 'default'
 /** Known kinds use their sprite; future/unknown kinds use the general sprite. */
 export type OfficeAgentKind = 'claude' | 'codex' | 'gemini' | 'opencode' | 'cursor' | 'copilot' | 'amp' | 'droid' | (string & {})
-export type OfficeTranscriptCoverage = 'exact' | 'heuristic' | 'unavailable' | 'loading' | 'history_limit'
+export type OfficeTranscriptCoverage = 'exact' | 'heuristic' | 'unavailable' | 'loading' | 'history_limit' | 'tail'
 export interface OfficeEvent {
   from: OfficeNodeId | null
   to: OfficeNodeId | null
@@ -98,6 +99,8 @@ export interface OfficeLink {
   lastAt: number
   /** Sum(exp(-age / 5min)) over the complete 30min window. */
   weight: number
+  /** Timestamp of the weight sample; clients decay it without main-loop updates. */
+  weightAt?: number
   style: 'agent' | 'user' | 'board' | 'machine' | 'attempt'
 }
 export interface OfficeAnimation {
@@ -111,6 +114,8 @@ export interface OfficeAnimation {
 export interface OfficeState {
   session: string
   generation: string
+  /** Full init baseline; older full-state consumers may omit this field. */
+  version?: number
   departments: OfficeDepartment[]
   seats: OfficeSeat[]
   agents: OfficeAgent[]
@@ -121,8 +126,26 @@ export interface OfficeState {
   /** Across every department, including stale/disconnected agents. */
   statusCounts: Record<OfficeStatus, number>
 }
-/** Full compact state at <=10Hz, with only fresh effects. init has no animations. */
-export interface OfficeUpdate { state: OfficeState; animations: OfficeAnimation[] }
+/** Ordered deltas apply only to the matching session/generation and baseVersion. */
+export interface OfficeDelta {
+  session: string
+  generation: string
+  baseVersion: number
+  version: number
+  agents: OfficeAgent[]
+  removedAgents: string[]
+  links: OfficeLink[]
+  removedLinks: string[]
+  /** Append/upsert by id, oldest first; never replay animations from history. */
+  events: OfficeUIEvent[]
+  removedEvents: string[]
+  departments?: OfficeDepartment[]
+  seats?: OfficeSeat[]
+  externalNodes?: OfficeExternalNode[]
+  statusCounts?: Record<OfficeStatus, number>
+}
+/** Full state is used for init/reset; routine updates carry only changed rows. */
+export type OfficeUpdate = ({ state: OfficeState; delta?: never } | { state?: never; delta: OfficeDelta }) & { animations: OfficeAnimation[] }
 export interface OfficeInitRequest { visible?: boolean }
 
 export type OfficeSpriteState = Exclude<OfficeStatus, 'disconnect'>

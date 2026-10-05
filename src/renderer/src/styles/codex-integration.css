@@ -1,0 +1,28 @@
+.codex-integration-warning {
+  flex: none;
+  margin: 8px 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--bg-active);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.codex-integration-warning p { margin: 0 0 8px; }
+.codex-integration-warning p > svg { color: var(--blocked); margin-right: 6px; vertical-align: -3px; }
+.codex-integration-explanation { color: var(--text-2); }
+.codex-issue-link { display: inline-flex; padding: 0; border: 0; background: none; color: var(--text-2); vertical-align: -2px; cursor: pointer; }
+.codex-issue-link:hover { color: var(--accent); }
+.codex-integration-warning .btn { white-space: normal; text-align: left; }
+.codex-repair-actions { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.codex-daemon-plan > p { margin: 0; font-size: 13px; line-height: 1.5; }
+.codex-plan-caution { color: var(--text-2); padding: 8px 10px; background: var(--bg-active); border-radius: var(--radius-sm); }
+.codex-daemon-agents { margin: 0; padding: 0; list-style: none; max-height: 220px; overflow: auto; }
+.codex-daemon-agents li { display: flex; flex-direction: column; padding: 8px 0; border-bottom: 1px solid var(--border); gap: 3px; overflow-wrap: anywhere; }
+.codex-daemon-agents li > span { font-size: 12px; color: var(--text-2); }
+.codex-daemon-agents li > .form-error { color: var(--danger); }
+.codex-daemon-plan .form-actions { flex-wrap: wrap; }
+.codex-integration-result { margin-top: 8px; }
+.codex-integration-result summary { cursor: pointer; margin: 4px 0; }
+.codex-integration-result pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; font-size: 11px; }
+.codex-integration-result > button { margin-top: 6px; }

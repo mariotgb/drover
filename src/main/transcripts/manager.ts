@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
 import { OFFICE_LIMITS } from '@shared/office'
 import type { HerdrSnapshot, PaneInfo, TranscriptCursor, TranscriptMeta, TranscriptUpdate } from '@shared/types'
 import type { HerdrService } from '../herdr/service'
-import { ClaudeParser } from './claude'
-import { CodexParser } from './codex'
+import { ItemStore } from './store'
+import { TranscriptWorkers } from './workerClient'
 import {
   findClaudeTranscript,
   findCodexRollout,
@@ -13,7 +12,6 @@ import {
   processStartTime
 } from './locate'
 import type { TranscriptParser } from './store'
-import { FileTailer } from './tail'
 import { TranscriptRevisions } from './revisions'
 
 type Kind = 'claude' | 'codex'
@@ -28,7 +26,9 @@ interface Sub {
   path: string | null
   located: 'exact' | 'heuristic'
   parser: TranscriptParser | null
-  tailer: FileTailer | null
+  tailer: { stop(): void; sync(): Promise<void> } | null
+  officeParser: TranscriptParser | null
+  officeTailer: { stop(): void; sync(): Promise<void> } | null
   retry: NodeJS.Timeout | null
   teardown: NodeJS.Timeout | null
   loading: Promise<void> | null
@@ -46,14 +46,16 @@ export class TranscriptManager {
   private subs = new Map<string, Sub>()
   private stream = randomUUID()
   private revision = 0
+  private workers: TranscriptWorkers
   private lookupCount = 0
   private lookupWaiters: Array<() => void> = []
 
   constructor(
     private service: HerdrService,
     private send: (update: TranscriptUpdate) => void,
-    private observeOffice: (update: TranscriptUpdate) => void = () => {}
-  ) {}
+    private observeOffice: (update: TranscriptUpdate) => void = () => {},
+    workerPath?: string
+  ) { this.workers = new TranscriptWorkers(workerPath) }
 
   private pane(paneId: string): PaneInfo | undefined {
     return this.service.snapshot?.panes.find((p) => p.pane_id === paneId)
@@ -63,19 +65,11 @@ export class TranscriptManager {
     let sub = this.subs.get(paneId)
     if (sub) {
       if (retain) { if (office) sub.officeRefs++; else sub.refs++ }
-      if (!office && sub.error === 'office-history-limit') { this.reset(sub); void this.locate(sub) }
-      if (sub.teardown) {
-        clearTimeout(sub.teardown)
-        sub.teardown = null
-      }
+      if (!office && sub.teardown) { clearTimeout(sub.teardown); sub.teardown = null }
       await sub.loading
-      if (office && sub.path) {
-        const path = sub.path, generation = sub.generation
-        const size = (await stat(path).catch(() => null))?.size ?? 0
-        if (this.subs.get(sub.paneId) !== sub || generation !== sub.generation || path !== sub.path) return this.full(sub)
-        if (size > OFFICE_LIMITS.maxHistoryBytes) return { ...this.full(sub), items: [], error: 'office-history-limit' }
-      }
-      return sub.history.resume(this.full(sub), cursor)
+      if (office ? !sub.officeTailer : !sub.tailer) await this.locate(sub)
+      else await (office ? sub.officeTailer : sub.tailer)?.sync()
+      return office ? this.full(sub, true) : sub.history.resume(this.full(sub), cursor)
     }
     sub = {
       paneId,
@@ -88,6 +82,8 @@ export class TranscriptManager {
       located: 'exact',
       parser: null,
       tailer: null,
+      officeParser: null,
+      officeTailer: null,
       retry: null,
       teardown: null,
       loading: null,
@@ -98,7 +94,7 @@ export class TranscriptManager {
     }
     this.subs.set(paneId, sub)
     await this.locate(sub)
-    return this.full(sub)
+    return this.full(sub, office)
   }
 
   subscribeOffice(paneId: string): Promise<TranscriptUpdate> { return this.subscribe(paneId, true, undefined, true) }
@@ -107,6 +103,7 @@ export class TranscriptManager {
     const sub = this.subs.get(paneId)
     if (!sub) return
     sub.officeRefs = Math.max(0, sub.officeRefs - 1)
+    if (!sub.officeRefs) { sub.officeTailer?.stop(); sub.officeTailer = null; sub.officeParser = null }
     if (!sub.officeRefs && !sub.refs) this.drop(sub)
   }
 
@@ -114,13 +111,20 @@ export class TranscriptManager {
     const sub = this.subs.get(paneId)
     if (!sub) return
     sub.refs = Math.max(0, sub.refs - 1)
-    if (sub.refs > 0 || sub.officeRefs > 0 || sub.teardown) return
+    if (sub.refs > 0 || sub.teardown) return
     // Keep recently viewed transcripts warm so switching threads is instant.
-    sub.teardown = setTimeout(() => this.drop(sub), 90_000)
+    sub.teardown = setTimeout(() => {
+      sub.teardown = null
+      if (sub.refs) return
+      sub.tailer?.stop(); sub.tailer = null; sub.parser = null; sub.history.clear()
+      if (!sub.officeRefs) this.drop(sub)
+    }, 90_000)
+    sub.teardown.unref?.()
   }
 
   private drop(sub: Sub) {
     sub.tailer?.stop()
+    sub.officeTailer?.stop()
     if (sub.retry) clearTimeout(sub.retry)
     if (sub.teardown) clearTimeout(sub.teardown)
     this.subs.delete(sub.paneId)
@@ -128,6 +132,7 @@ export class TranscriptManager {
 
   dispose() {
     for (const sub of [...this.subs.values()]) this.drop(sub)
+    this.workers.dispose()
   }
 
   /** Called on every herdr snapshot: follow /clear, /new, agent restarts. */
@@ -152,6 +157,7 @@ export class TranscriptManager {
     sub.history.clear()
     sub.tailer?.stop()
     sub.tailer = null
+    sub.officeTailer?.stop(); sub.officeTailer = null; sub.officeParser = null
     sub.parser = null
     sub.path = null
     sub.sessionId = null
@@ -159,40 +165,44 @@ export class TranscriptManager {
     sub.processStart = undefined
   }
 
-  private meta(sub: Sub): TranscriptMeta | null {
-    if (!sub.parser || !sub.path || !sub.kind) return null
-    const m = sub.parser.meta
+  private meta(sub: Sub, office = false): TranscriptMeta | null {
+    const parser = office ? sub.officeParser : sub.parser
+    if (!parser || !sub.path || !sub.kind) return null
+    const m = parser.meta
     return {
       agent: sub.kind,
       sessionId: sub.sessionId ?? m.sessionId ?? '',
       path: sub.path,
       title: m.title,
       model: m.model,
+      effort: m.effort,
       cwd: m.cwd,
       contextTokens: m.contextTokens,
       contextWindow: m.contextWindow,
       rateLimitPercent: m.rateLimitPercent,
-      located: sub.located
+      located: sub.located,
+      ...(office ? { coverage: 'tail' as const } : {})
     }
   }
 
-  private full(sub: Sub): TranscriptUpdate {
+  private full(sub: Sub, office = false): TranscriptUpdate {
+    const parser = office ? sub.officeParser : sub.parser
     return {
       paneId: sub.paneId,
       stream: this.stream,
       revision: sub.revision,
       reset: true,
-      meta: this.meta(sub),
-      items: sub.parser ? sub.parser.store.items.slice() : [],
+      meta: this.meta(sub, office),
+      items: parser ? parser.store.items.slice() : [],
       error: sub.error
     }
   }
 
-  private publish(sub: Sub, update: TranscriptUpdate) {
-    sub.history.record(update)
+  private publish(sub: Sub, update: TranscriptUpdate, office = false) {
+    if (!office) sub.history.record(update)
     if (this.subs.get(sub.paneId) !== sub) return
-    if (sub.officeRefs > 0) this.observeOffice(update)
-    if (sub.refs > 0) this.send(update)
+    if (office && sub.officeRefs > 0) this.observeOffice(update)
+    if (!office && sub.refs > 0) this.send(update)
   }
 
   private claimedIds(except: string): Set<string> {
@@ -240,12 +250,12 @@ export class TranscriptManager {
     sub.kind = kind
     if (!pane) {
       sub.error = 'pane-closed'
-      this.publish(sub, this.full(sub))
+      this.publish(sub, this.full(sub)); if (sub.officeRefs) this.publish(sub, this.full(sub, true), true)
       return
     }
     if (!kind) {
       sub.error = pane.agent ? 'unsupported-agent' : 'no-agent'
-      this.publish(sub, this.full(sub))
+      this.publish(sub, this.full(sub)); if (sub.officeRefs) this.publish(sub, this.full(sub, true), true)
       return
     }
     const env = this.service.env
@@ -279,52 +289,54 @@ export class TranscriptManager {
     if (!path) {
       sub.error = 'not-found'
       sub.revision = ++this.revision
-      this.publish(sub, this.full(sub))
+      this.publish(sub, this.full(sub)); if (sub.officeRefs) this.publish(sub, this.full(sub, true), true)
       this.scheduleRetry(sub)
       return
     }
-    const size = sub.refs === 0 ? ((await stat(path).catch(() => null))?.size ?? 0) : 0
     if (this.subs.get(sub.paneId) !== sub || generation !== sub.generation) return
-    if (sub.refs === 0 && size > OFFICE_LIMITS.maxHistoryBytes) {
-      sub.error = 'office-history-limit'
-      sub.revision = ++this.revision
-      this.publish(sub, this.full(sub))
-      return
-    }
-    if (this.subs.get(sub.paneId) !== sub || generation !== sub.generation) return
-    if (path === sub.path) return
-    sub.tailer?.stop()
     sub.path = path
     sub.sessionId = sessionId
     sub.located = located
     sub.error = undefined
-    sub.parser = kind === 'claude' ? new ClaudeParser() : new CodexParser()
-    const tailer = new FileTailer(
-      path,
-      (lines, reset) => {
-        if (sub.tailer !== tailer) return
-        if (reset) sub.parser = kind === 'claude' ? new ClaudeParser() : new CodexParser()
-        const parser = sub.parser!
-        parser.feed(lines)
+    const starts: Promise<void>[] = []
+    for (const office of [true, false]) {
+      if (office ? !sub.officeRefs || sub.officeTailer : !sub.refs || sub.tailer) continue
+      const parser: TranscriptParser = { store: new ItemStore(), meta: {}, feed: () => {} }
+      if (office) sub.officeParser = parser
+      else sub.parser = parser
+      const current = () => this.subs.get(sub.paneId) === sub && generation === sub.generation && (office ? sub.officeParser : sub.parser) === parser
+      const stream = this.workers.open(path, kind, office, batch => {
+        if (!current()) return
+        if (batch.reset) parser.store = new ItemStore()
+        parser.meta = batch.meta
+        for (const item of batch.items) parser.store.upsert(item)
+        if (office) parser.store.trim(512)
+        if (!batch.initial) {
+          sub.revision = ++this.revision
+          this.publish(sub, { paneId: sub.paneId, stream: this.stream, revision: sub.revision,
+            reset: office ? batch.baseline : batch.reset, meta: this.meta(sub, office), items: batch.items }, office)
+        }
+        parser.store.clearChanges()
+      }, (error, fatal) => {
+        if (!current()) return
+        sub.error = error
+        if (fatal) {
+          if (office) { sub.officeTailer = null; sub.officeParser = null }
+          else { sub.tailer = null; sub.parser = null; sub.history.clear() }
+          sub.revision = ++this.revision
+          this.scheduleRetry(sub)
+        }
+        this.publish(sub, this.full(sub, office), office)
+      })
+      if (office) sub.officeTailer = stream
+      else sub.tailer = stream
+      starts.push(stream.loaded.then(() => {
+        if (!current()) return
         sub.revision = ++this.revision
-        if (reset) {
-          parser.store.clearChanges()
-          this.publish(sub, this.full(sub))
-        } else {
-          const items = parser.store.takeChanges()
-          this.publish(sub, { paneId: sub.paneId, stream: this.stream, revision: sub.revision, reset: false, meta: this.meta(sub), items })
-        }
-      },
-      (error) => {
-        if (error.message === 'office-history-limit' && sub.tailer === tailer) {
-          sub.error = 'office-history-limit'
-          this.publish(sub, this.full(sub))
-        }
-      },
-      () => sub.refs > 0 ? Infinity : OFFICE_LIMITS.maxHistoryBytes
-    )
-    sub.tailer = tailer
-    await tailer.start()
+        this.publish(sub, this.full(sub, office), office)
+      }))
+    }
+    await Promise.all(starts)
   }
 
   private async agentStart(sub: Sub): Promise<number | null> {
@@ -352,7 +364,7 @@ export class TranscriptManager {
     if (sub.retry || !this.subs.has(sub.paneId)) return
     sub.retry = setTimeout(() => {
       sub.retry = null
-      if (this.subs.has(sub.paneId) && !sub.path) void this.locate(sub)
+      if (this.subs.has(sub.paneId) && (!sub.path || (sub.refs > 0 && !sub.tailer) || (sub.officeRefs > 0 && !sub.officeTailer))) void this.locate(sub)
     }, 2500)
   }
 }

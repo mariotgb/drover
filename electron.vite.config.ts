@@ -28,6 +28,10 @@ function cspPlugin(): Plugin {
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    build: { rollupOptions: { input: {
+      index: resolve(__dirname, 'src/main/index.ts'),
+      transcriptWorker: resolve(__dirname, 'src/main/transcripts/worker.ts')
+    } } },
     resolve: {
       alias: { '@shared': resolve(__dirname, 'src/shared') }
     }

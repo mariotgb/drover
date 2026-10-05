@@ -1,0 +1,93 @@
+/* Project importance and manual order (0.7.2). Markup: drover-docs (Sidebar, MobileWeb, ProjectPreferences).
+ *
+ * Mac sidebar:  section.ws[data-importance](.project-dragging)(.project-drop-before|.project-drop-after)
+ *                 > .ws-head[draggable] > span.project-grip > svg, .chev, svg.ws-icon,
+ *                   span.project-importance-marker[data-importance] > svg (Star | Flag | Circle; none for normal), .ws-label
+ * Phone drawer: .mw-project-order-toolbar > .btn.btn-sm; .mw-drawer-list[data-reordering]
+ *                 > section.mw-project[data-importance] > h2.mw-section-title > svg, .project-importance-marker, .mw-project-label,
+ *                   .project-order-buttons > .icon-btn × 2 (reorder mode) | .mw-icon (importance menu)
+ * Office HUD:   .office-chip[data-importance], .office-team-dept[data-importance]
+ *
+ * Importance uses intensity and shape, never the status hues (working blue, blocked amber, done green):
+ *   primary — accent star, tinted head, 2 px accent bar; important — muted accent flag; normal — as is;
+ *   background — small circle, dimmed until hover / focus. Dragging is native (the browser draws the lifted copy),
+ *   so .project-dragging marks the source slot as a placeholder. */
+
+.ws, .mw-project { position: relative; }
+
+/* ---------------------------------------------------------------- marker */
+.project-importance-marker { flex: none; display: inline-flex; align-items: center; color: var(--text-4); }
+.project-importance-marker svg { width: 12px; height: 12px; }
+.project-importance-marker[data-importance='primary'] { color: var(--accent); }
+.project-importance-marker[data-importance='primary'] svg, .project-importance-marker[data-importance='important'] svg { fill: currentColor; }
+.project-importance-marker[data-importance='important'] { color: color-mix(in srgb, var(--accent) 70%, var(--text-3)); }
+.project-importance-marker[data-importance='background'] svg { width: 8px; height: 8px; stroke-width: 3; }
+.ws-head .project-importance-marker { margin-left: -2px; }
+
+/* ---------------------------------------------------------------- Mac sidebar */
+.ws[data-importance='primary'] > .ws-head { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.ws[data-importance='primary'] > .ws-head:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ws[data-importance='primary'] > .ws-head::before {
+  content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 2px; border-radius: 1px; background: var(--accent);
+}
+.ws[data-importance='primary'] .ws-label { font-weight: 650; }
+.ws[data-importance='background'] > .ws-head, .ws[data-importance='background'] > .ws-threads { opacity: .55; transition: opacity .15s ease; }
+.ws[data-importance='background'] .ws-label { font-weight: 500; color: var(--text-2); }
+.ws[data-importance='background']:hover > .ws-head, .ws[data-importance='background']:hover > .ws-threads,
+.ws[data-importance='background']:focus-within > .ws-head, .ws[data-importance='background']:focus-within > .ws-threads { opacity: 1; }
+
+/* ---------------------------------------------------------------- drag & drop (Mac) */
+.project-grip {
+  position: absolute; left: -11px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center;
+  width: 12px; height: 18px; border-radius: 4px; color: var(--text-4); cursor: grab; opacity: 0; transition: opacity .12s ease;
+}
+.project-grip svg { width: 12px; height: 12px; }
+.ws-head:hover .project-grip, .project-dragging .project-grip { opacity: 1; }
+.ws-head[draggable='true']:active { cursor: grabbing; }
+/* The source slot while its copy follows the pointer. */
+.project-dragging > .ws-head {
+  opacity: .5; background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.project-dragging > .ws-threads { opacity: .3; }
+/* Insertion line: accent, with a ring at the start (like Finder / Notes). */
+.project-drop-before::before, .project-drop-after::after {
+  content: ''; position: absolute; left: 8px; right: 6px; height: 2px; border-radius: 1px; background: var(--accent); z-index: 6; pointer-events: none;
+}
+.project-drop-before::before { top: -3px; }
+.project-drop-after::after { bottom: -3px; }
+.project-drop-before > .ws-head::after, .project-drop-after > .ws-head::after {
+  content: ''; position: absolute; left: 0; width: 5px; height: 5px; border-radius: 50%; border: 2px solid var(--accent); background: var(--sidebar-solid, var(--bg)); z-index: 7; pointer-events: none;
+}
+.project-drop-before > .ws-head::after { top: -7px; }
+.project-drop-after > .ws-head::after { display: none; }
+.project-drop-after::before { content: ''; position: absolute; left: 0; bottom: -7px; width: 5px; height: 5px; border-radius: 50%; border: 2px solid var(--accent); background: var(--sidebar-solid, var(--bg)); z-index: 7; pointer-events: none; }
+
+/* ---------------------------------------------------------------- phone drawer */
+.mw-project .mw-section-title { position: relative; border-radius: 10px; min-width: 0; }
+.mw-project-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mw-project[data-importance='primary'] .mw-section-title { color: var(--text); padding: 6px 8px; margin-left: 4px; margin-right: 4px; background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.mw-project[data-importance='important'] .mw-section-title { color: var(--text-2); }
+.mw-project[data-importance='background'] { opacity: .6; }
+.mw-project[data-importance='background']:focus-within { opacity: 1; }
+.mw-project-order-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin: 6px 10px 2px; }
+.mw-project-order-toolbar .btn { min-height: 44px; padding: 0 14px; border-radius: 12px; font-size: 15px; }
+.mw-project-order-toolbar .btn[aria-pressed='true'] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+/* Reorder mode: projects become an iOS-like edit list; arrows are full 44 px targets. */
+[data-reordering] .mw-project { opacity: 1; }
+[data-reordering] .mw-project .mw-section-title {
+  margin: 6px 8px; padding: 0 0 0 14px; min-height: 52px; background: var(--bg-elev); box-shadow: 0 0 0 .5px var(--border); color: var(--text); font-size: 15px;
+}
+[data-reordering] .mw-project[data-importance='primary'] .mw-section-title { box-shadow: inset 3px 0 0 var(--accent), 0 0 0 .5px var(--border); }
+.project-order-buttons { flex: none; display: flex; gap: 0; margin-left: auto; }
+.project-order-buttons .icon-btn { width: 44px; height: 44px; border-radius: 12px; color: var(--text-2); }
+.project-order-buttons .icon-btn:disabled { opacity: .3; }
+.project-order-buttons .icon-btn:active:not(:disabled) { background: var(--bg-active); }
+
+/* ---------------------------------------------------------------- office HUD (data-importance from OfficeView) */
+.office-chip[data-importance='primary']::before, .office-team-dept[data-importance='primary'] > span:first-child::before { content: '★ '; color: var(--o-accent, var(--accent)); }
+.office-chip[data-importance='important']::before, .office-team-dept[data-importance='important'] > span:first-child::before { content: '⚑ '; opacity: .8; }
+.office-chip[data-importance='background'], .office-team-dept[data-importance='background'] { opacity: .65; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ws[data-importance='background'] > .ws-head, .ws[data-importance='background'] > .ws-threads, .project-grip { transition: none; }
+}

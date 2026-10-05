@@ -33,6 +33,11 @@ export function errorText(e: unknown): string {
 
 export function humanizeError(code: string | undefined, message: string | undefined): string {
   switch (code) {
+    case 'restart_plan_expired':
+    case 'restart_session_changed':
+    case 'restart_occupant_changed':
+    case 'agent_stop_failed':
+      return t(message || 'Restart confirmation expired. Review the agents again.')
     case 'agent_blocked':
       return t('The agent is waiting for your answer (approval or question). Answer it in the terminal panel first.')
     case 'agent_not_ready':

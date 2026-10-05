@@ -30,7 +30,7 @@ function fixture(t) {
 test('remote setSettings rejects every desktop-only key before its handler runs', async t => {
   const { root, backgrounds, store } = fixture(t), handlers = new m.RpcHandlers()
   let invoked = 0; handlers.register('settings:set', () => { invoked++ })
-  const allowed = new Set(['notifications', 'notificationSound', 'terminalFontSize', 'chatFontSize', 'language', 'leadOnly', 'projectLeads', 'appearance'])
+  const allowed = new Set(['notifications', 'notificationSound', 'terminalFontSize', 'chatFontSize', 'language', 'leadOnly', 'projectLeads', 'projectOrder', 'projectImportance', 'appearance'])
   const forbidden = Object.entries(m.DEFAULT_SETTINGS).filter(([key]) => !allowed.has(key))
   forbidden.push(['remoteEnabled', true], ['remotePort', 7780], ['remotePublicUrl', 'https://drover.example'], ['remoteBehindProxy', true], ['futureLaunchFlag', true])
   const previous = store.get(), disk = readFileSync(join(root, 'settings.json'), 'utf8')
@@ -44,6 +44,26 @@ test('remote setSettings rejects every desktop-only key before its handler runs'
   assert.equal(readFileSync(join(root, 'settings.json'), 'utf8'), disk)
   // Desktop settings keep their existing capabilities.
   assert.doesNotThrow(() => store.set({ autoStartServer: false, agentArgs: { codex: '--sandbox workspace-write' }, agentBypass: { codex: true }, teamBypass: true }))
+})
+
+test('phone project order and importance persist, broadcast settings, and cannot smuggle launch options', async t => {
+  const { root, store, handlers, connection } = fixture(t)
+  const changes = []; const off = store.onChange(settings => changes.push(settings))
+  t.after(off)
+  const patch = { projectOrder: ['/project/b', '/project/a'], projectImportance: { '/project/a': 'primary', '/project/b': 'background' } }
+  const result = await m.dispatchRemoteRpc(handlers, connection, call(patch))
+  assert.equal(result.ok, true)
+  assert.deepEqual(store.get().projectOrder, patch.projectOrder)
+  assert.deepEqual(store.get().projectImportance, patch.projectImportance)
+  assert.deepEqual(changes.map(s => s.projectOrder), [patch.projectOrder])
+  store.flush()
+  const reloaded = m.SettingsStore.at(root)
+  assert.deepEqual(reloaded.get().projectOrder, patch.projectOrder)
+  assert.deepEqual(reloaded.get().projectImportance, patch.projectImportance)
+  const previous = store.get()
+  const rejected = await m.dispatchRemoteRpc(handlers, connection, call({ ...patch, agentArgs: { codex: '--unsafe' } }))
+  assert.equal(rejected.ok, false); assert.equal(rejected.error.code, 'not_available_remotely')
+  assert.equal(store.get(), previous); assert.equal(changes.length, 1)
 })
 
 test('remote appearance rejects injected definitions, unknown fields and values outside the displayed lists', async t => {

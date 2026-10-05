@@ -44,6 +44,13 @@ export class ItemStore {
     this.changed.clear()
   }
 
+  trim(limit: number) {
+    if (this.items.length <= limit) return
+    this.items.splice(0, this.items.length - limit)
+    this.index = new Map(this.items.map((item, i) => [item.id, i]))
+    for (const id of this.changed) if (!this.index.has(id)) this.changed.delete(id)
+  }
+
   /** Resolve tools that never received a result (interrupted turns, crashes). */
   settleRunning(status: 'done' | 'error') {
     for (const item of this.items) {

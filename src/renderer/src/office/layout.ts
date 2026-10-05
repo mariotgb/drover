@@ -5,12 +5,20 @@ export const LOT_HEIGHT = 208
 export const SHRINK_DELAY = 10 * 60_000
 export interface Point { x: number; y: number }
 export interface Rect extends Point { width: number; height: number }
-export interface LayoutDepartment { id: string; number: number }
+export interface LayoutDepartment { id: string; number: number; order?: number }
 export interface LayoutOccupant { paneId: string; departmentId: string; index?: number; lead?: boolean; boss?: boolean }
 export interface HallShape { cols: number; benches: number; perRow: number; rows: number; width: number; height: number }
 export interface Lot extends Rect { departmentId: string; block: number; slot: number; shape: HallShape; boss?: boolean }
 export interface Seat extends Rect { paneId: string; departmentId: string; index: number; anchor: Point; side: 'north' | 'south' | 'head'; center: number; deskTop: number; row: number; bench: number; col: number }
-export interface Layout { lots: Lot[]; seats: Seat[]; vacancies: Seat[]; lobby: Rect; server: Rect | null; corridor: Rect; bounds: Rect }
+export interface Layout { lots: Lot[]; seats: Seat[]; vacancies: Seat[]; lobby: Rect; server: Rect | null; corridor: Rect; bounds: Rect; isolated?: boolean }
+/** A view of the existing geometry, so switching halls never moves agents' seats. */
+export function singleHallLayout(layout: Layout, departmentId: string | null): Layout {
+  const lot = departmentId && layout.lots.find(l => l.departmentId === departmentId)
+  if (!lot) return layout
+  return { ...layout, isolated: true, lots: [lot], seats: layout.seats.filter(s => s.departmentId === departmentId), vacancies: layout.vacancies.filter(s => s.departmentId === departmentId), server: null,
+    corridor: { ...layout.corridor, x: lot.x, width: lot.width },
+    bounds: { x: lot.x - 16, y: lot.y - 16, width: lot.width + 32, height: lot.height + 192 } }
+}
 export function hallShape(workers: number): HallShape {
   const cols = workers <= 4 ? 2 : 4, benches = workers > 16 ? 2 : 1, perRow = 2 * cols * benches
   const rows = workers ? Math.ceil(workers / perRow) : 0
@@ -35,7 +43,7 @@ export class OfficeLayout {
     for (const [id, p] of this.places) if (!panes.has(id) || !ids.has(p.departmentId) || occupants.find(a => a.paneId === id)?.departmentId !== p.departmentId) this.places.delete(id)
     for (const id of this.shapes.keys()) if (!ids.has(id)) this.shapes.delete(id)
     const bossDepartment = occupants.find(a => a.boss)?.departmentId
-    const sorted = [...departments].sort((a, b) => Number(b.id === bossDepartment) - Number(a.id === bossDepartment) || a.number - b.number || a.id.localeCompare(b.id))
+    const sorted = [...departments].sort((a, b) => Number(b.id === bossDepartment) - Number(a.id === bossDepartment) || (a.order ?? a.number) - (b.order ?? b.number) || a.id.localeCompare(b.id))
     const lots: Lot[] = []
     let x = 224
     for (const [slot, d] of sorted.entries()) {

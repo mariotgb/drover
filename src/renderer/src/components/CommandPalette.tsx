@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { Bot, Crown, FolderPlus, Globe, Megaphone, PanelBottomOpen, PanelLeft, Settings, SquareTerminal, Users, Zap } from 'lucide-react'
 import { isRemote } from '../api'
-import { newTerminalTab, openNewAgent, openSettings } from '../actions'
+import { newTerminalTab, openNewAgent, openSettings, restartAgent, restartLabel } from '../actions'
+import { supportsBypass } from '@shared/models'
 import { t } from '../i18n'
 import { fuzzyScore, statusLabel } from '../model'
 import { getModel, nextAttention, select, selectedThread, toggleDrawer, togglePreview, useStore } from '../store'
@@ -22,6 +23,9 @@ export function CommandPalette() {
   const [q, setQ] = useState('')
   const [idx, setIdx] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
+  const snapshot = useStore((s) => s.snapshot)
+  const projectOrder = useStore((s) => s.settings.projectOrder)
+  const projectImportance = useStore((s) => s.settings.projectImportance)
   const close = () => useStore.setState({ paletteOpen: false })
 
   const entries = useMemo(() => {
@@ -47,6 +51,8 @@ export function CommandPalette() {
       })
     }
     const cmds: Omit<Entry, 'score'>[] = [
+      ...(!isRemote && cur && supportsBypass(cur.kind) ? [{ id: 'cmd:restart-agent', title: restartLabel(cur.pane.bypass), sub: cur.name, icon: <Bot size={16} />, run: () => void restartAgent({ paneId: cur.paneId, bypass: !cur.pane.bypass }) }] : []),
+      ...(!isRemote && cur ? [{ id: 'cmd:restart-project', title: t('Restart all project agents without confirmations'), sub: cur.workspace.label, icon: <Users size={16} />, run: () => void restartAgent({ workspaceId: cur.workspaceId, bypass: true }) }] : []),
       ...(!isRemote ? [
         { id: 'cmd:boss', title: t('Main boss'), icon: <Crown size={16} />, run: () => useStore.setState({ sidebarHidden: false, dialog: { type: 'boss' } }) },
         { id: 'cmd:boss-broadcast', title: t('Assignment to all project leads'), icon: <Megaphone size={16} />, run: () => useStore.setState({ sidebarHidden: false, dialog: { type: 'boss-broadcast' } }) }
@@ -71,7 +77,7 @@ export function CommandPalette() {
       if (score) out.push({ ...c, score: q ? score : -1 })
     }
     return q ? out.sort((a, b) => b.score - a.score) : out
-  }, [q])
+  }, [q, snapshot, projectOrder, projectImportance])
 
   useEffect(() => setIdx(0), [q])
   useEffect(() => {

@@ -1,4 +1,5 @@
 import type { ModelCatalog, ModelChoice } from '../shared/models'
+import type { RestartPlan, RestartResult, RestartSelection } from '../shared/agentRestart'
 import type { OfficeState, OfficeUpdate } from '../shared/office'
 import type { BossBroadcastRequest, BossDelivery, BossOpenRequest, BossOpenResult, BossRoster, BossSettings } from '../shared/boss'
 import type {
@@ -49,6 +50,10 @@ export interface BoardWriteResult<T = unknown> {
 }
 
 export interface DroverApi {
+  codexIntegrationStatus(): Promise<import('../shared/codexIntegration').CodexIntegrationStatus>
+  codexIntegrationInstall(): Promise<import('../shared/codexIntegration').CodexIntegrationInstallResult>
+  codexDaemonRestartPlan(): Promise<import('../shared/codexIntegration').CodexDaemonRestartPlan>
+  codexDaemonRestart(token: string): Promise<import('../shared/codexIntegration').CodexDaemonRestartResult>
   init(): Promise<InitPayload>
   /** Local Mac renderer only; initial state never includes historical animations. */
   officeInit(): Promise<OfficeState | null>
@@ -79,6 +84,8 @@ export interface DroverApi {
   setClaudeStatusline(enable: boolean): Promise<ClaudeStatuslineState>
   sendPrompt(req: SendPromptRequest): Promise<SendPromptResult>
   createAgent(req: NewAgentRequest): Promise<NewAgentResult>
+  planAgentRestart(selection: RestartSelection): Promise<RestartPlan>
+  restartAgents(token: string): Promise<RestartResult[]>
   /** Models each agent can run with (Codex's list comes from its local cache). */
   modelCatalog(): Promise<ModelCatalog>
   /** Lets the user pick a local page for the preview; null if cancelled. */

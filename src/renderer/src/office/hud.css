@@ -10,6 +10,8 @@
 .office-v2 .with-team .office-toolbar { right: 312px; }
 .office-toolbar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .office-hall-filter { display: flex; gap: 6px; flex: 1; min-width: 0; max-width: 100%; overflow-x: auto; }
+.office-hall-navigation { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.office-hall-navigation .office-btn { min-width: 44px; min-height: 44px; }
 .office-chip { flex: none; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .office-v2 :is(.office-btn, .office-chip, .office-filter) { display: inline-flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; font: inherit; font-size: 12px; min-height: 30px; padding: 4px 8px; color: inherit; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .office-v2 :is(.office-btn, .office-chip, .office-filter):hover:not(:disabled) { background: var(--bg-hover); }

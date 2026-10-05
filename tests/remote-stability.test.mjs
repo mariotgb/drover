@@ -1,3 +1,4 @@
+import { buildTranscriptWorker } from './_transcript-worker.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
@@ -21,8 +22,9 @@ await build({ stdin: { contents: `
   export * from './src/renderer/src/transcript-state'
   export * from './src/renderer/src/remote-api'
 `, resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(bundled, 'test.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent' })
+await buildTranscriptWorker(bundled)
 const m = createRequire(import.meta.url)(join(bundled, 'test.cjs'))
-rmSync(bundled, { recursive: true })
+process.on('exit', () => rmSync(bundled, { recursive: true, force: true }))
 const temporary = t => { const dir = mkdtempSync(join(tmpdir(), 'drover-stability-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir }
 const update = (revision, reset, ids, stream = 's') => ({ paneId: 'w1:p1', stream, revision, reset, meta: null, items: ids.map(id => ({ id, kind: 'user', text: id })) })
 const call = (method, args = [], id = method) => ({ t: 'call', id, method, args })

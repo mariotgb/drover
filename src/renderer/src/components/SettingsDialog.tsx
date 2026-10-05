@@ -14,6 +14,7 @@ import { RolesSettingsPane } from './RolesSettings'
 import appIcon from '../assets/app-icon.png'
 import { logoutRemote } from '../remote-session'
 import { BossSettingsPane } from './BossDialogs'
+import { CodexIntegrationWarning } from './CodexIntegrationWarning'
 
 export function SettingsDialog({ initialTab }: { initialTab?: string }) {
   const [tab, setTab] = useState(initialTab ?? 'general')
@@ -211,6 +212,7 @@ function HerdrTab() {
   useEffect(load, [])
   return (
     <div className="settings-section">
+      {!isRemote && <CodexIntegrationWarning />}
       <Row label={t('Connection')} hint={connection.socketPath}>
         <span className={clsx('conn-text', connection.status === 'connected' ? 'ok' : 'bad')}>
           {connection.status === 'connected' ? t('Connected · herdr {version}', { version: snapshot?.version ?? connection.version ?? '' }) : connection.status}

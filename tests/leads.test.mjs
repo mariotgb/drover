@@ -12,14 +12,14 @@ await build({
   bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'leads.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent',
   plugins: [{ name: 'rename-ui-fixture', setup(b) {
     const mocks = {
-      './api': `export const api = {}; export const call = (...args) => globalThis.renameFixture.call(...args)`,
+      './api': `export const api = {}; export const isRemote = false; export const humanizeError = String; export const call = (...args) => globalThis.renameFixture.call(...args)`,
       './i18n': `export const t = text => text`,
       './store': `export const useStore = { getState: () => globalThis.renameFixture.state, setState: patch => Object.assign(globalThis.renameFixture.state, patch) };
         export const getModel = () => ({groups: globalThis.renameFixture.groups});
         export const updateSettings = async patch => {globalThis.renameFixture.writes.push(patch);Object.assign(globalThis.renameFixture.state.settings,patch)};
         export const guard = () => {}; export const select = () => {}; export const setViewMode = () => {}; export const toast = () => {}; export const togglePreview = () => {};`
     }
-    b.onResolve({ filter: /^\.\/(api|store|i18n)$/ }, args => ({ path: args.path, namespace: 'rename-fixture' }))
+    b.onResolve({ filter: /(?:^|\/)(api|store|i18n)$/ }, args => ({ path: './' + args.path.split('/').pop(), namespace: 'rename-fixture' }))
     b.onLoad({ filter: /.*/, namespace: 'rename-fixture' }, args => ({ contents: mocks[args.path], loader: 'js' }))
   } }]
 })

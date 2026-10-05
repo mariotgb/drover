@@ -10,9 +10,9 @@ export interface BossProject {
   lead: BossLead | null
 }
 export interface BossSettings { excludedProjects: string[]; hqFolder: string }
-export interface BossRoster { session: string; hqFolder: string; projects: BossProject[]; boss: BossLead | null }
+export interface BossRoster { session: string; hqFolder: string; projects: BossProject[]; boss: BossLead | null; needsSessionSwitch?: boolean }
 export interface BossOpenRequest { kind: string; args?: string[]; folder?: string; prompt: string }
-export type BossOpenResult = NewAgentResult & { folder: string; workspaceId?: string; existing?: boolean }
+export type BossOpenResult = NewAgentResult & { folder: string; workspaceId?: string; existing?: boolean; session?: string; needsSessionSwitch?: boolean }
 export interface BossBroadcastRequest { text: string; projectKeys?: string[] }
 export interface BossDelivery {
   id: string

@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  crashReporter,
   dialog,
   ipcMain,
   nativeTheme,
@@ -27,6 +28,8 @@ import {
   type TranscriptUpdate
 } from '@shared/types'
 import { createAgent, sendPrompt } from './actions'
+import { AgentRestartService } from './agentRestart'
+import type { RestartSelection } from '@shared/agentRestart'
 import { BossService } from './boss/service'
 import { BossSettingsStore } from './boss/store'
 import bossHqInstructions from '@shared/boss-hq.md?raw'
@@ -34,7 +37,7 @@ import type { BossBroadcastRequest, BossOpenRequest, BossSettings } from '@share
 import { ATTACHMENTS_DIR, cleanupAttachments, CONVERT_EXTS, IMAGE_EXTS, saveImage, stageFile } from './attachments'
 import { modelCatalog, switchAgentModel } from './models'
 import { addTask, ensureBoard, removeTask, TaskBoards, updateTask, normalizeStatus, type BoardWriteEvidence } from './tasks'
-import { loginEnv, which } from './env'
+import { loginEnv, setEnvProbeLogger, which } from './env'
 import { HerdrService } from './herdr/service'
 import { quitPlan, stopServerSync } from './herdr/cli'
 import { LimitsService } from './limits'
@@ -55,6 +58,9 @@ import { REMOTE_WEB_DIRECTORY, type RemoteAccessSettings } from '@shared/remote'
 import { testTrustedProxy } from './remote/security'
 import { RpcHandlers, type RpcHandler } from './remote/rpc'
 import { RemoteServer, validateRemoteSettings } from './remote/server'
+import { LifecycleJournal, mayStopServer } from './lifecycle'
+import { CodexIntegration } from './codexIntegration'
+import { CodexDaemon } from './codexDaemon'
 
 app.setName('Drover')
 
@@ -65,17 +71,35 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'hdfile', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
 ])
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit()
+const ownsInstanceLock = app.requestSingleInstanceLock()
+if (!ownsInstanceLock) {
+  // A rejected launch must never initialize services or run before-quit hooks.
+  app.exit(0)
 }
 
 const userData = app.getPath('userData')
+const lifecycle = new LifecycleJournal(userData, app.getVersion())
+setEnvProbeLogger((event, details) => lifecycle.record(event, details))
+crashReporter.start({ uploadToServer: false, submitURL: '', compress: false })
+lifecycle.record('crash-reporter', { uploadToServer: false, directory: app.getPath('crashDumps') })
+lifecycle.monitor()
+process.on('uncaughtExceptionMonitor', (error) => lifecycle.abnormal(`uncaughtException: ${error.message}`))
+process.on('unhandledRejection', (error) => lifecycle.record('unhandled-rejection', { error: String(error) }))
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, () => {
+  lifecycle.abnormal(signal)
+  // Signals are not a user-requested quit and must preserve the herdr server.
+  app.exit(128 + { SIGTERM: 15, SIGINT: 2, SIGHUP: 1 }[signal])
+})
+let attachedSession: string | null = null
+let quitReason = 'app.quit'
 const settings = SettingsStore.at(userData)
 if (process.env.DROVER_SESSION) settings.set({ session: process.env.DROVER_SESSION })
 const service = new HerdrService({
   logDir: join(userData, 'logs'),
   autoStartServer: () => settings.get().autoStartServer
 })
+const codexDaemon = new CodexDaemon(service)
+const codexIntegration = new CodexIntegration(service, codexDaemon)
 
 let win: BrowserWindow | null = null
 let selectedPaneId: string | null = null
@@ -110,6 +134,11 @@ const transcripts = new TranscriptManager(service, (u: TranscriptUpdate) => {
   }
 }, (u) => office.onTranscript(u))
 
+const agentRestart = new AgentRestartService(service, userData, async (paneId) => {
+  try { return (await transcripts.subscribe(paneId)).meta }
+  finally { transcripts.unsubscribe(paneId) }
+}, (paneId, launch) => boss.recordRestart(paneId, launch))
+
 const boards = new TaskBoards((b: TaskBoard) => send('tasks:changed', b),
   (b, write) => office.onBoard(b, write))
 const office = new OfficeCollector({
@@ -133,6 +162,7 @@ const boss = new BossService(service, BossSettingsStore.at(userData, process.env
   (delivery) => { if (win && !win.isDestroyed()) win.webContents.send('boss:delivery', delivery) },
   (paneId, text, from) => from ? office.agentPrompt(office.endpoint(from), office.endpoint(paneId), text) : office.userPrompt(office.endpoint(paneId), text),
   { instructions: bossHqInstructions, version: app.getVersion(), executable: process.execPath,
+    restoreAllowed: () => process.env.DROVER_READONLY !== '1',
     replyAccepted: (from, to, id, ts) => office.agentPrompt(office.endpoint(from), office.endpoint(to), undefined, id, ts) })
 settings.onChange(() => boss.onChange())
 const limits = new LimitsService({
@@ -145,13 +175,16 @@ limits.on('limits', (s) => send('limits:update', s))
 // herdr service wiring
 
 service.on('connection', (c) => {
+  if (c.status === 'connected') attachedSession = c.session
+  else if (c.session !== attachedSession) attachedSession = null
+  lifecycle.record('herdr-connection', { status: c.status, session: c.session })
   boss.onChange()
   office.onConnection(c.status === 'connected')
   send('herdr:connection', c)
 })
 service.on('snapshot', (s) => {
   boss.onChange()
-  send('herdr:snapshot', s)
+  send('herdr:snapshot', agentRestart.decorate(s))
   office.onSnapshot(s)
   transcripts.onSnapshot(s)
   updateBadge()
@@ -277,7 +310,11 @@ function createWindow() {
       if (/^https?:/i.test(url)) void shell.openExternal(url)
     }
   })
-  win.webContents.on('render-process-gone', () => { office.stop(); bridges.closeLocal() })
+  win.webContents.on('render-process-gone', (_event, details) => {
+    lifecycle.record('render-process-gone', { ...details })
+    office.stop(); bridges.closeLocal()
+  })
+  win.webContents.on('unresponsive', () => lifecycle.record('renderer-unresponsive'))
   win.webContents.on('did-start-loading', () => { office.stop(); bridges.closeLocal() })
 
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
@@ -333,12 +370,26 @@ function readonlyBlocked(method: string): boolean {
 }
 
 function registerIpc() {
+  ipcMain.handle('codex:integration-status', () => codexIntegration.status())
+  ipcMain.handle('codex:integration-install', () => {
+    if (process.platform !== 'darwin' || READONLY) throw new Error('Codex integration installation is only available in the local Mac app')
+    return codexIntegration.install()
+  })
+  ipcMain.handle('codex:daemon-restart-plan', () => {
+    if (process.platform !== 'darwin' || READONLY) throw new Error('Codex service restart is only available in the local Mac app')
+    return codexDaemon.plan()
+  })
+  ipcMain.handle('codex:daemon-restart', async (_event, token: string) => {
+    if (process.platform !== 'darwin' || READONLY) throw new Error('Codex service restart is only available in the local Mac app')
+    const result = await codexDaemon.execute(token)
+    return { ...result, status: await codexIntegration.status() }
+  })
   handle('app:init', async () => {
     await boss.settings()
     return {
       settings: settings.get(),
       connection: service.connection,
-      snapshot: service.snapshot,
+      snapshot: agentRestart.decorate(service.snapshot),
       home: homedir(),
       attachmentsDir: ATTACHMENTS_DIR,
       platform: process.platform,
@@ -481,18 +532,39 @@ function registerIpc() {
   handle('models:catalog', () => modelCatalog(service.env))
   handle('agent:set-model', async (_e, paneId: string, kind: string, choice: ModelChoice) => {
     if (READONLY) return { ok: false, code: 'readonly', error: 'read-only mode' }
-    return switchAgentModel(service, paneId, kind, choice, await modelCatalog(service.env))
+    const result = await switchAgentModel(service, paneId, kind, choice, await modelCatalog(service.env))
+    if (result.ok) await agentRestart.recordChoice(paneId, choice)
+    if (result.ok) await boss.recordChoice(paneId, kind, choice)
+    return result
   })
   handle('agent:create', async (_e, req: NewAgentRequest) => {
     if (READONLY) return { ok: false, code: 'readonly', error: 'read-only mode' }
     if (req.folder) settings.addRecentFolder(req.folder)
     const result = await createAgent(service, req)
+    if (result.ok && result.paneId) {
+      await agentRestart.recordLaunch(req, result.paneId)
+      if (service.snapshot) send('herdr:snapshot', agentRestart.decorate(service.snapshot))
+    }
     if (result.ok && result.paneId && validOfficeRoleId(req.roleId)) {
       const cwd = service.snapshot?.panes.find(p => p.pane_id === result.paneId)?.cwd || req.folder
       const templates = [...settings.get().roles, ...(cwd ? await discoverRoles(cwd) : [])]
       const role = resolveOfficeRole(req.roleId, templates)
       if (role) office.bindRole(result.paneId, role)
     }
+    return result
+  })
+
+  // Desktop-only: deliberately absent from the remote RPC allowlist.
+  handle('agent:restart-plan', async (ctx, selection: RestartSelection) => {
+    if (READONLY || ctx.remote) throw new HerdrApiError('not_available_remotely', 'Agent restart is desktop-only')
+    const plan = await agentRestart.plan(selection)
+    send('herdr:snapshot', agentRestart.decorate(service.snapshot))
+    return plan
+  })
+  handle('agent:restart', async (ctx, token: string) => {
+    if (READONLY || ctx.remote) throw new HerdrApiError('not_available_remotely', 'Agent restart is desktop-only')
+    const result = await agentRestart.execute(token)
+    send('herdr:snapshot', agentRestart.decorate(service.snapshot))
     return result
   })
 
@@ -579,6 +651,8 @@ function rebuildMenu() {
 // app lifecycle
 
 app.on('second-instance', () => showWindow())
+app.on('child-process-gone', (_event, details) => lifecycle.record('child-process-gone', { ...details }))
+app.on('quit', (_event, code) => lifecycle.finish(code, quitReason))
 
 // The preview panel is a <webview>. Lock it down: no preload, no Node, its own
 // session, http(s) only, and links that open new windows go to the browser.
@@ -651,6 +725,14 @@ app.whenReady().then(() => {
   void remote.sync()
   rebuildMenu()
   createWindow()
+  if (lifecycle.previousCrash) {
+    const title = settings.get().language === 'ru' ? 'Drover был аварийно закрыт' : 'Drover closed unexpectedly'
+    const body = settings.get().language === 'ru'
+      ? 'Предыдущий запуск завершился нештатно. Подробности сохранены в logs/lifecycle.log.'
+      : 'The previous run ended unexpectedly. Details are saved in logs/lifecycle.log.'
+    if (Notification.isSupported()) new Notification({ title, body }).show()
+    else void dialog.showMessageBox(win!, { type: 'warning', message: title, detail: body })
+  }
   void service.start(settings.get().session)
   limits.start()
   void cleanupAttachments()
@@ -665,9 +747,11 @@ app.on('window-all-closed', () => {
 let quitDecided = false
 
 app.on('before-quit', (e) => {
+  if (!ownsInstanceLock || quitDecided) return
+  lifecycle.record('quit-requested', { session: service.sessionName })
   // "Stop herdr when quitting": ask first if agents are still at work.
   let stopServer = false
-  if (!quitDecided && !READONLY && service.herdrPath) {
+  if (!READONLY && service.herdrPath && mayStopServer(ownsInstanceLock, attachedSession, service.sessionName, lifecycle.canStopServer)) {
     const plan = quitPlan(settings.get().stopServerOnQuit, service.snapshot?.panes)
     if (plan === 'ask') {
       const busy = (service.snapshot?.panes ?? []).filter((p) => p.agent && (p.agent_status === 'working' || p.agent_status === 'blocked')).length
@@ -681,6 +765,7 @@ app.on('before-quit', (e) => {
       }
       const choice = win && !win.isDestroyed() ? dialog.showMessageBoxSync(win, ask) : dialog.showMessageBoxSync(ask)
       if (choice === 2) {
+        lifecycle.record('quit-cancelled')
         e.preventDefault()
         return
       }
@@ -688,6 +773,7 @@ app.on('before-quit', (e) => {
     } else stopServer = plan === 'stop'
   }
   quitDecided = true
+  quitReason = stopServer ? 'user-quit-stop-herdr' : 'user-quit-keep-herdr'
   saveWindowState()
   try { settings.flush() }
   catch (error) {
@@ -701,5 +787,8 @@ app.on('before-quit', (e) => {
   boards.dispose()
   limits.stop()
   service.stop()
-  if (stopServer && service.herdrPath) stopServerSync(service.herdrPath, service.sessionName, service.env)
+  if (stopServer && service.herdrPath) {
+    const stopped = stopServerSync(service.herdrPath, service.sessionName, service.env)
+    lifecycle.record('herdr-stop', { session: service.sessionName, stopped })
+  }
 })

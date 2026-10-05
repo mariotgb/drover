@@ -12,6 +12,7 @@ import { locale, t } from '../i18n'
 import { useRemoteConnection } from '../remote-api'
 import { MobileChatView } from './MobileChat'
 import { Composer } from './Composer'
+import { SelectionTools } from './SelectionTools'
 import { openMenuAt, type MenuItem } from './Menu'
 import { MobileSettings } from './MobileSettings'
 import { MobileTerminal } from './MobileTerminal'
@@ -22,6 +23,9 @@ import { MobileUsage } from './Usage'
 import { PreviewBanner, PreviewSheet, openPreview, previewToken } from './MobilePreview'
 import { TaskBoardView } from './TaskBoardView'
 import appIcon from '../assets/app-icon.png'
+import { projectImportance } from '@shared/projects'
+import { ProjectImportanceMarker, ProjectOrderButtons, projectImportanceMenu } from './ProjectPreferences'
+import { updateSettings } from '../store'
 
 const closeDrawer = () => useStore.setState({ mobileDrawer: false })
 
@@ -224,6 +228,7 @@ function MobileThread({ thread, cached }: { thread: Thread; cached: Thread[] }) 
         {!chat && <MobileTerminal key={`terminal:${thread.paneId}`} paneId={thread.paneId} />}
         {thread.status === 'blocked' && <QuickReplies key={`quick:${thread.paneId}`} thread={thread} />}
         {chat && <Composer key={`composer:${thread.paneId}`} thread={thread} />}
+        {chat && <SelectionTools key={`selection:${thread.paneId}`} paneId={thread.paneId} />}
       </div>
     </div>
   )
@@ -277,6 +282,8 @@ const MobileDrawer = memo(function MobileDrawer({ open, peek }: { open: boolean;
 function DrawerContent() {
   const { groups, threads } = useModel()
   const [query, setQuery] = useState('')
+  const [reordering, setReordering] = useState(false)
+  const preferences = useStore(s => s.settings)
   const connection = useStore((s) => s.connection)
   const version = useStore((s) => s.snapshot?.version ?? s.connection.version)
   const connected = useConnected()
@@ -298,7 +305,11 @@ function DrawerContent() {
         <input type="search" value={query} placeholder={t('Search agents')} aria-label={t('Search agents')} onChange={(e) => setQuery(e.target.value)} />
         {query && <button type="button" aria-label={t('Clear search')} onClick={() => setQuery('')}><X size={16} /></button>}
       </label>
-      <div className="mw-drawer-list">
+      <div className="mw-project-order-toolbar">
+        <button type="button" className="btn btn-sm" aria-pressed={reordering} disabled={!connected} onClick={() => { setQuery(''); setReordering(!reordering) }}>{reordering ? t('Done') : t('Edit project order')}</button>
+        {reordering && <button type="button" className="btn btn-sm" disabled={!preferences.projectOrder.length || !connected} onClick={() => void updateSettings({ projectOrder: [] })}>{t('Sort by importance')}</button>}
+      </div>
+      <div className="mw-drawer-list" data-reordering={reordering || undefined}>
         {waiting.length > 0 && (
           <section className="mw-waiting">
             <h2 className="mw-section-title"><Bell size={14} />{t('Waiting for an answer')}<span>{waiting.length}</span></h2>
@@ -306,13 +317,15 @@ function DrawerContent() {
           </section>
         )}
         {shown.map(({ group, items }) => (
-          <section key={group.workspace.workspace_id}>
-            <h2 className="mw-section-title"><FolderClosed size={14} />{group.workspace.label || t('Workspace')}</h2>
-            <div className="ws-threads">
+          <section className="mw-project" data-importance={projectImportance(group.cwd, preferences)} key={group.workspace.workspace_id}>
+            <h2 className="mw-section-title"><FolderClosed size={14} /><ProjectImportanceMarker group={group} /><span className="mw-project-label">{group.workspace.label || t('Workspace')}</span>
+              {reordering ? <ProjectOrderButtons group={group} disabled={!connected} /> : <button type="button" className="mw-icon" disabled={!connected} aria-label={t('Project importance')} onClick={e => openMenuAt(e.currentTarget, projectImportanceMenu(group))}><MoreHorizontal size={17} /></button>}
+            </h2>
+            {!reordering && <div className="ws-threads">
               {!q && <BoardRow group={group} />}
               {leadOnly && !q ? <LeadRows group={group} /> : items.map((th) => <ThreadRow key={th.paneId} thread={th} nested />)}
               {!items.length && !q && <div className="ws-empty">{t('No tabs')}</div>}
-            </div>
+            </div>}
           </section>
         ))}
         {!shown.length && <p className="mw-drawer-empty">{q ? t('No results. Try another search.') : t('Open a workspace on your Mac to see it here.')}</p>}

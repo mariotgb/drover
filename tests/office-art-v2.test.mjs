@@ -81,7 +81,7 @@ test('building, interaction and ambient sprites the engine needs exist', () => {
     'object.bench.col', 'object.monitor.front', 'object.monitor.back', 'object.chair.front', 'object.chair.back', 'object.chair.lead', 'object.desk.head', 'object.table.meeting',
     'object.reception', 'object.bell', 'object.directory', 'object.rack', 'object.machine', 'object.window', 'object.board', 'object.board.note', 'object.sign', 'object.clock',
     'object.doorway', 'object.entrance', 'object.tree.big', 'object.lamp.post', 'object.hedge', 'object.cat', 'object.robot',
-    'object.desk.boss', 'object.chair.boss', 'object.flag', 'object.trophy', 'object.phone', 'object.rug.boss',
+    'object.desk.boss', 'object.chair.boss', 'object.flag', 'object.trophy', 'object.phone', 'object.rug.boss', 'object.rank', 'object.banner', 'object.mat',
     'effect.carrier', 'effect.trail', 'effect.arrival', 'effect.note', 'effect.attempt', 'effect.crumple', 'effect.spark', 'effect.confetti', 'effect.bubble',
     'effect.status', 'effect.plaque', 'effect.plaque.pointer', 'effect.label', 'effect.select', 'effect.steam', 'effect.packet', 'effect.cable', 'effect.activity',
     'effect.card', 'effect.link.dot', 'effect.flash', 'effect.glow'
@@ -90,6 +90,9 @@ test('building, interaction and ambient sprites the engine needs exist', () => {
     for (const id of need) assert.ok(manifest.sprites[id], id)
     for (let i = 0; i < 16; i++) for (const who of ['agent', 'user', 'boss']) assert.ok(manifest.sprites['effect.carrier'].states[`${who}:${i}`], `carrier ${who}:${i}`)
     for (const k of ['?', '!', 'ok']) assert.ok(manifest.sprites['effect.bubble'].states[k])
+    for (const k of ['primary', 'important', 'background']) assert.ok(manifest.sprites['object.rank'].states[k], `rank ${k}`)
+    for (const k of ['primary', 'important']) { assert.ok(manifest.sprites['object.banner'].states[k]); assert.ok(manifest.sprites['object.mat'].states[k]) }
+    assert.equal(manifest.sprites['object.mat'].layers[0], 'rug')
     for (const st of ['code', 'ask', 'term', 'done', 'off']) assert.ok(manifest.sprites['object.monitor.front'].states[st])
     for (const slot of ['agentNorth', 'agentSouth', 'plaqueNorth', 'plaqueSouth', 'handNorth', 'landSouth', 'cableNorth']) assert.ok(manifest.sprites['object.bench.col'].slots[slot], slot)
   }

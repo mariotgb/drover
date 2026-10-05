@@ -1,12 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 import { agentKindDef } from '@shared/agents'
-import type { AgentInfo } from '@shared/types'
+import type { AgentInfo, HerdrSnapshot } from '@shared/types'
+import type { AgentLaunch } from '@shared/agentRestart'
+import { modelArgs, type ModelChoice } from '@shared/models'
 import { projectLeadRoster, type BossAssignment, type BossBroadcastRequest, type BossDelivery, type BossLead, type BossOpenRequest, type BossOpenResult, type BossRoster, type BossSettings } from '@shared/boss'
 import type { HerdrService } from '../herdr/service'
+import { HerdrClient } from '../herdr/client'
+import { defaultSocketPath } from '../herdr/cli'
 import { createAgent, sendPrompt } from '../actions'
 import { ensureBoard } from '../tasks'
-import { BossSettingsStore, writeBossJson } from './store'
+import { BossSettingsStore, writeBossJson, type BossBinding } from './store'
 import { which } from '../env'
 import { provisionHq } from './hq'
 import { BossLocalServer } from './local'
@@ -19,6 +23,8 @@ interface BossRuntime {
   executable?: string
   kindInstalled?: (kind: string) => boolean
   replyAccepted?: (fromPaneId: string, toPaneId: string, receiptId: string, ts: number) => void
+  restoreAllowed?: () => boolean
+  snapshotForSession?: (session: string) => Promise<HerdrSnapshot | null>
 }
 
 interface Pending {
@@ -32,6 +38,17 @@ interface Pending {
 }
 const identity = (agent: AgentInfo) => JSON.stringify([agent.terminal_id, agent.agent_session, agent.agent, agent.name])
 const RECEIPT_LIMIT = 10_000
+
+/** Native resume arguments, matching herdr's agent_resume plans. */
+export function bossResumeArgs(kind: string, value: string): string[] {
+  if (kind === 'codex') return ['resume', value]
+  if (['copilot', 'omp'].includes(kind)) return [`--resume=${value}`]
+  if (['pi', 'opencode', 'kilo', 'kimi'].includes(kind)) return ['--session', value]
+  if (kind === 'mastracode') return ['--thread', value]
+  if (kind === 'agy') return ['--conversation', value]
+  if (kind === 'letta') return value.startsWith('default:') ? ['--conversation', 'default', '--agent', value.slice(8)] : ['--conversation', value]
+  return ['claude', 'devin', 'droid', 'hermes', 'qodercli', 'qwen', 'cursor', 'grok'].includes(kind) ? ['--resume', value] : []
+}
 
 /** Threat model: agents share one OS user, so files, socket tokens and inherited
  * environment are not security boundaries against deliberate tampering. Normal
@@ -58,6 +75,9 @@ export class BossService {
   private acceptedReceipts = new Map<string, Set<string>>()
   private ledgerWrites: Promise<void> = Promise.resolve()
   private scanning = false
+  private restoreAfter = 0
+  private ownerSnapshot: HerdrSnapshot | null = null
+  private ownerRead: Promise<void> | null = null
   constructor(private service: HerdrService, private store: BossSettingsStore,
     private leads: () => Record<string, string>, private deliveryChanged: (delivery: BossDelivery) => void,
     private accepted: (paneId: string, text: string, fromPaneId?: string) => void,
@@ -65,14 +85,22 @@ export class BossService {
     this.folders.add(store.get().hqFolder)
     this.ready = store.load().then(() => {
       this.folders.add(store.get().hqFolder)
+      const binding = store.globalBinding()
+      if (binding) this.folders.add(binding.folder)
     })
     this.local = new BossLocalServer(request => this.helperRequest(request))
-    this.timer = setInterval(() => { void this.drain(); void this.scanReplies().catch(error => console.warn('[boss] reply scan failed:', String(error))) }, 1000)
+    this.timer = setInterval(() => {
+      void this.drain()
+      void this.scanReplies().catch(error => console.warn('[boss] reply scan failed:', String(error)))
+      void this.restore().catch(error => console.warn('[boss] restore failed:', String(error)))
+    }, 1000)
     this.timer.unref()
   }
-  async settings(): Promise<BossSettings> { await this.ready; return this.store.get() }
+  async settings(): Promise<BossSettings> { await this.ready; return { ...this.store.get(), hqFolder: this.store.globalBinding()?.folder ?? this.store.get().hqFolder } }
   async setSettings(patch: Partial<BossSettings>): Promise<BossSettings> {
     await this.ready
+    const binding = this.store.globalBinding()
+    if (binding && patch.hqFolder && resolve(patch.hqFolder) !== binding.folder) throw new Error('The Main boss is already bound to its headquarters')
     // Serialize settings changes alongside roster writes, preserving their order.
     let next!: BossSettings
     const operation = this.writes.then(async () => { next = await this.store.set(patch); this.folders.add(next.hqFolder); this.lastRoster = '' })
@@ -84,15 +112,21 @@ export class BossService {
   }
   private current(): BossRoster {
     const settings = this.store.get()
-    const agent = this.service.snapshot?.agents.find(a => this.isBoss(a.pane_id))
-    return { session: this.service.sessionName, hqFolder: settings.hqFolder,
+    const binding = this.store.globalBinding()
+    const foreign = !!binding && binding.session !== this.service.sessionName
+    const snapshot = foreign ? this.ownerSnapshot : this.service.snapshot
+    const folder = binding?.folder ?? settings.hqFolder
+    const agent = snapshot?.agents.find(a => binding ? a.pane_id === binding.paneId && a.agent === binding.kind : this.isBoss(a.pane_id))
+    return { session: binding?.session ?? this.service.sessionName, hqFolder: folder, ...(foreign ? { needsSessionSwitch: true } : {}),
       boss: agent ? { paneId: agent.pane_id, name: agent.name!, kind: agent.agent, status: agent.agent_status } : null,
-      projects: projectLeadRoster(this.service.snapshot, this.leads(), settings.excludedProjects, settings.hqFolder)
+      projects: projectLeadRoster(snapshot, this.leads(), settings.excludedProjects, folder)
         .filter(p => !p.cwd || !this.isHqFolder(p.cwd)) }
   }
   async roster(): Promise<BossRoster> { await this.refresh(); return this.current() }
   async refresh(): Promise<void> {
     await this.ready
+    await this.captureBinding()
+    await this.readOwnerSnapshot()
     const roster = this.current()
     const content = JSON.stringify(roster)
     const operation = this.writes.then(async () => {
@@ -106,7 +140,7 @@ export class BossService {
     await this.scanReplies()
   }
   onChange(): void {
-    void this.refresh().catch(error => console.warn('[boss] roster refresh failed:', String(error)))
+    void this.refresh().then(() => this.restore()).catch(error => console.warn('[boss] roster refresh failed:', String(error)))
     void this.drain()
   }
   isHqFolder(folder: string): boolean {
@@ -122,13 +156,27 @@ export class BossService {
   }
   isBoss(paneId: string): boolean {
     const pane = this.service.snapshot?.panes.find(p => p.pane_id === paneId)
+    if (this.store.globalBinding() && this.store.globalBinding()!.session !== this.service.sessionName) return false
+    const binding = this.store.binding(this.service.sessionName)
+    if (binding) return paneId === binding.paneId && !!pane && !!this.service.snapshot?.agents.some(a => a.pane_id === paneId && a.agent === binding.kind)
     return !!pane && this.service.snapshot!.panes.some(p => p.workspace_id === pane.workspace_id && p.cwd === this.store.get().hqFolder) &&
       !!this.service.snapshot?.agents.some(a => a.pane_id === paneId && /^drover-boss(?:-\d+)?$/.test(a.name ?? ''))
   }
   async open(req: BossOpenRequest): Promise<BossOpenResult> {
+    await this.ready
     const definition = req && typeof req.kind === 'string' ? agentKindDef(req.kind) : undefined
     if (!req || !definition || definition.kind !== req.kind || typeof req.prompt !== 'string' || !req.prompt.trim() || req.prompt.length > 256 * 1024 ||
         (req.args !== undefined && (!Array.isArray(req.args) || req.args.length > 100 || req.args.some(a => typeof a !== 'string' || a.includes('\0') || a.length > 8192)))) throw new Error('Invalid boss request')
+    const owner = this.store.globalBinding()
+    if (owner && owner.session !== this.service.sessionName) return { ok: false, existing: true,
+      needsSessionSwitch: true, session: owner.session, folder: owner.folder, paneId: owner.paneId, workspaceId: owner.workspaceId,
+      error: `The Main boss belongs to session ${owner.session}. Confirm switching to that session to open it.` }
+    if (this.opening) return this.opening
+    await this.captureBinding()
+    const existing = this.current().boss
+    if (existing) return { ok: true, folder: this.current().hqFolder, paneId: existing.paneId, existing: true }
+    const binding = this.store.binding(this.service.sessionName)
+    if (binding) return this.startBound(binding)
     const installed = this.runtime.kindInstalled ? this.runtime.kindInstalled(req.kind) : definition.binaries.some(binary => which(binary, this.service.env ?? process.env))
     if (!installed) throw new Error(`Agent is not installed: ${req.kind}`)
     if (this.opening) return this.opening
@@ -136,6 +184,7 @@ export class BossService {
     return this.opening
   }
   private async openHq(req: BossOpenRequest): Promise<BossOpenResult> {
+    const session = this.service.sessionName
     if (req.folder !== undefined) await this.setSettings({ hqFolder: req.folder })
     await this.refresh()
     const folder = this.store.get().hqFolder
@@ -144,14 +193,153 @@ export class BossService {
     const snapshot = this.service.snapshot
     const panes = (snapshot?.panes ?? []).filter(p => p.cwd === folder)
     const existing = snapshot?.agents.find(a => panes.some(p => p.workspace_id === a.workspace_id) && /^drover-boss(?:-\d+)?$/.test(a.name ?? ''))
-    if (existing) return { ok: true, folder, paneId: existing.pane_id, workspaceId: existing.workspace_id, existing: true }
+    if (existing) {
+      await this.captureBinding()
+      return { ok: true, folder, paneId: existing.pane_id, workspaceId: existing.workspace_id, existing: true }
+    }
     const shell = panes.find(p => !p.agent && !snapshot?.agents.some(a => a.pane_id === p.pane_id))
     const workspaceId = panes[0]?.workspace_id ?? null
-    const result = await createAgent(this.service, { kind: req.kind, name: 'drover-boss', folder, workspaceId,
+    if (this.disposed || session !== this.service.sessionName) return { ok: false, folder, error: 'The HQ session has changed' }
+    // Reserve and persist the location before launching: a crash or a startup
+    // dialog cannot make the next click allocate another boss pane.
+    const location = await createAgent(this.service, { kind: null, name: 'drover-boss', folder, workspaceId,
+      args: [],
       workspaceLabel: 'Штаб', tabLabel: 'Главный босс', placement: shell ? 'existing' : 'tab',
-      splitTarget: shell?.pane_id, args: req.args ?? [], prompt: req.prompt })
+      splitTarget: shell?.pane_id })
+    if (!location.ok || !location.paneId) return { ...location, folder }
+    if (session !== this.service.sessionName) return { ok: false, folder, error: 'The HQ session has changed' }
+    await this.service.refresh?.()
+    const pane = this.service.snapshot?.panes.find(p => p.pane_id === location.paneId)
+    if (!pane) return { ok: false, folder, error: 'HQ pane has not appeared in the session snapshot' }
+    const binding: BossBinding = { session, folder, paneId: pane.pane_id,
+      workspaceId: pane.workspace_id, kind: req.kind, name: 'drover-boss', args: req.args ?? [], prompt: req.prompt }
+    await this.persistBinding(binding)
+    return this.launchBound(binding)
+  }
+
+  private async persistBinding(binding: BossBinding): Promise<void> {
+    const operation = this.writes.then(() => this.store.bind(binding))
+    this.writes = operation.catch(() => undefined)
+    await operation
+    this.folders.add(binding.folder)
+  }
+  private async changeBinding(session: string, paneId: string, kind: string,
+    change: (latest: BossBinding | null) => BossBinding | null): Promise<void> {
+    const operation = this.writes.then(async () => {
+      const latest = this.store.globalBinding()
+      if (latest && (latest.session !== session || latest.paneId !== paneId || latest.kind !== kind)) return
+      const next = change(latest)
+      if (!next || JSON.stringify(next) === JSON.stringify(latest)) return
+      await this.store.bind(next)
+      this.folders.add(next.folder)
+    })
+    this.writes = operation.catch(() => undefined)
+    await operation
+  }
+  async recordChoice(paneId: string, kind: string, choice: ModelChoice): Promise<void> {
+    const session = this.service.sessionName
+    await this.ready
+    await this.changeBinding(session, paneId, kind, binding => {
+      if (!binding) return null
+      const model = choice.model?.trim()
+      const effort = choice.effort?.trim()
+      const args: string[] = []
+      for (let i = 0; i < binding.args.length; i++) {
+        const flag = binding.args[i]
+        // Model menus send null for the field they did not change. Preserve its
+        // actual launch option so a later resume uses the same model and effort.
+        if ((model && ['-m', '--model'].includes(flag)) || (effort && flag === '--effort')) { i++; continue }
+        if (effort && (flag === '-c' || flag === '--config') && binding.args[i + 1]?.startsWith('model_reasoning_effort=')) { i++; continue }
+        if ((model && /^--model=/.test(flag)) || (effort && /^--effort=/.test(flag))) continue
+        args.push(flag)
+      }
+      return { ...binding, args: [...args, ...modelArgs(kind, choice)] }
+    })
+  }
+  async recordRestart(paneId: string, launch: AgentLaunch): Promise<void> {
+    const session = this.service.sessionName
+    await this.ready
+    const args: string[] = []
+    for (let i = 0; i < launch.args.length; i++) {
+      const arg = launch.args[i]
+      if ((launch.kind === 'codex' && ['resume', 'fork'].includes(arg)) ||
+          (launch.kind === 'claude' && ['--resume', '-r', '--session-id'].includes(arg))) { i++; continue }
+      if (launch.kind === 'claude' && /^--(?:resume|session-id)=/.test(arg)) continue
+      args.push(arg)
+    }
+    await this.changeBinding(session, paneId, launch.kind, binding => binding ? { ...binding, args, agentSession: launch.sessionId ? {
+      agent: launch.kind, kind: 'id', value: launch.sessionId, source: 'drover:restart'
+    } : undefined } : null)
+  }
+  private async captureBinding(): Promise<void> {
+    const session = this.service.sessionName
+    if (this.store.globalBinding() && this.store.globalBinding()!.session !== session) return
+    const binding = this.store.binding(session)
+    const agent = this.service.snapshot?.agents.find(a => binding ? a.pane_id === binding.paneId : this.isBoss(a.pane_id))
+    if (!agent || (binding && agent.agent !== binding.kind)) return
+    const next: BossBinding = binding ? { ...binding, name: agent.name || binding.name, agentSession: agent.agent_session ?? binding.agentSession } : {
+      session, folder: this.store.get().hqFolder, workspaceId: agent.workspace_id, paneId: agent.pane_id,
+      name: agent.name || 'drover-boss', kind: agent.agent, args: [], prompt: 'Read the HQ instructions and wait for the user.', agentSession: agent.agent_session
+    }
+    // Snapshot observations must merge after earlier writes, preserving the
+    // actual restart/model options and a newer native session reported meanwhile.
+    await this.changeBinding(session, agent.pane_id, agent.agent, latest => latest ? {
+      ...latest, name: agent.name || latest.name,
+      agentSession: JSON.stringify(latest.agentSession) === JSON.stringify(binding?.agentSession)
+        ? agent.agent_session ?? latest.agentSession : latest.agentSession
+    } : next)
+  }
+  private startBound(binding: BossBinding): Promise<BossOpenResult> {
+    if (this.opening) return this.opening
+    this.opening = this.launchBound(binding).finally(() => { this.opening = null })
+    return this.opening
+  }
+  private async launchBound(binding: BossBinding): Promise<BossOpenResult> {
+    if (this.disposed || binding.session !== this.service.sessionName) return { ok: false, folder: binding.folder, error: 'The HQ session has changed' }
+    const snapshot = this.service.snapshot
+    const client = this.service.client, generation = this.service.connectionGeneration
+    const pane = snapshot?.panes.find(p => p.pane_id === binding.paneId && p.workspace_id === binding.workspaceId && p.cwd === binding.folder)
+    if (!pane) return { ok: false, folder: binding.folder, paneId: binding.paneId, error: 'The existing HQ pane is unavailable; reconnect to its session' }
+    const occupant = snapshot?.agents.find(a => a.pane_id === binding.paneId)
+    if (occupant || pane.agent) return { ok: !!occupant && occupant.agent === binding.kind, folder: binding.folder, paneId: binding.paneId,
+      workspaceId: binding.workspaceId, existing: true, ...(occupant?.agent === binding.kind ? {} : { error: 'The HQ pane is occupied' }) }
+    await ensureBoard(binding.folder)
+    await this.prepare(binding.folder, binding.kind)
+    if (this.disposed || binding.session !== this.service.sessionName || client !== this.service.client || generation !== this.service.connectionGeneration) return { ok: false, folder: binding.folder, error: 'The HQ connection has changed' }
+    const ref = binding.agentSession
+    const resume = ref?.agent === binding.kind && ref.value ? bossResumeArgs(binding.kind, ref.value) : []
+    const result = await createAgent(this.service, { kind: binding.kind, name: binding.name, folder: binding.folder,
+      workspaceId: binding.workspaceId, placement: 'existing', splitTarget: binding.paneId,
+      args: [...binding.args, ...resume], prompt: resume.length ? undefined : binding.prompt })
+    if (binding.session !== this.service.sessionName || client !== this.service.client || generation !== this.service.connectionGeneration) {
+      return { ok: false, folder: binding.folder, paneId: binding.paneId, code: 'session_changed', error: 'The HQ connection has changed' }
+    }
+    if (!result.ok) return { ...result, folder: binding.folder, workspaceId: binding.workspaceId, existing: true }
+    await this.service.refresh?.()
     await this.refresh()
-    return { ...result, folder, workspaceId: this.service.snapshot?.panes.find(p => p.pane_id === result.paneId)?.workspace_id ?? workspaceId ?? undefined }
+    return { ...result, folder: binding.folder, workspaceId: binding.workspaceId, existing: true }
+  }
+  private async restore(): Promise<void> {
+    await this.ready
+    if (this.disposed || this.opening || this.runtime.restoreAllowed?.() === false ||
+        this.service.connection?.status !== 'connected' || !this.service.snapshot || Date.now() < this.restoreAfter) return
+    const binding = this.store.binding(this.service.sessionName)
+    if (!binding || this.current().boss) return
+    this.restoreAfter = Date.now() + 30_000
+    const result = await this.startBound(binding)
+    if (!result.ok) console.warn('[boss] restore failed:', result.error)
+  }
+  private async readOwnerSnapshot(): Promise<void> {
+    const binding = this.store.globalBinding()
+    if (!binding || binding.session === this.service.sessionName) { this.ownerSnapshot = null; return }
+    if (this.ownerRead) return this.ownerRead
+    this.ownerRead = (async () => {
+      try {
+        this.ownerSnapshot = this.runtime.snapshotForSession ? await this.runtime.snapshotForSession(binding.session) :
+          (await new HerdrClient(defaultSocketPath(binding.session, this.service.env ?? {})).request<{ snapshot: HerdrSnapshot }>('session.snapshot', {}, 5000)).snapshot
+      } catch { this.ownerSnapshot = null }
+    })().finally(() => { this.ownerRead = null })
+    return this.ownerRead
   }
   async broadcast(req: BossBroadcastRequest): Promise<BossDelivery[]> {
     if (!req || typeof req.text !== 'string' || !req.text.trim() || req.text.length > 256 * 1024 ||
@@ -164,6 +352,7 @@ export class BossService {
   private async broadcastNow(req: BossBroadcastRequest, assignment?: BossAssignment): Promise<BossDelivery[]> {
     await this.refresh()
     const roster = this.current()
+    if (roster.session !== this.service.sessionName) throw new Error('Switch to the Main boss session before sending assignments')
     const projects = req.projectKeys ? [...new Set(req.projectKeys)].map(key => {
       const project = roster.projects.find(p => p.key === key)
       if (!project) throw new Error(`Unknown project: ${key}`)
@@ -201,7 +390,7 @@ export class BossService {
       await this.loadAssignments(folder)
       this.setup.add(key)
     }
-    await this.local.start(folder, { herdrPath: this.service.herdrPath ?? null, session: this.service.sessionName })
+    await this.local.start(folder, { herdrPath: this.service.herdrPath ?? null, session: this.store.globalBinding()?.session ?? this.service.sessionName })
   }
   private async loadAssignments(folder: string): Promise<void> {
     if (this.assignments.has(folder)) return
@@ -378,6 +567,7 @@ export class BossService {
     this.scanning = true
     try {
       await this.ready
+      if (this.store.globalBinding() && this.store.globalBinding()!.session !== this.service.sessionName) return
       for (const folder of this.folders) {
         const directory = join(folder, '.drover', 'boss-receipts')
         let files: string[]

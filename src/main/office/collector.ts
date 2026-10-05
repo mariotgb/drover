@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   OFFICE_LIMITS as L, type OfficeAgent, type OfficeAnimation, type OfficeEventEnvelope,
   type OfficeLink, type OfficeRole, type OfficeRoleSource,
-  type OfficeState, type OfficeUIEvent, type OfficeUpdate
+  type OfficeState, type OfficeUIEvent, type OfficeUpdate, type OfficeDelta
 } from '@shared/office'
 import type { AppSettings, HerdrSnapshot, RoleTemplate, TaskBoard, TranscriptUpdate } from '@shared/types'
 import { AGENT_NAME_RE } from '@shared/agents'
@@ -51,13 +51,17 @@ export class OfficeCollector {
   private lastPair = new Map<string, number>()
   private lookupQueue: Array<{ pane: string; watch: PaneWatch }> = []
   private lookups = 0
+  private delivered = { agents: new Map<string, string>(), links: new Map<string, string>(), events: new Set<string>(),
+    departments: '', seats: '', externalNodes: '', statusCounts: '' }
+  private changedEvents = new Set<string>()
+  private lastPrune = -Infinity
 
   constructor(private sources: OfficeSources, private publish: (update: OfficeUpdate) => void,
     private now: () => number = Date.now) {
     this.state = this.empty()
   }
   private empty(): OfficeState {
-    return { session: this.sources.session(), generation: randomUUID(), departments: [], seats: [], agents: [],
+    return { session: this.sources.session(), generation: randomUUID(), version: 0, departments: [], seats: [], agents: [],
       externalNodes: [{ id: 'user', kind: 'user', name: 'User' },
         { id: 'machine:pc', kind: 'machine', name: 'pc' }, { id: 'machine:homeserver', kind: 'machine', name: 'homeserver' }],
       links: [], recentEvents: [], statusCounts: statusCounts([]) }
@@ -74,7 +78,9 @@ export class OfficeCollector {
       this.timer = setInterval(() => this.flush(), L.updateMs)
       this.timer.unref?.()
     } else this.onSnapshot(this.sources.snapshot(), true)
-    return this.getState()
+    const initial = this.getState()
+    this.baseline()
+    return initial
   }
   stop(): void {
     this.visible = false; this.pending = []; this.active = []
@@ -98,6 +104,7 @@ export class OfficeCollector {
     this.aggregates.clear(); this.attempts.clear(); this.incarnations.clear(); this.roleBindings.clear(); this.projectRoles.clear()
     this.state = this.empty(); this.dirty = false; this.visible = false
     this.publish({ state: this.getState(), animations: [] })
+    this.baseline()
   }
   dispose(): void {
     if (this.grace) clearTimeout(this.grace)
@@ -107,7 +114,12 @@ export class OfficeCollector {
   getState(): OfficeState {
     this.prune()
     this.state.statusCounts = statusCounts(this.state.agents)
-    return structuredClone(this.state)
+    const state = structuredClone(this.state)
+    for (const link of state.links) {
+      link.weight *= Math.exp(-Math.max(0, this.now() - (link.weightAt ?? link.lastAt)) / L.decayMs)
+      link.weightAt = this.now()
+    }
+    return state
   }
   endpoint(paneId: string): string | null { return this.state.agents.find(a => a.paneId === paneId)?.id ?? null }
   bindRole(paneId: string, template: RoleTemplate): void {
@@ -251,7 +263,7 @@ export class OfficeCollector {
     const agent = this.state.agents.find(a=>a.paneId === update.paneId)
     if (!watch || !agent || watch.token !== agent.id || !this.watching) return
     if (update.error === 'office-history-limit') watch.limited = true
-    agent.transcriptCoverage = watch.limited ? 'history_limit' : update.meta?.located || 'unavailable'
+    agent.transcriptCoverage = watch.limited ? 'history_limit' : update.meta?.coverage === 'tail' ? 'tail' : update.meta?.located || 'unavailable'
     this.dirty = true
     if (watch.limited) return
     const pane = this.sources.snapshot()?.panes.find(p=>p.pane_id === update.paneId)
@@ -375,6 +387,7 @@ export class OfficeCollector {
       if (this.state.recentEvents[index].kind === event.kind) return
       this.state.recentEvents[index] = event
     } else this.state.recentEvents.push(event)
+    this.changedEvents.add(event.id)
     for (const agent of this.state.agents) if (agent.id === event.from || agent.id === event.to) {
       agent.lastEventAt = Math.max(agent.lastEventAt ?? 0, event.ts)
     }
@@ -410,16 +423,18 @@ export class OfficeCollector {
   }
   private prune(): void {
     const now = this.now()
+    this.lastPrune = now
     this.state.recentEvents = this.state.recentEvents.filter(e=>e.ts >= now-L.historyMs)
     const links: OfficeLink[] = []
     for (const [key,agg] of this.aggregates) {
       let count=0, weight=0, lastAt=0
       for (const [ts,n] of agg.times) {
         if (ts < now-L.historyMs) { agg.times.delete(ts); continue }
-        count+=n; weight+=n*Math.exp(-(now-ts)/L.decayMs); lastAt=Math.max(lastAt,ts)
+        count+=n; lastAt=Math.max(lastAt,ts)
       }
+      for (const [ts,n] of agg.times) weight += n*Math.exp(-(lastAt-ts)/L.decayMs)
       if (!count) this.aggregates.delete(key)
-      else links.push({...agg.link,count,weight: agg.link.style === 'attempt' ? 0 : weight,lastAt})
+      else links.push({...agg.link,count,weight: agg.link.style === 'attempt' ? 0 : weight,lastAt,weightAt:lastAt})
     }
     this.state.links = links
     for (const [id,attempt] of this.attempts) if (attempt.ts < now-L.historyMs) this.attempts.delete(id)
@@ -430,12 +445,48 @@ export class OfficeCollector {
     }
     for (const [key,ts] of this.lastPair) if (ts < now-L.historyMs) this.lastPair.delete(key)
   }
+  private baseline(): void {
+    this.delivered.agents = new Map(this.state.agents.map(a => [a.id, JSON.stringify(a)]))
+    this.delivered.links = new Map(this.state.links.map(l => [l.id, JSON.stringify(l)]))
+    this.delivered.events = new Set(this.state.recentEvents.map(e => e.id))
+    this.delivered.departments = JSON.stringify(this.state.departments)
+    this.delivered.seats = JSON.stringify(this.state.seats)
+    this.delivered.externalNodes = JSON.stringify(this.state.externalNodes)
+    this.delivered.statusCounts = JSON.stringify(this.state.statusCounts)
+    this.changedEvents.clear()
+  }
+  private delta(): OfficeDelta | null {
+    const changed = <T extends { id: string }>(rows: T[], before: Map<string, string>) => {
+      const next = new Map<string, string>(), updates: T[] = []
+      for (const row of rows) { const signature = JSON.stringify(row); next.set(row.id, signature); if (before.get(row.id) !== signature) updates.push(row) }
+      const removed = [...before.keys()].filter(id => !next.has(id))
+      return { updates, removed, next }
+    }
+    this.state.statusCounts = statusCounts(this.state.agents)
+    const agents = changed(this.state.agents, this.delivered.agents), links = changed(this.state.links, this.delivered.links)
+    const eventIds = new Set(this.state.recentEvents.map(e => e.id))
+    const delta: OfficeDelta = { session: this.state.session, generation: this.state.generation,
+      baseVersion: this.state.version ?? 0, version: (this.state.version ?? 0) + 1,
+      agents: agents.updates, removedAgents: agents.removed, links: links.updates, removedLinks: links.removed,
+      events: this.state.recentEvents.filter(e => !this.delivered.events.has(e.id) || this.changedEvents.has(e.id)),
+      removedEvents: [...this.delivered.events].filter(id => !eventIds.has(id)) }
+    for (const key of ['departments', 'seats', 'externalNodes', 'statusCounts'] as const) {
+      const signature = JSON.stringify(this.state[key])
+      if (signature !== this.delivered[key]) Object.assign(delta, { [key]: this.state[key] })
+      this.delivered[key] = signature
+    }
+    this.delivered.agents = agents.next; this.delivered.links = links.next; this.delivered.events = eventIds; this.changedEvents.clear()
+    if (!delta.agents.length && !delta.removedAgents.length && !delta.links.length && !delta.removedLinks.length &&
+        !delta.events.length && !delta.removedEvents.length && !delta.departments && !delta.seats && !delta.externalNodes && !delta.statusCounts) return null
+    this.state.version = delta.version
+    return delta
+  }
   /** Public for deterministic synthetic verification; production uses the 100ms timer. */
   flush(): void {
     if (!this.watching) return
     const now = this.now()
-    const hadLinks = this.state.links.length > 0
-    this.prune()
+    const maintenance = now - this.lastPrune >= 1000
+    if (this.dirty || maintenance) this.prune()
     this.active = this.active.filter(ts=>ts > now-L.pairAnimationMs)
     this.pending = this.pending.filter(p=>p.ts >= now-L.animationTtlMs)
     const animations: OfficeAnimation[] = []
@@ -446,7 +497,14 @@ export class OfficeCollector {
       animations.push({...p}); this.lastPair.set(pair,now); this.active.push(now)
       this.pending.splice(this.pending.indexOf(p),1)
     }
-    if (this.visible && (this.dirty || hadLinks || animations.length || this.state.links.length)) this.publish({state:this.getState(),animations})
+    if (this.visible && (this.dirty || maintenance || animations.length)) {
+      const delta = this.delta()
+      if (delta) this.publish({ delta: structuredClone(delta), animations })
+      else if (animations.length) this.publish({ delta: { session: this.state.session, generation: this.state.generation,
+        baseVersion: this.state.version ?? 0, version: (this.state.version ?? 0) + 1,
+        agents: [], removedAgents: [], links: [], removedLinks: [], events: [], removedEvents: [] }, animations })
+      if (!delta && animations.length) this.state.version = (this.state.version ?? 0) + 1
+    }
     this.dirty = false
   }
 }

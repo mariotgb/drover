@@ -284,6 +284,66 @@ function bossRug(P) {
   return c
 }
 
+// ---- project importance (0.7.2): rank badge at the hall sign, banner at the corridor door, door mat
+function rankBadge(P, level) {
+  const c = new Pix(15, 17), e = new Pix(15, 17)
+  if (level === 'background') {
+    if (neon(P)) { c.round(1, 3, 13, 11, 3, '#1d2236'); c.ellipse(7, 8, 3, 3, '#8a7fc8'); c.ellipse(8.5, 7, 2.5, 2.5, '#1d2236'); e.ellipse(7, 8, 3, 3, '#6a5fa8'); e.ellipse(8.5, 7, 2.5, 2.5, '#00000000') }
+    else { c.round(1, 3, 13, 11, 2, '#8d6a4f'); c.round(2, 4, 11, 9, 2, '#c8a27a'); c.ellipse(7, 8, 3, 3, '#7d8292'); c.ellipse(8.5, 7, 2.5, 2.5, '#c8a27a'); c.set(11, 6, '#7d8292') }
+    c.outline(OUT, 0.5)
+    return { pix: c, emit: neon(P) ? e : undefined }
+  }
+  const primary = level === 'primary'
+  if (neon(P)) {
+    const ring = primary ? '#ff7ad9' : '#5ef2ff', core = primary ? '#ffd36b' : '#dffbff'
+    c.ellipse(7, 7, 6, 6, '#0b0f18'); for (let a = 0; a < 32; a++) { const t = (a / 32) * Math.PI * 2; c.set(Math.round(7 + Math.cos(t) * 6), Math.round(7 + Math.sin(t) * 6), ring); e.set(Math.round(7 + Math.cos(t) * 6), Math.round(7 + Math.sin(t) * 6), ring) }
+    if (primary) { c.stamp(3, 3, ['..#..', '..#..', '#####', '.###.', '##.##'], { '#': core }); e.stamp(3, 3, ['..#..', '..#..', '#####', '.###.', '##.##'], { '#': core }) }
+    else { c.stamp(4, 4, ['..#..', '.#.#.', '#...#', '..#..', '.#.#.', '#...#'], { '#': core }); e.stamp(4, 4, ['..#..', '.#.#.', '#...#', '..#..', '.#.#.', '#...#'], { '#': core }) }
+    c.set(4, 14, ring); c.set(10, 14, ring); c.set(4, 15, ring); c.set(10, 15, ring); e.set(4, 15, ring); e.set(10, 15, ring)
+    return { pix: c, emit: e }
+  }
+  const ribbon = primary ? ['#c0392b', '#e2574c'] : ['#3a6fb0', '#5a8fd0'], disc = primary ? ['#d9a441', '#f2c230', '#fff3a8'] : ['#9aa5ad', '#c9d1d6', '#ffffff']
+  c.rect(3, 10, 3, 6, ribbon[0]); c.rect(9, 10, 3, 6, ribbon[0]); c.set(3, 16, '#00000000'); c.set(4, 15, ribbon[1]); c.set(10, 15, ribbon[1])
+  for (let a = 0; a < 12; a++) { const t = (a / 12) * Math.PI * 2; c.ellipse(7 + Math.cos(t) * 5, 7 + Math.sin(t) * 5, 1.4, 1.4, ribbon[a % 2]) }
+  c.ellipse(7, 7, 4, 4, disc[0]); c.ellipse(7, 7, 3, 3, disc[1])
+  if (primary) c.stamp(5, 5, ['..#..', '#####', '.###.', '.#.#.'].map((r) => r), { '#': '#c0392b' })
+  else c.stamp(5, 5, ['..#..', '.#.#.', '#...#', '.#.#.'], { '#': '#3a6fb0' })
+  c.set(5, 4, disc[2])
+  c.outline(OUT, 0.5)
+  return { pix: c }
+}
+function banner(P, level, f) {
+  const c = new Pix(18, 30), e = new Pix(18, 30), primary = level === 'primary'
+  c.hline(1, 16, 1, neon(P) ? '#3a4152' : '#5b3d2a'); c.set(0, 1, neon(P) ? '#5ef2ff' : '#d9a441'); c.set(17, 1, neon(P) ? '#5ef2ff' : '#d9a441')
+  const cloth = neon(P) ? (primary ? ['#3a1a40', '#ff7ad9'] : ['#12303a', '#5ef2ff']) : primary ? ['#c0392b', '#e2574c'] : ['#3a6fb0', '#5a8fd0']
+  for (let y = 2; y < 26; y++) {
+    const sway = Math.round(Math.sin((y + f * 4) / 6) * (y / 26))
+    for (let x = 3; x < 15; x++) {
+      const tip = y >= 21 && Math.abs(x - 8.5) < (y - 20)
+      if (tip) continue
+      const edge = x === 3 || x === 14
+      c.set(x + sway, y, edge ? cloth[1] : cloth[0])
+      if (neon(P) && edge) e.set(x + sway, y, cloth[1])
+    }
+  }
+  const mark = neon(P) ? (primary ? '#ffd36b' : '#dffbff') : primary ? '#f2c230' : '#ffffff'
+  const glyph = primary ? ['..#..', '..#..', '#####', '.###.', '.#.#.', '#...#'] : ['..#..', '.#.#.', '#...#', '..#..', '.#.#.', '#...#']
+  c.stamp(6, 8, glyph, { '#': mark }); if (neon(P)) e.stamp(6, 8, glyph, { '#': mark })
+  if (!neon(P)) for (let x = 4; x < 14; x += 2) c.set(x, 20, mix(cloth[0], '#ffffff', 0.3))
+  c.outline(OUT, 0.5)
+  return { pix: c, emit: neon(P) ? e : undefined }
+}
+function doorMat(P, level) {
+  const c = new Pix(32, 14), e = new Pix(32, 14), primary = level === 'primary'
+  const col = neon(P) ? (primary ? ['#1f1430', '#ff7ad9', '#ffd36b'] : ['#0f2230', '#5ef2ff', '#dffbff']) : primary ? ['#a8322a', '#d9a441', '#f2c230'] : ['#2f5a8f', '#9fc4e8', '#ffffff']
+  c.round(0, 0, 32, 13, 2, col[1]); c.round(1, 1, 30, 11, 2, col[0])
+  for (let x = 4; x < 28; x += 4) c.set(x, 6, col[2])
+  if (primary) c.stamp(13, 3, ['..#..', '#####', '.###.', '.#.#.'], { '#': col[2] })
+  if (neon(P)) { e.round(0, 0, 32, 13, 2, col[1]); e.round(1, 1, 30, 11, 2, '#00000000'); for (let x = 1; x < 31; x++) for (let y = 1; y < 12; y++) e.clear(x, y) }
+  for (let x = 1; x < 31; x++) c.set(x, 13, '#1a122030')
+  return { pix: c, emit: neon(P) ? e : undefined }
+}
+
 export function buildObjects(P) {
   const out = []
   const add = (it) => out.push(it)
@@ -351,6 +411,11 @@ export function buildObjects(P) {
   add(obj('object.trophy', ['furniture'], { x: 10, y: 35 }, { default: S([trophy(P, 0), trophy(P, 1)], [1600, 300], true) }))
   add(obj('object.phone', ['furniture-top'], { x: 7, y: 9 }, { idle: S([phone(P, 0)]), ring: S([phone(P, 1), phone(P, 2)], [90, 90], true) }))
   add(obj('object.rug.boss', ['rug'], { x: 64, y: 72 }, { default: S([bossRug(P)]) }))
+  // ---- project importance
+  add(obj('object.rank', ['wall-decor'], { x: 7, y: 16 }, { primary: S([rankBadge(P, 'primary')]), important: S([rankBadge(P, 'important')]), background: S([rankBadge(P, 'background')]) }))
+  add(obj('object.banner', ['wall-decor'], { x: 9, y: 30 }, { primary: S([banner(P, 'primary', 0), banner(P, 'primary', 1)], [700, 700], true), important: S([banner(P, 'important', 0), banner(P, 'important', 1)], [700, 700], true) },
+    neon(P) ? { lights: [{ dx: 0, dy: -14, rx: 16, ry: 18, color: [1, 0.4, 0.85], k: 0.5, states: ['primary'] }, { dx: 0, dy: -14, rx: 16, ry: 18, color: [0.37, 0.95, 1], k: 0.4, states: ['important'] }] } : {}))
+  add(obj('object.mat', ['rug'], { x: 16, y: 14 }, { primary: S([doorMat(P, 'primary')]), important: S([doorMat(P, 'important')]) }))
   // ---- pets (decorative only)
   add(obj('object.cat', ['furniture'], { x: 9, y: 11 }, { sleep: S([cat(P, 'sleep', 0), cat(P, 'sleep', 1)], [1000, 1000], true), sit: S([cat(P, 'sit', 0)]), 'walk:side': S([0, 1, 2, 3].map((f) => cat(P, 'walk', f)), [150, 150, 150, 150], true) }))
   add(obj('object.robot', ['furniture'], { x: 8, y: 8 }, { move: S([robot(P, 0, true), robot(P, 1, true)], [200, 200], true), charge: S([robot(P, 0, false), robot(P, 1, false)], [1000, 1000], true) }, { lights: [{ dx: 0, dy: -4, rx: 10, ry: 6, color: [0.4, 1, 1], k: neon(P) ? 0.5 : 0.1 }] }))

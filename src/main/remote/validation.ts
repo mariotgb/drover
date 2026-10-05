@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, type AppSettings } from '@shared/types'
 import { GRADIENTS, MONO_FONTS, THEMES } from '@shared/themes'
 import { RemoteFailure } from './security'
 import { validatePushPreferences, validatePushSubscription } from './push-subscription'
+import { PROJECT_IMPORTANCE } from '@shared/projects'
 
 type Check = (v: unknown) => boolean
 const invalid = (): never => { throw new RemoteFailure('invalid_args', 'Invalid RPC arguments') }
@@ -22,6 +23,8 @@ const label = str(200, 1)
 const kind: Check = v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v)
 const name: Check = v => typeof v === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(v)
 const record = (check: Check, max = 1000): Check => v => plain(v) && Object.keys(v).length <= max && Object.entries(v).every(([k, val]) => k.length <= 4096 && !['__proto__', 'prototype', 'constructor'].includes(k) && check(val))
+const projectOrder: Check = v => array(path, 500)(v) && new Set(v as string[]).size === (v as string[]).length
+const projectImportance: Check = v => record(oneOf(...PROJECT_IMPORTANCE), 500)(v) && Object.keys(v as object).every(path)
 const shape = (fields: Record<string, Check>, required: string[] = []): Check => v => plain(v) && required.every(k => Object.hasOwn(v, k)) && Object.entries(v).every(([k, val]) => Object.hasOwn(fields, k) && fields[k](val))
 const model = shape({ model: nullable(str(200)), effort: nullable(str(64)) })
 const hex: Check = v => typeof v === 'string' && /^#[\da-f]{6}([\da-f]{2})?$/i.test(v)
@@ -44,6 +47,7 @@ const settingsFields: Record<string, Check> = {
   roleOverrides: record(shape({ kind, args: str(8192), instructions: str(256 * 1024), model: str(200), effort: str(64) })),
   agentModels: record(model), agentBypass: record(bool), teamBypass: bool, agentPreviewHint: bool, appearance,
   leadOnly: bool, projectLeads: record(str(200, 1), 500),
+  projectOrder, projectImportance,
   remoteEnabled: bool, remotePort: number(1024, 65535), remotePublicUrl: str(2048), remoteBehindProxy: bool
 }
 /** Phone settings only. Never derive this list from the desktop schema. */
@@ -52,6 +56,7 @@ const remoteSettingsFields: Record<string, Check> = {
   terminalFontSize: number(10, 22), chatFontSize: number(12, 20),
   language: oneOf('system', 'en', 'ru', 'es', 'de', 'zh'),
   leadOnly: bool, projectLeads: record(str(200, 1), 500),
+  projectOrder, projectImportance,
   appearance: shape({
     theme: str(100, 1), accent: nullable(hex),
     background: shape({ kind: oneOf('none', 'gradient', 'image', 'video'), gradient: oneOf(...GRADIENTS.map(g => g.id)), path, blur: number(0, 40), dim: number(0, 90), fit: oneOf('cover', 'contain') }),

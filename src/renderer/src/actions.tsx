@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   Rows2,
+  RotateCcw,
   Square,
   SquareTerminal,
   Trash2,
@@ -20,13 +21,16 @@ import {
 } from 'lucide-react'
 import { AGENT_NAME_RE, toAgentName } from '@shared/agents'
 import type { PaneInfo, WorkspaceInfo } from '@shared/types'
-import { api, call } from './api'
+import { api, call, humanizeError, isRemote } from './api'
+import { supportsBypass } from '@shared/models'
+import type { RestartSelection } from '@shared/agentRestart'
 import { t } from './i18n'
 import type { MenuItem } from './components/Menu'
 import type { Thread, WorkspaceGroup } from './model'
 import { basename } from './model'
 import { getModel, guard, select, setViewMode, toast, togglePreview, updateSettings, useStore } from './store'
 import { agentName, projectKey, projectLead } from './leads'
+import { projectImportanceMenu } from './components/ProjectPreferences'
 
 const set = useStore.setState
 
@@ -112,6 +116,36 @@ export function closePane(th: Thread) {
       await call('pane.close', { pane_id: th.paneId })
     }
   })
+}
+
+export const restartLabel = (bypass: boolean | undefined) => bypass ? t('Restart with confirmations') : t('Restart without confirmations')
+
+export async function restartAgent(selection: RestartSelection) {
+  if (isRemote) return
+  await guard((async () => {
+    const plan = await api.planAgentRestart(selection)
+    const skipped = plan.skipped.map(a => `${a.name}: ${a.reason === 'already_bypass' ? t('Already without confirmations') : humanizeError(a.reason, a.reason)}`).join('\n')
+    if (!plan.agents.length) { toast('info', skipped || t('No agents to restart')); return }
+    const unknown = plan.agents.filter(a => !a.sessionId).map(a => a.name)
+    confirm({
+      title: selection.workspaceId ? t('Restart all project agents without confirmations') : restartLabel(!plan.bypass),
+      message: [
+        plan.bypass ? t('Without confirmations, agents can edit files and run commands with your permissions. Codex also disables its sandbox. Only use this for agents and projects you trust.') : t('Permission confirmations will be enabled again.'),
+        plan.agents.map(a => `${a.name} (${a.kind})`).join('\n'),
+        unknown.length ? t('Session unknown for {names}: a new conversation will start.', { names: unknown.join(', ') }) : t('The same conversation will continue in the same pane.'),
+        skipped ? `${t('Skipped agents (wait for working agents to finish, then try again):')}\n${skipped}` : ''
+      ].filter(Boolean).join('\n\n'),
+      confirm: t('Restart'),
+      danger: plan.bypass,
+      onConfirm: async () => {
+        const results = await api.restartAgents(plan.token)
+        const succeeded = results.filter(r => r.ok).length
+        if (succeeded) toast('success', t('Restarted agents: {n}', { n: succeeded }))
+        const failed = results.filter(r => !r.ok)
+        if (failed.length) toast('error', failed.map(r => `${r.name}: ${humanizeError(r.code, r.error)}`).join('\n'))
+      }
+    })
+  })())
 }
 
 export function closeTab(th: Thread) {
@@ -226,6 +260,7 @@ export function leadMenuItem(th: Thread, iconSize = 14): MenuItem | null {
 export function threadMenu(th: Thread): MenuItem[] {
   const items: MenuItem[] = []
   if (th.kind) items.push({ label: t('Rename agent…'), icon: <Pencil size={14} />, onClick: () => renameAgent(th) })
+  if (!isRemote && supportsBypass(th.kind)) items.push({ label: restartLabel(th.pane.bypass), icon: <RotateCcw size={14} />, onClick: () => void restartAgent({ paneId: th.paneId, bypass: !th.pane.bypass }) })
   const lead = leadMenuItem(th)
   if (lead) items.push(lead)
   items.push({ label: th.tabPaneCount > 1 ? t('Rename tab…') : t('Rename…'), icon: <Pencil size={14} />, onClick: () => renameTab(th) })
@@ -270,6 +305,9 @@ export function threadMenu(th: Thread): MenuItem[] {
 export function workspaceMenu(g: WorkspaceGroup): MenuItem[] {
   const ws = g.workspace
   return [
+    ...(!isRemote ? [{ label: t('Restart all project agents without confirmations'), icon: <RotateCcw size={14} />, onClick: () => void restartAgent({ workspaceId: ws.workspace_id, bypass: true }) }] : []),
+    ...projectImportanceMenu(g),
+    'separator',
     { label: t('New agent…'), icon: <Bot size={14} />, onClick: () => openNewAgent({ workspaceId: ws.workspace_id }) },
     { label: t('Start team…'), icon: <Users size={14} />, onClick: () => set({ dialog: { type: 'team', workspaceId: ws.workspace_id } }) },
     {

@@ -101,7 +101,7 @@ async function envBundle(t) {
     b.onResolve({ filter: /^node:child_process$/ }, () => ({ path: 'child', namespace: 'fixture' }))
     b.onResolve({ filter: /^\.\/cli$/ }, args => args.importer.endsWith('/herdr/service.ts') ? { path: 'cli', namespace: 'fixture' } : undefined)
     b.onResolve({ filter: /^\.\/client$/ }, args => args.importer.endsWith('/herdr/service.ts') ? { path: 'client', namespace: 'fixture' } : undefined)
-    b.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ loader: 'js', contents: args.path === 'child' ? 'export const spawn = (...args) => globalThis.__droverTestSpawn(...args)' : args.path === 'cli' ? `
+    b.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ loader: 'js', contents: args.path === 'child' ? 'export const spawn = (...args) => globalThis.__droverTestSpawn(...args); export const execFile = () => { throw new Error("Test must not execute a real CLI") }' : args.path === 'cli' ? `
       export const findHerdr = env => env.PATH.includes('fixture-installed') ? '/fixture/herdr' : null
       export const listSessions = async () => []; export const defaultSocketPath = () => '/fixture/socket'
       export const startServer = () => { throw new Error('Test must not start a real server') }

@@ -113,7 +113,7 @@ interface AgentProbe {
  * same way `herdr agent start` does.
  */
 export async function waitUntilInteractive(
-  service: HerdrService,
+  service: Pick<HerdrService, 'request'>,
   paneId: string,
   timeoutMs: number,
   intervalMs = 150
@@ -128,7 +128,8 @@ export async function waitUntilInteractive(
         // No longer managed: either still running as a detected agent or gone.
         if (!a.launch_pending) return a.agent ? 'ready' : 'exited'
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof HerdrApiError && (e.code === 'restart_session_changed' || e.code === 'session_changed')) throw e
       /* not resolvable yet */
     }
     if (Date.now() >= deadline) return 'pending'
@@ -172,7 +173,35 @@ function deliverWhenReady(service: HerdrService, paneId: string, kind: string | 
   })().catch(() => undefined)
 }
 
+/** Pin retries, readiness probes and deferred prompts to the original connection. */
+function agentConnection(service: HerdrService): HerdrService {
+  const client = service.client, generation = service.connectionGeneration, session = service.sessionName
+  const check = () => {
+    if (client !== service.client || generation !== service.connectionGeneration || session !== service.sessionName) {
+      throw new HerdrApiError('session_changed', 'The herdr connection changed during agent launch')
+    }
+  }
+  const request: HerdrService['request'] = async (method, params, timeout) => {
+    check()
+    try {
+      const result = await service.request(method, params, timeout)
+      check()
+      return result as never
+    } catch (error) { check(); throw error }
+  }
+  return new Proxy(service, { get(target, property) {
+    if (property === 'request') return request
+    if (property === 'snapshot') check()
+    return Reflect.get(target, property, target)
+  } })
+}
+
 export async function createAgent(service: HerdrService, req: NewAgentRequest): Promise<NewAgentResult> {
+  try { return await createAgentConnected(agentConnection(service), req) }
+  catch (error) { const result = errResult(error); return { ok: false, code: result.code, error: result.error } }
+}
+
+async function createAgentConnected(service: HerdrService, req: NewAgentRequest): Promise<NewAgentResult> {
   let paneId: string
   let cwd = req.folder ?? undefined
   try {

@@ -1,3 +1,4 @@
+import { buildTranscriptWorker } from './_transcript-worker.mjs'
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {build} from 'esbuild'
@@ -11,7 +12,8 @@ import {chromium} from 'playwright-core'
 
 const dir=mkdtempSync(join(tmpdir(),'drover-data-tests-'))
 await build({stdin:{contents:`export * from './src/renderer/src/model';export * from './src/renderer/src/structural-share';export * from './src/main/transcripts/revisions';export * from './src/main/transcripts/manager';export * from './src/main/remote/rpc'`,resolveDir:resolve('.'),loader:'ts'},bundle:true,platform:'node',format:'cjs',outfile:join(dir,'test.cjs'),alias:{'@shared':resolve('src/shared')},logLevel:'silent'})
-const m=createRequire(import.meta.url)(join(dir,'test.cjs'));rmSync(dir,{recursive:true})
+await buildTranscriptWorker(dir)
+const m=createRequire(import.meta.url)(join(dir,'test.cjs'));process.on('exit',()=>rmSync(dir,{recursive:true,force:true}))
 const snapshot=()=>({version:'fixture',protocol:1,workspaces:[{workspace_id:'w1',number:1,label:'Project'},{workspace_id:'w2',number:2,label:'Other'}],tabs:[{workspace_id:'w1',tab_id:'t1',number:1},{workspace_id:'w1',tab_id:'t2',number:2},{workspace_id:'w2',tab_id:'t3',number:3}],panes:[1,2,3].map(n=>({pane_id:'p'+n,workspace_id:n===3?'w2':'w1',tab_id:'t'+n,agent:'claude',agent_status:'idle',revision:1,cwd:'/fixture',tokens:{preview:'index.html'}})),agents:[],layouts:[]})
 const update=(revision,reset,items,stream='s')=>({paneId:'p1',stream,revision,reset,meta:null,items:items.map(id=>({id,kind:'user',text:id}))})
 

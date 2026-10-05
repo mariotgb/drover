@@ -22,6 +22,7 @@ import { resolveLang, setLanguage, t } from './i18n'
 import { applyAppearance } from './appearance'
 import { displayTarget, isLocalTarget, previewTarget } from './preview/target'
 import { attentionSort, buildModel, type Thread, type ThreadModel } from './model'
+import { orderedProjects } from '@shared/projects'
 
 export interface Attachment {
   id: string
@@ -79,6 +80,7 @@ interface State {
   connection: ConnectionState
   snapshot: HerdrSnapshot | null
   home: string
+  platform: string
   appVersion: string
   kinds: AgentKindInfo[]
   selectedPaneId: string | null
@@ -123,6 +125,7 @@ export const useStore = create<State>(() => ({
   connection: { status: 'connecting', session: 'default' },
   snapshot: null,
   home: '',
+  platform: '',
   appVersion: '',
   kinds: [],
   selectedPaneId: null,
@@ -172,9 +175,14 @@ function saveJson(key: string, value: unknown) {
 // ---------------------------------------------------------------------------
 // derived model (memoized on snapshot identity)
 
-let modelCache: { snap: HerdrSnapshot | null; model: ReturnType<typeof buildModel> } | null = null
-function modelFor(snap: HerdrSnapshot | null) {
-  if (!modelCache || modelCache.snap !== snap) modelCache = { snap, model: buildModel(snap, modelCache?.model) }
+let modelCache: { snap: HerdrSnapshot | null; raw: ThreadModel; model: ThreadModel; order: AppSettings['projectOrder']; importance: AppSettings['projectImportance'] } | null = null
+function modelFor(snap: HerdrSnapshot | null, settings = get().settings) {
+  if (!modelCache || modelCache.snap !== snap || modelCache.order !== settings.projectOrder || modelCache.importance !== settings.projectImportance) {
+    const raw = modelCache?.snap === snap ? modelCache.raw : buildModel(snap, modelCache?.raw)
+    const groups = orderedProjects(raw.groups, settings)
+    const model = groups === raw.groups ? raw : { ...raw, groups, threads: groups.flatMap(group => group.threads) }
+    modelCache = { snap, raw, model, order: settings.projectOrder, importance: settings.projectImportance }
+  }
   return modelCache.model
 }
 export function getModel() { return modelFor(get().snapshot) }
@@ -224,8 +232,10 @@ export async function guard<T>(p: Promise<T>, success?: string): Promise<T | und
 
 // Our own writes answer with the saved settings; their echoes must not undo a newer optimistic value.
 let settingsWrites = 0
+let settingsWriteVersion = 0
 
 export async function updateSettings(patch: Partial<AppSettings>) {
+  const version = ++settingsWriteVersion
   const previous = get().settings
   settingsWrites++
   try {
@@ -237,9 +247,13 @@ export async function updateSettings(patch: Partial<AppSettings>) {
     set({ settings: optimistic })
     applyAppearance(optimistic)
     const next = await api.setSettings(patch)
+    // IPC responses can arrive in reverse order. Only the latest write may
+    // replace its optimistic state, including language and appearance.
+    if (version !== settingsWriteVersion) return
     set({ settings: next })
     applyAppearance(next)
   } catch (error) {
+    if (version !== settingsWriteVersion) return
     set({ settings: previous })
     setLanguage(resolveLang(previous.language))
     applyAppearance(previous)
@@ -599,6 +613,7 @@ export async function bootstrap() {
     connection: init.connection,
     snapshot: init.snapshot,
     home: init.home,
+    platform: init.platform,
     appVersion: init.appVersion,
     selectedPaneId: loadJson<string | null>('selected', null),
     ready: true

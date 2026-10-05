@@ -9,6 +9,7 @@ import {
   PanelBottomOpen,
   PanelLeftOpen,
   Rows2,
+  ShieldOff,
   SquareTerminal
 } from 'lucide-react'
 import { agentKindDef } from '@shared/agents'
@@ -18,6 +19,7 @@ import { getModel, setViewMode, toggleDrawer, togglePreview, useStore } from '..
 import { t } from '../i18n'
 import { openPreviewFor, serversFor } from './PreviewPanel'
 import { ChatView } from './ChatView'
+import { SelectionTools } from './SelectionTools'
 import { Composer } from './Composer'
 import { openMenuAt } from './Menu'
 import { AgentAvatar, IconButton, StatusDot } from './primitives'
@@ -39,6 +41,7 @@ export function ThreadView({ thread }: { thread: Thread }) {
         {mode === 'chat' ? (
           <>
             <ChatView thread={thread} />
+            <SelectionTools paneId={thread.paneId} />
             {!mobile && drawerOpen && <TerminalDrawer thread={thread} />}
             {mobile && thread.status === 'blocked' && <QuickReplies thread={thread} />}
             <Composer thread={thread} />
@@ -75,6 +78,7 @@ function ThreadHeader({ thread, mode, supportsChat, drawerOpen }: { thread: Thre
         <div className="thread-header-title">
           <span className="title">{thread.name}</span>
           {def && <span className="kind-badge">{def.label}</span>}
+          {thread.pane.bypass && <span className="kind-badge" title={t('Skip permission prompts')}><ShieldOff size={12} /> {t('Without confirmations')}</span>}
           {thread.kind && thread.status !== 'unknown' && (
             <span className={clsx('status-pill', `st-${thread.status}`)}>
               <StatusDot status={thread.status} size={7} />

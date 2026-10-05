@@ -1,0 +1,41 @@
+/* Selection tools in chat (SelectionTools.tsx). Mac: a compact toolbar above the selection;
+ * phone: a bar docked above the composer (the iOS selection menu stays above the text). */
+
+.sel-anchor { display: contents; }
+.sel-tools {
+  position: fixed; z-index: 60; display: flex; align-items: center; gap: 2px; padding: 3px;
+  transform: translate(-50%, -100%); border-radius: 10px;
+  background: var(--bg-elev); color: var(--text);
+  box-shadow: 0 0 0 .5px var(--border-strong), 0 8px 24px rgba(0, 0, 0, .16), 0 2px 6px rgba(0, 0, 0, .08);
+  animation: sel-in .12s ease-out;
+}
+.sel-tools.below { transform: translate(-50%, 0); }
+.sel-tools::after {
+  content: ''; position: absolute; left: var(--sel-arrow, 50%); bottom: -5px; width: 9px; height: 9px; transform: translateX(-50%) rotate(45deg);
+  background: var(--bg-elev); box-shadow: .5px .5px 0 var(--border-strong);
+}
+.sel-tools.below::after { top: -5px; bottom: auto; box-shadow: -.5px -.5px 0 var(--border-strong); }
+.sel-tool {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+  border: 0; border-radius: 7px; background: none; color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 550; white-space: nowrap; cursor: pointer;
+}
+.sel-tool:hover { background: var(--bg-hover); color: var(--text); }
+.sel-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+.sel-tool + .sel-tool::before { content: ''; position: absolute; left: -1px; top: 7px; bottom: 7px; width: 1px; background: var(--border); }
+.sel-tool:first-child { color: var(--accent); }
+.sel-tool:first-child:hover { background: var(--accent-soft); color: var(--accent); }
+@keyframes sel-in { from { opacity: 0; translate: 0 3px; } }
+
+/* Phone: full-width bar above the composer, 44 px targets, icon over label. */
+.sel-tools-bar {
+  left: 8px; right: 8px; top: auto; transform: none; justify-content: space-around; gap: 0; padding: 4px;
+  border-radius: 16px; box-shadow: 0 0 0 .5px var(--border-strong), 0 10px 30px rgba(0, 0, 0, .22);
+  animation: sel-bar-in .2s cubic-bezier(.32, .72, 0, 1);
+}
+.sel-tools-bar::after { display: none; }
+.sel-tools-bar .sel-tool { flex: 1; flex-direction: column; gap: 2px; height: auto; min-height: 52px; padding: 6px 4px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+.sel-tools-bar .sel-tool + .sel-tool::before { top: 12px; bottom: 12px; }
+.sel-tools-bar .sel-tool:active { background: var(--bg-active); }
+@keyframes sel-bar-in { from { opacity: 0; translate: 0 12px; } }
+
+@media (prefers-reduced-motion: reduce) { .sel-tools, .sel-tools-bar { animation: none; } }

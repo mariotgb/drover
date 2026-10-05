@@ -5,6 +5,7 @@ import { agentKindDef } from '@shared/agents'
 import { choiceFor, modelArgs, supportsModels, type ModelChoice } from '@shared/models'
 import { api, errorText, humanizeError, isRemote } from '../api'
 import { defaultBossProjects, mergeBossDeliveries } from '../boss'
+import { switchBossSession } from '../boss-session'
 import { t } from '../i18n'
 import { shortPath } from '../model'
 import { BOSS_HQ_INSTRUCTIONS, bossRole } from '../roles'
@@ -89,6 +90,7 @@ export function BossSettingsPane({ dialog = false, onBusy }: { dialog?: boolean;
   const [busy, setBusy] = useState<'save' | 'open' | 'pick' | 'check' | null>(null)
   const [dirty, setDirty] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [switchTarget, setSwitchTarget] = useState<string | null>(null)
   useEffect(() => { onBusy?.(!!busy) }, [busy, onBusy])
   useEffect(() => {
     if (pickedKind.current) return
@@ -116,11 +118,19 @@ export function BossSettingsPane({ dialog = false, onBusy }: { dialog?: boolean;
     } catch (e) { data.setError(errorText(e)) }
     finally { setBusy(null) }
   }
-  const open = async () => {
-    if (busy || missing || !kind || !data.settings || dirty) return
+  const needsSwitch = switchTarget ?? (data.roster?.needsSessionSwitch ? data.roster.session : null)
+  const open = async (confirmedSession?: string) => {
+    if (busy || !data.settings || (!confirmedSession && (missing || !kind || dirty))) return
     setBusy('open'); data.setError(null); setNotice(null)
     try {
-      const result = await api.openBoss({ kind, folder, args: modelArgs(kind, choiceFor(kind, modelChoice, catalog)), prompt: bossRole(kind).instructions })
+      let roster = data.roster
+      if (confirmedSession) {
+        roster = await switchBossSession(confirmedSession, api, useStore)
+        data.setRoster(roster); setSwitchTarget(null)
+      }
+      const selectedKind = roster?.boss?.kind ?? kind ?? defaultKind
+      const result = await api.openBoss({ kind: selectedKind, folder, args: modelArgs(selectedKind, choiceFor(selectedKind, modelChoice, catalog)), prompt: bossRole(selectedKind).instructions })
+      if (result.needsSessionSwitch && result.session) { setSwitchTarget(result.session); return }
       if (!result.ok || !result.paneId) { data.setError(humanizeError(result.code, result.error)); return }
       select(result.paneId)
       if (result.needsAttention) {
@@ -130,6 +140,15 @@ export function BossSettingsPane({ dialog = false, onBusy }: { dialog?: boolean;
     } catch (e) { data.setError(errorText(e)) }
     finally { setBusy(null) }
   }
+  if (needsSwitch) return <div className="form boss-form">
+    <p>{t('The Main boss already exists in herdr session {session}.', { session: needsSwitch })}</p>
+    <p className="field-hint">{t('Switch to that session and open the existing boss? Your current session and its agents will keep running.')}</p>
+    {data.error && <div className="form-error" role="alert">{data.error}</div>}
+    <div className="form-actions">
+      <button type="button" className="btn" disabled={!!busy} onClick={() => { setSwitchTarget(null); useStore.setState({ dialog: null }) }}>{t('Cancel')}</button>
+      <button type="button" className="btn btn-primary" disabled={!!busy || data.loading || !data.settings} onClick={() => void open(needsSwitch)}>{busy === 'open' && <Spinner size={13} />}{busy === 'open' ? t('Connecting to boss session…') : t('Switch session and open boss')}</button>
+    </div>
+  </div>
   return <div className="form boss-form">
     <p className="setting-hint block">{t('A real agent in HQ coordinates project leads and keeps its own task board. It waits for your assignment after startup.')}</p>
     <div className="field">

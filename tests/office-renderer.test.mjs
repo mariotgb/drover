@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 const dir = mkdtempSync(join(tmpdir(), 'drover-office-v21-'))
-await build({ stdin: { contents: ['layout', 'camera', 'scheduler', 'effects', 'engine', 'scene', 'labels', 'navigation', 'routes', 'text', 'generated-art'].map(n => `export * from './src/renderer/src/office/${n}'`).join('\n') + "\nexport { OfficeArt as AtlasArt, animationFrame } from './src/renderer/src/office/art'\nexport { setLanguage } from './src/renderer/src/i18n'", resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'renderer.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent', plugins: [{ name: 'test-art', setup(b) {
+await build({ stdin: { contents: ['layout', 'camera', 'scheduler', 'effects', 'engine', 'scene', 'labels', 'navigation', 'routes', 'text', 'generated-art', 'visibility', 'view-state', 'reconcile'].map(n => `export * from './src/renderer/src/office/${n}'`).join('\n') + "\nexport { OfficeArt as AtlasArt, animationFrame } from './src/renderer/src/office/art'\nexport { setLanguage } from './src/renderer/src/i18n'", resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'renderer.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent', plugins: [{ name: 'test-art', setup(b) {
   b.onLoad({filter:/office\/art\.ts$/}, args => {
     let source=readFileSync(args.path,'utf8');const manifests={},urls={}
     for(const theme of ['cozy','neon']) {
@@ -19,6 +19,7 @@ await build({ stdin: { contents: ['layout', 'camera', 'scheduler', 'effects', 'e
   theme = 'cozy'; async load() {}; async setTheme(theme) { this.theme = theme; globalThis.officeCalls.push({ id: 'theme', theme }) }
   bake(layout) { globalThis.officeCalls.push({id:'bake'}); return {width:layout.bounds.width,height:layout.bounds.height} }
   paintFront() {}
+  board(ctx,lot,counts) { globalThis.officeCalls.push({id:'board',departmentId:lot.departmentId,counts:[...counts]}) }
   paint(ctx,id,state,anchor,time) { globalThis.officeCalls.push({id,state,anchor,time}); return true }
   overlay(ctx,id,data) { globalThis.officeCalls.push({id,...data}) }
   hitRect(id,state,p) { return {x:p.x-12,y:p.y-42,width:24,height:44} }
@@ -82,6 +83,46 @@ test('camera uses integer zoom even when campus cannot fit; CSS-pixel hit and dr
   for(const w of [1,300,2000]) assert.ok([1,2,3].includes(m.fitCamera({x:-32,y:-500,width:1600,height:1000},w,900).zoom))
   const targets=[{paneId:'rear',rect:{x:40,y:30,width:32,height:48},y:40},{paneId:'front',rect:{x:40,y:30,width:32,height:48},y:50}]; assert.equal(m.hitTest(targets,m.worldToScreen({x:50,y:40},c),c),'front')
   const g=new m.DragGesture();g.begin({x:0,y:0});assert.equal(g.end({x:2,y:1}),true);g.begin({x:0,y:0});assert.equal(g.end({x:7,y:0}),false)
+})
+test('single hall excludes every other room, keeps seats and fits a small viewport', () => {
+  const layout = new m.OfficeLayout().update(departments(4), occupants(30,4,true), false, 0, 2)
+  const hall = m.singleHallLayout(layout, 'd2')
+  assert.deepEqual(hall.lots.map(l => l.departmentId), ['d2'])
+  assert.equal(hall.server, null)
+  assert.ok(hall.seats.every(s => s.departmentId === 'd2'))
+  for (const seat of hall.seats) assert.deepEqual(seat, layout.seats.find(s => s.paneId === seat.paneId))
+  assert.equal(m.singleHallLayout(layout, null), layout)
+  const camera = m.fitHallCamera(hall.bounds, 240, 350)
+  assert.ok(hall.bounds.width * camera.zoom <= 240)
+  assert.ok(hall.bounds.height * camera.zoom <= 350)
+  assert.deepEqual([m.adjacentHall(['d3','d1','d2'], 'd1', 1), m.adjacentHall(['d3','d1','d2'], 'd3', -1)], ['d2','d2'])
+  assert.equal(m.hallSwipe({x:150,y:0},{x:50,y:5},400),1)
+  assert.equal(m.hallSwipe({x:50,y:0},{x:150,y:5},400),-1)
+  assert.equal(m.hallSwipe({x:50,y:0},{x:150,y:80},400),0)
+  assert.equal(m.hallSwipe({x:50,y:0},{x:150,y:5},1000),0)
+})
+test('engine single hall paints and targets only selected agents and restores all halls', t => {
+  const h=host(t),s=office(8);s.departments=departments(2);s.agents.forEach((a,i)=>a.departmentId=`d${i%2}`)
+  const e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}})
+  e.setVisibility(true,true);e.update({state:s,animations:[]});e.setHall('d1');h.tick(0)
+  assert.equal(e.mapState().rooms.length,1)
+  assert.ok(e.targets.length)
+  assert.ok(e.targets.every(target=>s.agents.find(a=>a.paneId===target.paneId).departmentId==='d1'))
+  assert.equal(globalThis.officeCalls.filter(c=>c.id==='plaque').length,4)
+  assert.ok(!globalThis.officeCalls.some(c=>c.id==='agent.user'||c.id==='object.reception'))
+  e.setHall(null);h.tick(40)
+  assert.equal(e.mapState().rooms.length,4)
+  e.dispose()
+})
+test('task count changes redraw only board data without rebaking world, light or front layers', t => {
+  const h=host(t),e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}})
+  e.setVisibility(true,true);e.update({state:office(),animations:[]});h.tick(0)
+  const world=e.world,layout=e.layout,bakes=globalThis.officeCalls.filter(c=>c.id==='bake').length
+  for(let i=1;i<=20;i++) { e.setBoardCounts(new Map([['d0',[i,2,3]]]));h.tick(i*40) }
+  assert.equal(e.world,world);assert.equal(e.layout,layout)
+  assert.equal(globalThis.officeCalls.filter(c=>c.id==='bake').length,bakes)
+  assert.deepEqual(globalThis.officeCalls.filter(c=>c.id==='board').at(-1).counts,[20,2,3])
+  e.dispose()
 })
 test('carrier phases preserve throw, arc, catch, attempt fall and TTL; history prompt never confirms', () => {
   const q=new m.EnvelopeQueue(),now=10000; q.ingest([animation('one',now)],now,true,()=>300)
@@ -204,4 +245,52 @@ test('SSH attempts stay dim/dashed and never energize equipment or move packets;
   now+=4001;globalThis.officeCalls=[];h.tick(120)
   assert.equal(officeCalls.filter(c=>c.id==='object.machine'&&c.state==='active').length,0)
   e.dispose()
+})
+
+test('link bounds include offscreen endpoints crossing the viewport and the lifted arc', () => {
+  const bounds = m.arcBounds({x:-100,y:100},{x:200,y:100})
+  assert.ok(bounds.x < 0 && bounds.x + bounds.width > 100)
+  assert.ok(bounds.y < 60 && bounds.y + bounds.height > 100)
+  assert.equal(m.pathLength([{x:0,y:0},{x:3,y:4},{x:3,y:10}]),11)
+})
+test('offscreen links do not build paths or paint dots, visible cached paths survive status updates', t => {
+  const h=host(t),s=office(8),e=new m.OfficeEngine(h.canvas(),{onOpen(){},onHover(){}})
+  globalThis.Path2D=class {rect(){}}
+  const now=Date.now();s.links=[{id:'link',from:'a0',to:'a1',kind:'prompt',style:'agent',count:8,lastAt:now,weight:8}]
+  e.setVisibility(true,true);e.update({state:s,animations:[]});e.camera={x:100000,y:100000,zoom:2};h.tick(0)
+  assert.equal(e.linkPaths.size,0)
+  assert.ok(!globalThis.officeCalls.some(c=>c.id==='effect.link.dot'))
+  e.camera={x:0,y:600,zoom:2};h.tick(40)
+  assert.equal(e.linkPaths.size,1);const paths=[...e.linkPaths.values()][0]
+  e.update({state:{...s,agents:s.agents.map(a=>({...a,status:'idle'}))},animations:[]});h.tick(80)
+  assert.equal([...e.linkPaths.values()][0],paths)
+  e.dispose();delete globalThis.Path2D
+})
+test('HUD ignores decay/history/status timestamps but reacts to visible names, status and membership', () => {
+  const s=office(50),view=m.officeViewState(null,s)
+  const links={...s,links:[{weight:1}],recentEvents:[{id:'history'}],agents:s.agents.map(a=>({...a,lastStatusAt:123}))}
+  assert.equal(m.officeViewState(view,links),view)
+  const changed={...s,agents:s.agents.map((a,i)=>i? a:{...a,status:'blocked'})}
+  assert.notEqual(m.officeViewState(view,changed),view)
+  assert.equal(m.officeViewState(view,changed).departments,view.departments)
+  assert.equal(m.officeViewState(view,changed).agents[1],view.agents[1])
+  const events=Array.from({length:1000},(_,i)=>({id:String(i),from:i%2?'a0':'outside',to:null,kind:'prompt',ts:i,summary:''}))
+  assert.deepEqual(m.visibleOfficeEvents({...s,recentEvents:events},'d0').map(e=>e.id),['999','997','995','993','991','989','987','985'])
+})
+
+test('office deltas preserve untouched sections, enforce versions/generation and prune bounded events', () => {
+  const state={...office(),version:7},changed={...state.agents[0],status:'blocked'}
+  const delta={session:state.session,generation:state.generation,baseVersion:7,version:8,agents:[changed],removedAgents:[],links:[],removedLinks:[],events:[],removedEvents:[]}
+  const next=m.reconcileOffice(state,{delta,animations:[]})
+  assert.equal(next.version,8);assert.equal(next.agents[0],changed);assert.equal(next.agents[1],state.agents[1])
+  for(const key of ['links','recentEvents','departments','seats','externalNodes','statusCounts'])assert.equal(next[key],state[key])
+  assert.equal(m.reconcileOffice(next,{delta,animations:[]}),null)
+  assert.equal(m.reconcileOffice(state,{delta:{...delta,generation:'foreign'},animations:[]}),null)
+  assert.equal(m.reconcileOffice(null,{delta,animations:[]}),null)
+  const removed=m.reconcileOffice(next,{delta:{...delta,baseVersion:8,version:9,agents:[],removedAgents:[changed.id]},animations:[]})
+  assert.ok(!removed.agents.some(a=>a.id===changed.id))
+  const many=Array.from({length:1001},(_,i)=>({id:String(i),ts:i,from:null,to:null,kind:'input_observed',summary:''}))
+  const events=m.reconcileOffice(state,{delta:{...delta,events:many},animations:[]})
+  assert.equal(events.recentEvents.length,1000);assert.equal(events.recentEvents[0].id,'1')
+  const hud=m.officeViewState(null,state);assert.equal(m.officeViewState(hud,{...state,version:8}),hud)
 })

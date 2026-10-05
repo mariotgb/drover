@@ -11,8 +11,10 @@ A desktop app for [herdr](https://herdr.dev) in the spirit of the Claude Code an
 ## Features
 
 - **Chat instead of a terminal.** Claude Code and Codex conversations are rendered from their own session files: markdown, highlighted code, grouped tool calls ("Ran 5 commands, edited 2 files"), edit diffs, plans/todos, "Worked for 2m 31s".
+- **Work with selected text.** Select a passage in chat to quote it, ask for clarification or a fuller explanation, or copy it. The first three actions prepare a draft for you to review and send; they work on desktop and phone.
 - **Screenshots.** ⌘V in the composer, drag and drop, or the paperclip. Images are saved to `~/.drover/attachments/` and handed to the agent as attachments (`[Image #1]` in Claude Code and Codex). HEIC/TIFF photos are converted to JPEG automatically.
 - **All herdr agents.** Sidebar: projects (workspaces) → tabs → agents with *Working / Needs input / Done* statuses. "Needs attention first" sorting, ⌘K search.
+- **Project order and importance.** Drag projects in the sidebar, or use Edit order on your phone. Mark a project as Primary ★, Important, Normal or Background: visual markers appear in the sidebar, phone drawer and office. Important projects come first by default; manual order takes precedence. Preferences are saved by folder and shared across the sidebar, command palette, phone and office halls.
 - **New agent** (⌘N): project or folder; Claude Code, Codex, any agent herdr supports, or a plain terminal; new tab or split; a separate git worktree; launch arguments; a first message.
 - **A model for every agent.** Pick the model and reasoning level when you start an agent (New agent, a team, or a role — `model:`/`effort:` in the role file), and switch them later from the chat: the model chip under the composer opens a menu. Drover switches through the agent's own `/model` menu with "this session only", so your defaults in Claude Code and Codex stay as they are. Codex's model list comes from its local cache.
 - **Roles.** Pick a role in the New agent dialog (orchestrator, frontend, backend, reviewer, QA or your own) and the agent gets its instructions as the first message. Drover waits until the agent is actually ready for input and checks that the message was picked up; if the agent asks something on startup (folder trust, for example), the instructions go out as soon as you answer. Project roles come from `.ai/roles/*.md` or `.herdr/roles/*.md`; your own roles and tweaks live in Settings → Roles.
@@ -20,14 +22,18 @@ A desktop app for [herdr](https://herdr.dev) in the spirit of the Claude Code an
 - **Task board** per project (the "Tasks" row under a project in the sidebar). The orchestrator keeps the team's tasks in `.drover/tasks.json` — who does what, and whether it is waiting, in progress, in review, done or blocked — and Drover shows them as columns, next to what every agent is doing right now (its latest request and its own plan). Add tasks right on the board: they go to the orchestrator, which splits them up and hands them out in parallel. Drover keeps `.drover/` out of git through `.git/info/exclude`.
 - **One orchestrator is enough** for any number of tasks: it gives each free agent its own task in parallel (`herdr agent prompt … --wait` running in the background) and reads the answers as they finish.
 - **Message several agents** at once — one broadcast to the agents you pick.
+- **One Chief across herdr sessions.** The Main boss coordinates project leads and keeps its identity and saved conversation after a restart. If it belongs to another herdr session, Drover asks before switching there.
+- **Shared office.** See the team in themed project halls, or focus on one hall. Rendering and transcript processing keep the view more responsive as the team grows.
 - **Site preview** (⌘⇧P): a local site or HTML file opens on the right. It starts empty: open an HTML file (button, drag and drop, or a path in the address bar), one of the project's dev servers (detected automatically) or a recent page. Local pages that agents hand over open by themselves; links to the internet only show a notification with an Open button. Pick mode (⌘⇧C) highlights elements under the cursor; a click sends the element to the composer — with its selector, React component and source file (when available), HTML, styles and a screenshot of the element. Shift-click picks several. Viewport sizes: full / 1280 / 768 / 390.
 - **Agents open the preview themselves:** `herdr pane report-metadata "$HERDR_PANE_ID" --source drover --token preview=<localhost URL or HTML path relative to the agent's folder>` (herdr keeps 80 characters of a token) — a hint about this is added to role instructions (can be turned off in Settings → Roles).
 - **Skip permission prompts.** New agent and Start team have a "Skip permission prompts (bypass)" switch: Claude Code starts with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox`. Use it only in projects you trust; the choice is remembered.
+- **Change permission mode for existing agents.** Restart a Claude Code or Codex agent, or a project's agents, without permission prompts from its menu. Drover resumes the conversation when its saved session is available; a restart plan shows which agents will be affected.
 - **When an agent waits for you** (a permission or a question) — an amber banner with `1 2 3 ↑ ↓ Enter Esc` buttons and a live terminal below.
 - **Terminal.** A ⌘J panel under the chat or full-screen (⌘⇧T) — the real terminal of the herdr pane (xterm.js, WebGL) with input, scrollback and image paste.
 - **Usage limits** — from local files only, no tokens, no API requests. Codex: windows from its session files. Claude Code: the 5-hour and weekly windows via the Claude Code status line (turned on in Settings). A mini gauge in the sidebar, details on click, a chip in the composer.
 - **macOS notifications** when an agent finishes or needs input, plus a Dock badge.
 - **Managing herdr:** rename/close agents, tabs, panes and projects, splits, zoom, moving a pane to its own tab, herdr sessions, starting the server, installing integrations, plugins.
+- **Recovery and diagnostics.** A crashing second Drover instance leaves herdr running. Launches and shutdowns are logged, and the next launch reports an unexpected exit. New Codex launches use `--no-daemon` when supported so their saved sessions can be restored after restarting herdr. On Mac, a Codex integration warning offers a service restart plan and integration reinstall; both require your click, and restarting the shared service can affect other Codex clients.
 - **Languages:** English, Русский, Español, Deutsch, 中文 (Settings → General → Language; follows the system by default).
 
 ### Appearance (Settings → Appearance)
@@ -110,7 +116,7 @@ The login-shell environment is resolved at startup, so the app launched from the
 
 - The chat view is for Claude Code and Codex; other agents are shown as terminals.
 - The preview detects the component and source file for React in dev mode; for other frameworks it sends the selector, HTML, styles and a screenshot.
-- Panes of one tab are shown as separate threads, not as a grid; drag-and-drop sorting of tabs/projects isn't done yet.
+- Panes of one tab are shown as separate threads, not as a grid; drag-and-drop sorting of tabs isn't done yet.
 - Remote herdr machines (`--remote`, `machine`) are not supported.
 
 ## License

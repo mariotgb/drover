@@ -169,9 +169,14 @@ export class OfficeArt {
     const canvas = this.ready ? this.fronts.get(layout) : this.generated.front(layout)
     if (canvas) ctx.drawImage(canvas, layout.bounds.x, layout.bounds.y)
   }
-  bake(layout: Layout, names: Map<string, string>, time: number, boards = new Map<string, [number, number, number]>()) {
+  /** Task counts are dynamic data, independent of static world lighting. */
+  board(ctx: CanvasRenderingContext2D, lot: Point, counts: [number, number, number]) {
+    if (this.ready) this.text(ctx, counts.join('/'), lot.x + 28, lot.y + 22, 'ink')
+    else this.generated.board(ctx, lot, counts)
+  }
+  bake(layout: Layout, names: Map<string, string>, time: number, boards = new Map<string, [number, number, number]>(), importance = new Map<string, import('@shared/projects').ProjectImportance>()) {
     if (!this.ready) return this.generated.bake(layout, names, time, boards)
-    this.fronts.set(layout, atlasScene(this, layout, names, time, boards, true))
-    return atlasScene(this, layout, names, time, boards)
+    this.fronts.set(layout, atlasScene(this, layout, names, time, boards, true, importance))
+    return atlasScene(this, layout, names, time, boards, false, importance)
   }
 }

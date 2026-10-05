@@ -617,3 +617,214 @@ test('queued assignments are bound to the boss incarnation and cannot be sent af
   assert.equal(f.events.at(-1).code, 'boss_changed')
   assert.equal(f.calls.filter(c => c[0] === 'agent.prompt').length, prompts)
 })
+
+function reloadBoss(t, f, runtime = {}) {
+  f.boss.dispose()
+  const store = m.BossSettingsStore.at(f.root, f.root)
+  const boss = new m.BossService(f.svc, store, () => f.choices, d => f.events.push(d), (...args) => f.accepted.push(args),
+    { instructions: 'TEST HQ INSTRUCTIONS', version: '0.7.2', executable: process.execPath, kindInstalled: () => true, ...runtime })
+  t.after(() => boss.dispose())
+  return { boss, store }
+}
+
+test('boss binding survives app restart and reopens the same agent despite a different kind/folder request', async t => {
+  const f = await fixture(t)
+  const opened = await f.boss.open({ kind: 'claude', args: ['--model', 'opus', '--effort', 'high'], prompt: 'ROLE' })
+  const { boss, store } = reloadBoss(t, f, { kindInstalled: () => false })
+  await boss.settings()
+  const again = await boss.open({ kind: 'codex', folder: join(f.root, 'another-hq'), prompt: 'SECOND_ROLE' })
+  assert.equal(again.paneId, opened.paneId)
+  assert.equal(again.folder, opened.folder)
+  assert.equal(again.existing, true)
+  assert.equal(f.calls.filter(c => c[0] === 'agent.start').length, 1)
+  assert.equal(f.calls.filter(c => c[0] === 'workspace.create').length, 1)
+  assert.deepEqual(store.binding('synthetic').args, ['--model', 'opus', '--effort', 'high'])
+  assert.equal((await stat(join(f.root, 'boss-binding.json'))).mode & 0o777, 0o600)
+  await assert.rejects(boss.setSettings({ hqFolder: join(f.root, 'another-hq') }), /already bound/)
+})
+
+test('boss without any native session restarts automatically in its saved shell pane once', async t => {
+  const f = await fixture(t)
+  const request = f.svc.request.bind(f.svc)
+  f.svc.request = async (method, params) => {
+    const result = await request(method, params)
+    if (method === 'agent.start') f.svc.snapshot.agents.find(a => a.pane_id === params.pane_id).agent_session = null
+    return result
+  }
+  const opened = await f.boss.open({ kind: 'codex', args: ['-m', 'gpt-6.1-sol'], prompt: 'ROLE' })
+  f.svc.snapshot.agents.find(a => a.pane_id === opened.paneId).agent_session = null
+  await f.boss.refresh()
+  const { boss } = reloadBoss(t, f)
+  const pane = f.svc.snapshot.panes.find(p => p.pane_id === opened.paneId)
+  pane.agent = null
+  f.svc.snapshot.agents = f.svc.snapshot.agents.filter(a => a.pane_id !== opened.paneId)
+  f.svc.connection = { status: 'connected' }
+  await boss.settings()
+  boss.onChange(); boss.onChange()
+  for (let i = 0; i < 100 && f.calls.filter(c => c[0] === 'agent.start').length < 2; i++) await new Promise(r => setTimeout(r, 10))
+  await boss.open({ kind: 'claude', prompt: 'IGNORED' })
+  const starts = f.calls.filter(c => c[0] === 'agent.start')
+  assert.equal(starts.length, 2)
+  assert.equal(starts[1][1].pane_id, opened.paneId)
+  assert.equal(starts[1][1].kind, 'codex')
+  assert.deepEqual(starts[1][1].args, ['-m', 'gpt-6.1-sol'])
+  assert.equal(f.calls.filter(c => c[0] === 'workspace.create').length, 1)
+})
+
+test('server restart resumes known boss session with saved model and latest model choice', async t => {
+  const f = await fixture(t)
+  const opened = await f.boss.open({ kind: 'claude', args: ['--model', 'sonnet', '--effort', 'high', '--dangerously-skip-permissions'], prompt: 'ROLE' })
+  await f.boss.recordChoice(opened.paneId, 'claude', { model: 'opus', effort: 'max' })
+  const { boss } = reloadBoss(t, f)
+  f.svc.snapshot.agents = f.svc.snapshot.agents.filter(a => a.pane_id !== opened.paneId)
+  f.svc.snapshot.panes.find(p => p.pane_id === opened.paneId).agent = null
+  await Promise.all([boss.open({ kind: 'codex', prompt: 'IGNORED' }), boss.open({ kind: 'gemini', prompt: 'IGNORED' })])
+  const starts = f.calls.filter(c => c[0] === 'agent.start')
+  assert.equal(starts.length, 2)
+  assert.deepEqual(starts[1][1].args, ['--dangerously-skip-permissions', '--model', 'opus', '--effort', 'max', '--resume', 'hq-session'])
+  assert.equal(starts[1][1].pane_id, opened.paneId)
+  assert.equal(f.calls.filter(c => c[0] === 'agent.prompt').length, 1, 'resume must not replay the role prompt')
+})
+
+test('partial boss model choices preserve the other actual option through restart and resume', async t => {
+  for (const kind of ['claude', 'codex']) {
+    const f = await fixture(t, { restoreAllowed: () => false })
+    const modelFlag = kind === 'claude' ? '--model' : '-m'
+    const effortArgs = value => kind === 'claude' ? ['--effort', value] : ['-c', `model_reasoning_effort=${value}`]
+    const permission = kind === 'claude' ? '--dangerously-skip-permissions' : '--dangerously-bypass-approvals-and-sandbox'
+    const opened = await f.boss.open({ kind, args: [modelFlag, 'original', ...effortArgs('high'), permission], prompt: 'ROLE' })
+    await f.boss.recordChoice(opened.paneId, kind, { model: null, effort: 'max' })
+    let reloaded = reloadBoss(t, f, { restoreAllowed: () => false })
+    await reloaded.boss.settings()
+    assert.deepEqual(reloaded.store.globalBinding().args, [modelFlag, 'original', permission, ...effortArgs('max')])
+    await reloaded.boss.recordChoice(opened.paneId, kind, { model: 'updated', effort: null })
+    const expected = [permission, ...effortArgs('max'), modelFlag, 'updated']
+    await reloaded.boss.recordChoice(opened.paneId, kind, { model: ' ', effort: null })
+    reloaded.boss.dispose()
+    reloaded = reloadBoss(t, f, { restoreAllowed: () => false })
+    await reloaded.boss.settings()
+    assert.deepEqual(reloaded.store.globalBinding().args, expected)
+    f.svc.snapshot.agents = f.svc.snapshot.agents.filter(a => a.pane_id !== opened.paneId)
+    f.svc.snapshot.panes.find(p => p.pane_id === opened.paneId).agent = null
+    assert.equal((await reloaded.boss.open({ kind, prompt: 'IGNORED' })).ok, true)
+    const started = f.calls.filter(c => c[0] === 'agent.start').at(-1)[1].args
+    assert.deepEqual(started, [...expected, ...m.bossResumeArgs(kind, 'hq-session')])
+  }
+})
+
+test('missing or occupied bound HQ pane never allocates a second boss', async t => {
+  const f = await fixture(t)
+  const opened = await f.boss.open({ kind: 'codex', prompt: 'ROLE' })
+  const { boss } = reloadBoss(t, f)
+  f.svc.snapshot.agents = f.svc.snapshot.agents.filter(a => a.pane_id !== opened.paneId)
+  const pane = f.svc.snapshot.panes.find(p => p.pane_id === opened.paneId)
+  pane.agent = 'claude'
+  assert.equal((await boss.open({ kind: 'codex', prompt: 'ROLE' })).ok, false)
+  f.svc.snapshot.panes = f.svc.snapshot.panes.filter(p => p.pane_id !== opened.paneId)
+  assert.equal((await boss.open({ kind: 'codex', prompt: 'ROLE' })).ok, false)
+  assert.equal(f.calls.filter(c => c[0] === 'agent.start').length, 1)
+  assert.equal(f.calls.filter(c => c[0] === 'workspace.create').length, 1)
+  f.svc.sessionName = 'another-session'
+  assert.equal((await boss.roster()).boss, null)
+})
+
+test('one global boss refuses creation in another session and roster uses only the owner session', async t => {
+  const f = await fixture(t)
+  const opened = await f.boss.open({ kind: 'codex', args: ['-m', 'gpt-6.1-sol'], prompt: 'ROLE' })
+  const ownerSnapshot = structuredClone(f.svc.snapshot)
+  const { boss, store } = reloadBoss(t, f, { snapshotForSession: async session => session === 'synthetic' ? ownerSnapshot : null })
+  f.svc.sessionName = 'foreign'
+  f.svc.snapshot = snapshot()
+  f.svc.snapshot.panes.forEach(p => { p.cwd = '/foreign/project' })
+  const roster = await boss.roster()
+  assert.equal(roster.session, 'synthetic')
+  assert.equal(roster.needsSessionSwitch, true)
+  assert.equal(roster.boss.paneId, opened.paneId)
+  assert.deepEqual(roster.projects.map(p => p.key), ['/project/a', '/project/b', '/project/c'])
+  const refused = await boss.open({ kind: 'claude', folder: join(f.root, 'second-hq'), prompt: 'IGNORED' })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.existing, true)
+  assert.equal(refused.needsSessionSwitch, true)
+  assert.equal(refused.session, 'synthetic')
+  assert.equal(refused.paneId, opened.paneId)
+  await assert.rejects(boss.broadcast({ text: 'Must not reach foreign panes' }), /boss session/)
+  assert.equal(f.calls.filter(c => c[0] === 'agent.start').length, 1)
+  assert.equal(f.calls.filter(c => c[0] === 'workspace.create').length, 1)
+  assert.equal(store.globalBinding().session, 'synthetic')
+  assert.equal(JSON.parse(await readFile(join(f.root, 'boss-binding.json'), 'utf8')).version, 2)
+  f.svc.sessionName = 'synthetic'
+  f.svc.snapshot = ownerSnapshot
+  const returned = await boss.open({ kind: 'claude', prompt: 'IGNORED' })
+  assert.equal(returned.ok, true)
+  assert.equal(returned.paneId, opened.paneId)
+})
+
+test('boss launch aborts retries, readiness and deferred prompts when owner connection changes', async t => {
+  for (const phase of ['retry', 'readiness', 'deferred']) {
+    const f = await fixture(t, { restoreAllowed: () => false })
+    const opened = await f.boss.open({ kind: 'claude', prompt: 'ROLE' })
+    const { boss, store } = reloadBoss(t, f, { restoreAllowed: () => false })
+    await boss.settings()
+    const binding = { ...store.globalBinding(), agentSession: undefined, prompt: 'DO_NOT_SEND_IN_FOREIGN' }
+    f.svc.snapshot.agents = f.svc.snapshot.agents.filter(a => a.pane_id !== opened.paneId)
+    f.svc.snapshot.panes.find(p => p.pane_id === opened.paneId).agent = null
+    f.svc.client = {}; f.svc.connectionGeneration = 1
+    const calls = [], original = f.svc.request.bind(f.svc)
+    let probes = 0
+    const switchSession = () => { f.svc.sessionName = 'foreign'; f.svc.client = {}; f.svc.connectionGeneration++ }
+    f.svc.request = async (method, params) => {
+      calls.push({ session: f.svc.sessionName, method })
+      if (method === 'agent.start' && phase === 'retry') {
+        switchSession(); throw new m.HerdrApiError('agent_pane_busy', 'busy')
+      }
+      if (method === 'agent.get') {
+        if (phase === 'readiness' || (phase === 'deferred' && ++probes > 1)) switchSession()
+        return { agent: { agent: 'claude', agent_status: 'blocked' } }
+      }
+      return original(method, params)
+    }
+    const result = await boss.launchBound(binding)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.ok(calls.every(c => c.session === 'synthetic'), phase)
+    assert.equal(calls.some(c => c.method === 'agent.prompt'), false, phase)
+    if (phase !== 'deferred') { assert.equal(result.ok, false); assert.equal(result.code, 'session_changed') }
+  }
+})
+
+test('explicit restart persists actual boss permissions/model and resumes the new native session exactly once', async t => {
+ for(const kind of ['claude','codex']) {
+  const f=await fixture(t,{restoreAllowed:()=>false})
+  const opened=await f.boss.open({kind,prompt:'ROLE',args:kind==='claude'?['--model','sonnet']:['-m','old']})
+  const options=kind==='claude'?['--model','opus','--effort','max','--dangerously-skip-permissions']:['-m','gpt-6.1-sol','--dangerously-bypass-approvals-and-sandbox']
+  await f.boss.recordRestart(opened.paneId,{kind,terminalId:'test',sessionId:'new-native-session',bypass:true,args:[...m.bossResumeArgs(kind,'new-native-session'),...options]})
+  const {boss,store}=reloadBoss(t,f,{restoreAllowed:()=>false});await boss.settings()
+  assert.deepEqual(store.globalBinding().args,options)
+  assert.equal(store.globalBinding().agentSession.value,'new-native-session')
+  f.svc.snapshot.agents=f.svc.snapshot.agents.filter(a=>a.pane_id!==opened.paneId)
+  f.svc.snapshot.panes.find(p=>p.pane_id===opened.paneId).agent=null
+  await boss.open({kind,prompt:'IGNORED'})
+  assert.deepEqual(f.calls.filter(c=>c[0]==='agent.start').at(-1)[1].args,[...options,...m.bossResumeArgs(kind,'new-native-session')])
+  assert.equal(f.calls.filter(c=>c[0]==='agent.prompt').length,1)
+ }
+})
+
+test('snapshot queued during restart persistence preserves newest permissions, model and native session', async t => {
+ const f=await fixture(t,{restoreAllowed:()=>false})
+ const opened=await f.boss.open({kind:'claude',prompt:'ROLE',args:['--model','sonnet']})
+ const store=f.boss.store,original=store.bind.bind(store)
+ let release,entered;const paused=new Promise(resolve=>{release=resolve}),writing=new Promise(resolve=>{entered=resolve})
+ let first=true
+ store.bind=async binding=>{if(first){first=false;entered();await paused}return original(binding)}
+ const restarted=f.boss.recordRestart(opened.paneId,{kind:'claude',terminalId:'same',sessionId:'new-native',bypass:true,args:['--resume','new-native','--model','sonnet','--dangerously-skip-permissions']})
+ await writing
+ f.svc.snapshot.agents.find(a=>a.pane_id===opened.paneId).name='drover-boss-renamed'
+ const observation=f.boss.captureBinding()
+ const model=f.boss.recordChoice(opened.paneId,'claude',{model:'opus',effort:'max'})
+ release();await Promise.all([restarted,observation,model])
+ const binding=store.globalBinding()
+ assert.deepEqual(binding.args,['--dangerously-skip-permissions','--model','opus','--effort','max'])
+ assert.equal(binding.agentSession.value,'new-native')
+ assert.equal(binding.name,'drover-boss-renamed')
+ const disk=JSON.parse(await readFile(join(f.root,'boss-binding.json'),'utf8')).boss
+ assert.deepEqual(disk,binding)
+})

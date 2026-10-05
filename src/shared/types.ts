@@ -56,6 +56,8 @@ export interface PaneInfo {
   revision: number
   agent?: string | null
   agent_session?: AgentSessionRef | null
+  /** Drover's last observed launch permission mode for this pane occupant. */
+  bypass?: boolean
   cwd?: string | null
   foreground_cwd?: string | null
   label?: string | null
@@ -252,6 +254,8 @@ export interface TranscriptMeta {
   contextWindow?: number
   rateLimitPercent?: number
   located: 'exact' | 'heuristic'
+  /** Office observes only a bounded tail and command/user evidence. */
+  coverage?: 'tail'
 }
 
 /** Resume only within this server stream and a revision still known for this pane. */
@@ -415,6 +419,9 @@ export interface AppSettings {
   leadOnly: boolean
   /** Lead agent picked by hand, per project folder: agent name. Default: orchestrator/team lead by name. */
   projectLeads: Record<string, string>
+  /** Manual project order by folder. Empty uses importance and workspace order. */
+  projectOrder: string[]
+  projectImportance: Record<string, import('./projects').ProjectImportance>
   appearance: AppearanceSettings
 }
 
@@ -446,6 +453,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agentPreviewHint: true,
   leadOnly: false,
   projectLeads: {},
+  projectOrder: [],
+  projectImportance: {},
   appearance: DEFAULT_APPEARANCE
 }
 

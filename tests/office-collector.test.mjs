@@ -1,8 +1,9 @@
+import { buildTranscriptWorker } from './_transcript-worker.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 
@@ -18,6 +19,7 @@ await build({ stdin: { contents: `
  export { validateRpcArgs } from './src/main/remote/validation'
  export { TranscriptManager } from './src/main/transcripts/manager'
  export { FileTailer } from './src/main/transcripts/tail'
+ export { TranscriptWorkers } from './src/main/transcripts/workerClient'
  export { ClaudeParser } from './src/main/transcripts/claude'
  export { CodexParser } from './src/main/transcripts/codex'
  export { TaskBoards } from './src/main/tasks'
@@ -26,6 +28,7 @@ await build({ stdin: { contents: `
  export { REMOTE_METHOD_CHANNELS, REMOTE_EVENT_CHANNELS, REMOTE_LOCAL_ONLY_METHODS } from './src/shared/remote'
 `, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: out,
  alias: { '@shared': resolve('src/shared') }, logLevel: 'silent' })
+await buildTranscriptWorker(temp)
 const m = createRequire(import.meta.url)(out)
 const drain = () => new Promise(resolve => setImmediate(resolve))
 const receipt = (pane, name) => JSON.stringify({ id: 'cli:agent:prompt', result: { type: 'agent_prompted', agent: { pane_id: pane, name } } })
@@ -251,7 +254,7 @@ test('links retain all observations beyond the 1000 event ring, decay, and publi
  s.advance(300000);s.office.flush()
  assert.ok(Math.abs(s.office.getState().links[0].weight-1200/Math.E)<1e-8)
  s.advance(30*60000);s.office.flush()
- assert.equal(s.updates.at(-1).state.links.length,0)
+ assert.equal(s.updates.at(-1).delta.removedLinks.length,1)
  assert.equal(s.office.getState().recentEvents.length,0)
 })
 test('unknown or heuristic provenance never becomes a lead or confirmed communication',async t=>{
@@ -314,14 +317,14 @@ test('hidden collection keeps counts, clears animations, and releases refs after
  s.office.init();await drain();s.send(s.tool('history-return'));s.office.flush()
  assert.equal(s.subscriptions.length,4)
 })
-test('four concurrent lookups and cancellation of queued panes never release chat refs',async t=>{
+test('two concurrent lookups and cancellation of queued panes never release chat refs',async t=>{
  let loads=0,max=0;const resolveLoads=[]
  const s=setup(t,{subscribe:pane=>{loads++;max=Math.max(max,loads);return new Promise(resolve=>resolveLoads.push(()=>{loads--;resolve({paneId:pane,reset:true,meta:null,items:[]})}))}})
  for(let i=3;i<=10;i++)s.snapshot.panes.push({...s.panes[0],pane_id:`w1:p${i}`,agent_session:{value:`session${i}`}})
- s.office.init();assert.equal(max,4)
- s.office.dispose();assert.equal(s.releases.length,4)
+ s.office.init();assert.equal(max,m.OFFICE_LIMITS.lookupConcurrency)
+ s.office.dispose();assert.equal(s.releases.length,m.OFFICE_LIMITS.lookupConcurrency)
  for(const resolve of resolveLoads)resolve();await drain()
- assert.equal(loads,0);assert.equal(max,4)
+ assert.equal(loads,0);assert.equal(max,m.OFFICE_LIMITS.lookupConcurrency)
 })
 test('history-limit coverage stays frozen even when a chat already tails the large file',async t=>{
  const s=setup(t);s.office.init();await drain()
@@ -470,7 +473,7 @@ test('office-only transcript refs feed the private observer without publishing r
  const dir=mkdtempSync(join(tmpdir(),'office-private-transcript-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
  const cwd=join(dir,'project'),slug=cwd.replace(/[^A-Za-z0-9]/g,'-'),home=join(dir,'claude'),folder=join(home,'projects',slug)
  mkdirSync(folder,{recursive:true});const file=join(folder,'synthetic.jsonl')
- const line=id=>JSON.stringify({type:'assistant',uuid:id,message:{content:[{type:'text',text:'RAW_PRIVATE_TRANSCRIPT'}]}})+'\n'
+ const line=id=>JSON.stringify({type:'user',uuid:id,message:{role:'user',content:'RAW_PRIVATE_TRANSCRIPT'}})+'\n'
  writeFileSync(file,line('baseline').replaceAll('\\n','\n'))
  const service={snapshot:{panes:[{pane_id:'pane',agent:'claude',cwd,agent_session:{value:'synthetic'}}]},env:{CLAUDE_CONFIG_DIR:home}}
  const publicUpdates=[],privateUpdates=[]
@@ -508,18 +511,11 @@ test('stale oversized lookup does not publish an error into the replacement inca
  const cwd=join(dir,'project'),folder=join(dir,'claude','projects',cwd.replace(/[^A-Za-z0-9]/g,'-'))
  mkdirSync(folder,{recursive:true});const old=join(folder,'old.jsonl'),fresh=join(folder,'fresh.jsonl')
  writeFileSync(old,'');writeFileSync(fresh,'')
- const fsp=await import('node:fs/promises'),original=fsp.default.stat,pause=deferred(),started=deferred()
- let intercepted=false
- fsp.default.stat=async file=>{
-   if(file===old&&!intercepted){intercepted=true;started.resolve();await pause.promise;return {size:m.OFFICE_LIMITS.maxHistoryBytes+1}}
-   return original(file)
- }
- t.after(()=>{fsp.default.stat=original})
  const pane={pane_id:'pane',agent:'claude',cwd,agent_session:{value:'old'}}
  const service={snapshot:{panes:[pane]},env:{CLAUDE_CONFIG_DIR:join(dir,'claude')}}
  const observed=[],manager=new m.TranscriptManager(service,()=>{},u=>observed.push(u));t.after(()=>manager.dispose())
- const subscription=manager.subscribeOffice('pane');await started.promise
- pane.agent_session.value='fresh';manager.onSnapshot(service.snapshot);pause.resolve();await subscription
+ const subscription=manager.subscribeOffice('pane')
+ pane.agent_session.value='fresh';manager.onSnapshot(service.snapshot);await subscription
  await until(()=>observed.some(u=>u.meta?.sessionId==='fresh'))
  assert.ok(observed.every(u=>u.error!=='office-history-limit'))
  assert.equal(manager.subs.get('pane').sessionId,'fresh')
@@ -565,4 +561,112 @@ test('credential and command shaped assigned titles never enter office snapshots
  const wire=JSON.stringify([s.office.getState(),...s.updates])
  for(const title of unsafe)assert.ok(!wire.includes(title),title)
  assert.ok(!wire.includes('fixture-secret-value'))
+})
+
+process.on('exit',()=>rmSync(temp,{recursive:true,force:true}))
+
+test('routine office updates are ordered deltas; quiet links send no state or decay traffic', async t => {
+ const s=setup(t);const initial=s.office.init();await drain()
+ s.send(s.tool('link'));s.office.flush()
+ const first=s.updates.at(-1)
+ assert.equal(first.state,undefined);assert.equal(first.delta.baseVersion,initial.version)
+ assert.equal(first.delta.version,initial.version+1)
+ assert.equal(first.delta.events.length,1);assert.equal(first.delta.links.length,1)
+ const n=s.updates.length
+ for(let i=0;i<100;i++){s.advance(100);s.office.flush()}
+ assert.equal(s.updates.length,n,'client computes fading from timestamps')
+ s.office.userPrompt(s.office.endpoint('w1:p2'),'PRIVATE_NEW_INPUT');s.office.flush()
+ const second=s.updates.at(-1).delta
+ assert.equal(second.baseVersion,first.delta.version);assert.equal(second.events.length,1)
+ assert.ok(second.agents.length<initial.agents.length)
+ assert.equal(second.departments,undefined);assert.equal(second.seats,undefined)
+ assert.ok(!JSON.stringify(second).includes('PRIVATE_NEW_INPUT'))
+})
+
+test('office tails large histories without chat diffs/images; actual workers retain complete chat independently', async t => {
+ const dir=mkdtempSync(join(tmpdir(),'office-bounded-worker-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
+ const folder=join(dir,'projects','fixture');mkdirSync(folder,{recursive:true})
+ const file=join(folder,'session.jsonl'),user=(id,text)=>JSON.stringify({type:'user',uuid:id,message:{role:'user',content:text}})+'\n'
+ const large=JSON.stringify({type:'assistant',uuid:'large',message:{content:[{type:'text',text:'x'.repeat(350000)}]}})+'\n'
+ writeFileSync(file,user('old','OLD_USER')+large+user('baseline','RECENT_USER'))
+ const service={env:{CLAUDE_CONFIG_DIR:dir},snapshot:{panes:[{pane_id:'p',agent:'claude',agent_session:{value:'session'}}]}}
+ const publicUpdates=[],observed=[],manager=new m.TranscriptManager(service,u=>publicUpdates.push(u),u=>observed.push(u));t.after(()=>manager.dispose())
+ const tail=await manager.subscribeOffice('p')
+ assert.equal(tail.meta.coverage,'tail');assert.deepEqual(tail.items.map(i=>i.id),['baseline'])
+ assert.equal(publicUpdates.length,0)
+ const full=await manager.subscribe('p')
+ assert.deepEqual(full.items.map(i=>i.kind),['user','assistant','user'])
+ assert.equal(full.items[1].text.length,350000)
+ const call=JSON.stringify({type:'assistant',uuid:'call',message:{content:[{type:'tool_use',id:'receipt',name:'Bash',input:{command:'herdr agent prompt w1:p2 "PRIVATE_COMMAND"'}}]}})
+ const result=JSON.stringify({type:'user',uuid:'result',message:{content:[{type:'tool_result',tool_use_id:'receipt',content:receipt('w1:p2','backend')}]}})
+ appendFileSync(file,call+'\n'+result+'\n')
+ await until(()=>observed.some(u=>u.items.some(i=>i.kind==='tool'&&i.officeEvidence?.results.length===1)))
+ const evidence=observed.flatMap(u=>u.items).findLast(i=>i.kind==='tool')
+ assert.equal(evidence.output,undefined);assert.equal(evidence.diff,undefined)
+ assert.equal(manager.workers.workers.size,2)
+})
+
+test('first successful office read after missing file still reads only a bounded tail', async t => {
+ const dir=mkdtempSync(join(tmpdir(),'office-late-file-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
+ const file=join(dir,'late.jsonl'),lines=[],errors=[]
+ const tailer=new m.FileTailer(file,batch=>lines.push(...batch),e=>errors.push(e.code),()=>Infinity,{initialBytes:256*1024,maxLineBytes:128*1024})
+ t.after(()=>tailer.stop());await tailer.start()
+ writeFileSync(file,'{"n":1}\n'.repeat(100000));await tailer.sync()
+ assert.deepEqual(errors,['ENOENT']);assert.ok(lines.length>0&&lines.length<33000)
+})
+
+test('worker error and unexpected exit reject pending sync and resolve initial waiters', async t => {
+ const dir=mkdtempSync(join(tmpdir(),'office-worker-failure-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
+ for(const crash of ['throw new Error("simulated failure")','process.exit(0)']) {
+  const path=join(dir,'crash.cjs');writeFileSync(path,`const {parentPort}=require('node:worker_threads');parentPort.on('message',m=>{if(m.type==='open')parentPort.postMessage({type:'ready',id:m.id});if(m.type==='sync'){${crash}}})`)
+  const errors=[],pool=new m.TranscriptWorkers(path);t.after(()=>pool.dispose())
+  const stream=pool.open('unused','claude',false,()=>{},(error,fatal)=>errors.push({error,fatal}))
+  await stream.loaded;await assert.rejects(stream.sync(),/failure|exited/)
+  assert.equal(pool.syncing.size,0);assert.equal(pool.subscriptions.size,0);assert.equal(pool.workers.size,0)
+  assert.equal(errors[0].fatal,true)
+ }
+})
+
+test('manager invalidates a dead worker stream and the next subscription opens a new worker', async t => {
+ const dir=mkdtempSync(join(tmpdir(),'office-worker-recover-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
+ const folder=join(dir,'projects','fixture');mkdirSync(folder,{recursive:true});const file=join(folder,'session.jsonl')
+ writeFileSync(file,JSON.stringify({type:'user',uuid:'a',message:{role:'user',content:'first'}})+'\n')
+ const service={env:{CLAUDE_CONFIG_DIR:dir},snapshot:{panes:[{pane_id:'p',agent:'claude',agent_session:{value:'session'}}]}}
+ const manager=new m.TranscriptManager(service,()=>{});t.after(()=>manager.dispose())
+ await manager.subscribe('p');const before=manager.workers.workers.get(false)
+ await before.terminate();await until(()=>manager.subs.get('p').tailer===null)
+ const resumed=await manager.subscribe('p')
+ assert.equal(resumed.error,undefined);assert.deepEqual(resumed.items.map(i=>i.id),['a'])
+ assert.notEqual(manager.workers.workers.get(false),before)
+})
+
+test('office refs keep only the tail after the independent 90 second chat warm period', async t => {
+ const dir=mkdtempSync(join(tmpdir(),'office-chat-warm-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
+ const folder=join(dir,'projects','fixture');mkdirSync(folder,{recursive:true});const file=join(folder,'session.jsonl')
+ const user=id=>JSON.stringify({type:'user',uuid:id,message:{role:'user',content:id}})+'\n';writeFileSync(file,user('a'))
+ const service={env:{CLAUDE_CONFIG_DIR:dir},snapshot:{panes:[{pane_id:'p',agent:'claude',agent_session:{value:'session'}}]}}
+ const office=[],manager=new m.TranscriptManager(service,()=>{},u=>office.push(u));t.after(()=>manager.dispose())
+ await manager.subscribeOffice('p');await manager.subscribe('p')
+ t.mock.timers.enable({apis:['setTimeout']});manager.unsubscribe('p')
+ const sub=manager.subs.get('p');assert.ok(sub.teardown);assert.ok(sub.tailer)
+ t.mock.timers.tick(89999);assert.ok(sub.tailer)
+ t.mock.timers.tick(1);assert.equal(sub.tailer,null);assert.equal(sub.parser,null);assert.ok(sub.officeTailer)
+ t.mock.timers.reset();appendFileSync(file,user('b'))
+ await until(()=>office.some(u=>u.items.some(i=>i.id==='b')))
+ assert.equal(manager.subs.size,1);assert.equal(sub.officeRefs,1)
+ const reload=await manager.subscribe('p');assert.deepEqual(reload.items.map(i=>i.id),['a','b'])
+})
+
+test('every chunk of an atomic office history replacement is baseline, not a fresh event', async t => {
+ const dir=mkdtempSync(join(tmpdir(),'office-replacement-baseline-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
+ const folder=join(dir,'projects','fixture');mkdirSync(folder,{recursive:true});const file=join(folder,'session.jsonl')
+ const user=(id,text)=>JSON.stringify({type:'user',uuid:id,message:{role:'user',content:text}})+'\n';writeFileSync(file,user('old','baseline'))
+ const service={env:{CLAUDE_CONFIG_DIR:dir},snapshot:{panes:[{pane_id:'p',agent:'claude',agent_session:{value:'session'}}]}}
+ const observed=[],manager=new m.TranscriptManager(service,()=>{},u=>observed.push(u));t.after(()=>manager.dispose())
+ await manager.subscribeOffice('p');observed.length=0
+ writeFileSync(file+'.new',Array.from({length:8},(_,i)=>user('history-'+i,'x'.repeat(32000))).join(''))
+ renameSync(file+'.new',file);await manager.subs.get('p').officeTailer.sync()
+ assert.ok(observed.length>=3);assert.ok(observed.every(u=>u.reset))
+ appendFileSync(file,user('fresh','new live input'));await manager.subs.get('p').officeTailer.sync()
+ assert.equal(observed.at(-1).reset,false)
 })

@@ -70,9 +70,12 @@ export type RemoteMethod = keyof typeof REMOTE_METHOD_CHANNELS
  */
 /** Must not be circumvented by setSettings: remote* setting keys are desktop-only. */
 export const REMOTE_LOCAL_ONLY_METHODS = [
+  'planAgentRestart', 'restartAgents',
   'officeInit', 'officeStop',
   'bossRoster', 'bossSettings', 'setBossSettings', 'openBoss', 'broadcastBoss',
   'cli', 'claudeStatusline', 'setClaudeStatusline', 'pickBackground', 'exportTheme', 'importTheme',
+  'codexIntegrationStatus', 'codexIntegrationInstall',
+  'codexDaemonRestartPlan', 'codexDaemonRestart',
   'capturePreview', 'pickPreviewFile', 'saveImage', 'stageFile', 'pickFiles', 'pickFolder',
   'pathForFile', 'openPath', 'reveal', 'openExternal', 'openInEditor',
   'setRemoteAccess', 'createRemotePairingCode', 'remoteDevices', 'revokeRemoteDevice'

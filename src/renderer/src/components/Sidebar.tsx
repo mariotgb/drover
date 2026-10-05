@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, type MouseEvent } from 'react'
+import { memo, useCallback, useRef, useState, type MouseEvent, type DragEvent } from 'react'
 import clsx from 'clsx'
 import {
   ChevronRight,
@@ -15,9 +15,14 @@ import {
   Columns2,
   Crown
 } from 'lucide-react'
+import { GripVertical, ShieldOff } from 'lucide-react'
+import { projectFolders, projectImportance } from '@shared/projects'
+import { moveProject, ProjectImportanceMarker } from './ProjectPreferences'
+import { CodexIntegrationWarning } from './CodexIntegrationWarning'
+import '../styles/importance.css'
 import { newAgentMenu, openNewAgent, openSettings, threadMenu, workspaceMenu } from '../actions'
 import { attentionSort, basename, shortPath, type Thread, type WorkspaceGroup } from '../model'
-import { openBoard, select, toggleCollapsed, updateSettings, useModel, useStore } from '../store'
+import { getModel, openBoard, select, toggleCollapsed, updateSettings, useModel, useStore } from '../store'
 import { useBoard } from './TaskBoardView'
 import { openMenu, openMenuAt } from './Menu'
 import { AgentAvatar, IconButton, StatusDot } from './primitives'
@@ -33,6 +38,10 @@ export function Sidebar() {
   const connection = useStore((s) => s.connection)
   const width = useStore((s) => s.settings.sidebarWidth)
   const dialog = useStore((s) => s.dialog)
+  const dragging = useRef<string | null>(null)
+  const [drop, setDrop] = useState<{ cwd: string; after: boolean } | null>(null)
+  const [dragSource, setDragSource] = useState<string | null>(null)
+  const finishDrag = () => { dragging.current = null; setDragSource(null); setDrop(null) }
 
   return (
     <><aside className="sidebar" style={{ width }}>
@@ -76,17 +85,39 @@ export function Sidebar() {
         </div>
       </div>
 
-      <nav className="sidebar-list" aria-label="Threads">
+      <nav className="sidebar-list" aria-label={t('Projects and agents')} data-dragging={!!dragSource || undefined}>
         {mode === 'status' ? (
           <StatusList threads={attentionSort(threads)} />
         ) : (
-          groups.map((g) => <WorkspaceSection key={g.workspace.workspace_id} group={g} />)
+          groups.map((g) => <WorkspaceSection key={g.workspace.workspace_id} group={g}
+            dragging={dragSource === g.cwd} drop={drop?.cwd === g.cwd ? (drop.after ? 'after' : 'before') : null}
+            onDragStart={(e) => {
+              if (!g.cwd) { e.preventDefault(); return }
+              dragging.current = g.cwd; setDragSource(g.cwd)
+              e.dataTransfer.effectAllowed = 'move'
+              e.dataTransfer.setData('application/x-drover-project', g.cwd)
+            }}
+            onDragOver={(e) => {
+              if (!dragging.current || !g.cwd || dragging.current === g.cwd) return
+              e.preventDefault(); e.dataTransfer.dropEffect = 'move'
+              const rect = e.currentTarget.getBoundingClientRect()
+              setDrop({ cwd: g.cwd, after: e.clientY > rect.top + rect.height / 2 })
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (dragging.current && g.cwd) {
+                const rect = e.currentTarget.getBoundingClientRect()
+                moveProject(dragging.current, g.cwd, e.clientY > rect.top + rect.height / 2)
+              }
+              finishDrag()
+            }} onDragEnd={finishDrag} />)
         )}
         {connection.status === 'connected' && !groups.length && (
           <div className="sidebar-empty">{t('No projects yet. Create an agent to get started.')}</div>
         )}
       </nav>
 
+      {!isRemote && <CodexIntegrationWarning />}
       <UsageWidget />
       <SidebarFooter />
       <ResizeHandle />
@@ -97,23 +128,46 @@ export function Sidebar() {
   )
 }
 
-function WorkspaceSection({ group }: { group: WorkspaceGroup }) {
+function WorkspaceSection({ group, dragging, drop, onDragStart, onDragOver, onDrop, onDragEnd }: {
+  group: WorkspaceGroup; dragging: boolean; drop: 'before' | 'after' | null
+  onDragStart: (e: DragEvent<HTMLDivElement>) => void; onDragOver: (e: DragEvent<HTMLElement>) => void
+  onDrop: (e: DragEvent<HTMLElement>) => void; onDragEnd: () => void
+}) {
   const ws = group.workspace
   const collapsed = useStore((s) => !!s.collapsed[ws.workspace_id])
   const home = useStore((s) => s.home)
   const attention = group.threads.filter((t) => t.status === 'blocked' || t.status === 'done').length
   const working = group.threads.some((t) => t.status === 'working')
   const leadOnly = useStore((s) => s.settings.leadOnly)
+  const importance = useStore(s => projectImportance(group.cwd, s.settings))
   return (
-    <section className="ws">
+    <section className={clsx('ws', dragging && 'project-dragging', drop && `project-drop-${drop}`)} data-importance={importance}
+      onDragOver={onDragOver} onDrop={onDrop}>
       <div
         className="ws-head"
+        draggable={!!group.cwd}
+        onDragStart={onDragStart} onDragEnd={onDragEnd}
+        role="button" tabIndex={0} aria-expanded={!collapsed}
+        onKeyDown={e => {
+          if (e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapsed(ws.workspace_id) }
+          if (group.cwd && e.altKey && e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            e.preventDefault()
+            // Resolve the current order at keydown, including phone updates.
+            const folders = projectFolders(getModel().groups)
+            const index = folders.indexOf(group.cwd)
+            const target = folders[index + (e.key === 'ArrowUp' ? -1 : 1)]
+            if (target) moveProject(group.cwd, target, e.key === 'ArrowDown')
+          }
+        }}
         onClick={() => toggleCollapsed(ws.workspace_id)}
         onContextMenu={(e) => openMenu(e, workspaceMenu(group))}
         title={shortPath(group.cwd, home)}
       >
+        {group.cwd && <span className="project-grip" title={t('Drag to reorder projects')}><GripVertical size={12} /></span>}
         <ChevronRight size={13} className={clsx('chev', !collapsed && 'open')} />
         <FolderClosed size={14} className="ws-icon" />
+        <ProjectImportanceMarker group={group} />
         <span className="ws-label">{ws.label || basename(group.cwd)}</span>
         {collapsed && working && <StatusDot status="working" size={7} />}
         {collapsed && attention > 0 && <span className="ws-badge">{attention}</span>}
@@ -257,6 +311,7 @@ export const ThreadRow = memo(function ThreadRow({ thread: th, nested, showProje
         <div className="thread-name">
           <span className="name">{th.name}</span>
           {lead && <Crown size={12} className="lead-crown" aria-label={t('Project lead')} />}
+          {th.pane.bypass && <ShieldOff size={12} className="bypass-icon" aria-label={t('Skip permission prompts')}><title>{t('Skip permission prompts')}</title></ShieldOff>}
           {th.status === 'blocked' && <span className="pill pill-blocked">{t('input')}</span>}
         </div>
         <div className="thread-sub">{showProject ? `${th.workspace.label} · ${th.subtitle}` : th.subtitle}</div>

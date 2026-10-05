@@ -9,6 +9,7 @@ import type {
 import { HerdrApiError } from '@shared/types'
 import { loginEnv } from '../env'
 import { HerdrClient, type SubscriptionHandle } from './client'
+import { CodexLaunch } from '../codexLaunch'
 import {
   defaultSocketPath,
   findHerdr,
@@ -73,10 +74,11 @@ export class HerdrService extends EventEmitter<Events> {
   private refreshTimer: NodeJS.Timeout | null = null
   private pollTimer: NodeJS.Timeout | null = null
   private reconnectTimer: NodeJS.Timeout | null = null
-  private refreshing = false
+  private refreshing: { client: HerdrClient; generation: number } | null = null
   private refreshQueued = false
   private lastSnapshotJson = ''
   private generation = 0
+  readonly codexLaunch = new CodexLaunch(() => this.env)
 
   constructor(
     private opts: { logDir: string; autoStartServer: () => boolean }
@@ -87,6 +89,7 @@ export class HerdrService extends EventEmitter<Events> {
   get sessionName(): string {
     return this.session
   }
+  get connectionGeneration(): number { return this.generation }
 
   private setConnection(patch: Partial<ConnectionState>) {
     this.connection = { ...this.connection, ...patch, session: this.session }
@@ -104,6 +107,7 @@ export class HerdrService extends EventEmitter<Events> {
     const env = await loginEnv(refreshEnv)
     if (gen !== this.generation) return
     this.env = env
+    this.codexLaunch.reset()
     this.herdrPath = findHerdr(this.env)
     if (!this.herdrPath) {
       this.setConnection({ status: 'no-herdr', error: 'herdr binary not found in PATH' })
@@ -125,6 +129,8 @@ export class HerdrService extends EventEmitter<Events> {
 
   stop() {
     this.generation++
+    this.refreshing = null
+    this.refreshQueued = false
     this.lifecycleSub?.close()
     this.statusSub?.close()
     this.lifecycleSub = null
@@ -255,9 +261,12 @@ export class HerdrService extends EventEmitter<Events> {
       this.refreshQueued = true
       return
     }
-    this.refreshing = true
+    const operation = { client: this.client, generation: this.generation }
+    this.refreshing = operation
+    const current = () => this.client === operation.client && this.generation === operation.generation
     try {
-      const res = await this.client.request<{ snapshot: HerdrSnapshot }>('session.snapshot', {}, 8000)
+      const res = await operation.client.request<{ snapshot: HerdrSnapshot }>('session.snapshot', {}, 8000)
+      if (!current()) return
       const snap = res.snapshot
       const json = JSON.stringify(snap)
       if (json !== this.lastSnapshotJson) {
@@ -270,6 +279,7 @@ export class HerdrService extends EventEmitter<Events> {
       if (this.connection.status !== 'connected') this.setConnection({ status: 'connected', error: undefined })
       this.syncStatusSubscription(snap)
     } catch (err) {
+      if (!current()) return
       if (err instanceof HerdrApiError && (err.code === 'server_not_running' || err.code === 'connection_failed')) {
         if (this.connection.status === 'connected') {
           this.setConnection({ status: 'disconnected', error: err.message })
@@ -277,10 +287,12 @@ export class HerdrService extends EventEmitter<Events> {
         }
       }
     } finally {
-      this.refreshing = false
-      if (this.refreshQueued) {
-        this.refreshQueued = false
-        this.scheduleRefresh(10)
+      if (current() && this.refreshing === operation) {
+        this.refreshing = null
+        if (this.refreshQueued) {
+          this.refreshQueued = false
+          this.scheduleRefresh(10)
+        }
       }
     }
   }
@@ -304,8 +316,13 @@ export class HerdrService extends EventEmitter<Events> {
     timeoutMs?: number
   ): Promise<T> {
     if (!this.client) throw new HerdrApiError('not_connected', 'not connected to herdr')
-    const result = await this.client.request<T>(method, params, timeoutMs)
-    if (!method.endsWith('.list') && !method.endsWith('.get') && !method.endsWith('.read') && method !== 'session.snapshot') {
+    const client = this.client, generation = this.generation
+    if (method === 'agent.start' && params.kind === 'codex') {
+      params = { ...params, args: await this.codexLaunch.args(Array.isArray(params.args) ? params.args as string[] : []) }
+      if (client !== this.client || generation !== this.generation) throw new HerdrApiError('session_changed', 'The herdr session changed before agent launch')
+    }
+    const result = await client.request<T>(method, params, timeoutMs)
+    if (client === this.client && generation === this.generation && !method.endsWith('.list') && !method.endsWith('.get') && !method.endsWith('.read') && method !== 'session.snapshot') {
       this.scheduleRefresh(30)
     }
     return result

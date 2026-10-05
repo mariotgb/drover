@@ -4,11 +4,12 @@
 import { Pix } from '../canvas.mjs'
 import { LightMap } from './light.mjs'
 
-export function renderSample({ manifest: M, pixes }, { agents, carrierT = 0.45 } = {}) {
+export function renderSample({ manifest: M, pixes }, { agents, carrierT = 0.45, importance = 'normal' } = {}) {
   const T = 16, hall = { x: 32, y: 32, w: 20 * T, h: 20 * T }
   const W = hall.x * 2 + hall.w, H = hall.y + hall.h + 5 * T + 24
   const world = new Pix(W, H), emit = new Pix(W, H)
-  const light = new LightMap(W, H, M.lighting.ambient)
+  const IMP = M.compositions.importance, dim = importance === 'background' ? IMP.background.dim : 1
+  const light = new LightMap(W, H, M.lighting.ambient.map((v) => v * dim))
   const L = M.layers
   const queue = [], overlays = []
   const frameOf = (id, state, i = 0) => {
@@ -73,6 +74,8 @@ export function renderSample({ manifest: M, pixes }, { agents, carrierT = 0.45 }
   for (let tx = 0; tx < W; tx += T) { tile(`tile.wall.face.${(tx / T) % 2}`, tx, cy); for (let k = 2; k < 5; k++) tile(`tile.floor.corridor.${(tx / T + k) % 3}`, tx, cy + k * T); tile(tx === 0 ? 'tile.runner.l' : tx >= W - T ? 'tile.runner.r' : 'tile.runner.c', tx, cy + 3 * T) }
   const C = M.compositions.corridor
   put(C.doorway.sprite, 'hall', door.x + C.doorway.dx, cy + C.doorway.dy)
+  if (IMP.banner.states.includes(importance)) put(IMP.banner.sprite, importance, door.x + IMP.banner.doorDx, cy + IMP.banner.corridorY)
+  if (IMP.mat.states.includes(importance)) put(IMP.mat.sprite, importance, door.x + IMP.mat.doorDx, cy + IMP.mat.corridorY)
   overlays.push({ y: 1e6, layer: 0, draw: () => { const w = measure('DROVER') + 6; nine('label.light', door.x + C.doorLabel.dx, cy + C.doorLabel.dy, w); text(door.x + C.doorLabel.dx + 3, cy + C.doorLabel.dy + 2, 'DROVER', 'ink') } })
   // ---- wall decor
   const Wc = M.compositions.wall
@@ -80,9 +83,10 @@ export function renderSample({ manifest: M, pixes }, { agents, carrierT = 0.45 }
   const signText = 'DROVER', scale = 2, sn = M.nineSlices['sign.x2'], sw = measure(signText) * scale + 8 + 4 * scale
   const signX = Math.round(hall.x + hall.w / 2 - sw / 2), signY = hall.y + Wc.sign.top + 3
   nine('sign.x2', signX, signY, sw, 'world')
-  for (const [k, row] of Object.entries(M.font.colors)) if (k === sn.font) { /* scaled text */ const F = M.font; let cx = signX + sn.textX; for (const ch of signText) { const g = F.glyphs[ch]; for (let j = 0; j < F.height; j++) for (let i = 0; i < g.w; i++) { const p = pixes.font.get(g.x + i, g.y + row + j); if (p[3]) { world.rect(cx + i * scale, signY + 3 + j * scale, scale, scale, p); if (M.theme === 'dark') emit.rect(cx + i * scale, signY + 3 + j * scale, scale, scale, p) } } cx += (g.w + F.spacing) * scale } }
+  if (importance !== 'normal' && IMP.rank.states.includes(importance)) put(IMP.rank.sprite, importance, signX - IMP.rank.signGap - 8, hall.y + IMP.rank.y)
+  for (const [k, row] of Object.entries(M.font.colors)) if (k === sn.font) { /* scaled text */ const F = M.font; let cx = signX + sn.textX; for (const ch of signText) { const g = F.glyphs[ch]; for (let j = 0; j < F.height; j++) for (let i = 0; i < g.w; i++) { const p = pixes.font.get(g.x + i, g.y + row + j); if (p[3]) { world.rect(cx + i * scale, signY + 3 + j * scale, scale, scale, p); if (M.theme === 'dark' && importance !== 'background') emit.rect(cx + i * scale, signY + 3 + j * scale, scale, scale, p) } } cx += (g.w + F.spacing) * scale } }
   put(Wc.clock.sprite, '10:00', hall.x + hall.w / 2 + Wc.clock.wide.xc, hall.y + Wc.clock.wide.y)
-  put(Wc.picture.sprite, '0', hall.x + hall.w / 2 + Wc.picture.xc, hall.y + Wc.picture.y)
+  if (!(Wc.picture.hideWithRank && M.compositions.importance.rank.states.includes(importance))) put(Wc.picture.sprite, '0', hall.x + hall.w / 2 + Wc.picture.xc, hall.y + Wc.picture.y)
   const winState = M.compositions.timeOfDay.default
   for (let x = Math.round(hall.x + hall.w / 2 + sw / 2 + Wc.windows.gap); x + Wc.windows.width <= hall.x + hall.w - T - Wc.windows.endGap; x += Wc.windows.step) {
     put(Wc.windows.sprite, winState, x + Wc.windows.anchorDx, hall.y + Wc.windows.y)

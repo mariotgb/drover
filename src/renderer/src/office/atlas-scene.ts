@@ -10,7 +10,9 @@ interface Item { sprite?: string; state?: string; tiles?: string; x?: number; xr
 interface Composition { lounge: { narrow: Item[]; wide: Item[]; widest: Item[] }; head: { narrow: Item[]; wide: Item[]; noLead: Item[] }; lobby: Item[]; server: Item[]; boss: Item[] }
 interface Pool { dx?: number; dy?: number; rx?: number; ry: number; color: RGB; k: number }
 const canvasFor = (r: Rect) => { const c = document.createElement('canvas'); c.width = r.width; c.height = r.height; return c }
-export function atlasScene(art: OfficeArt, layout: Layout, names: Map<string, string>, time: number, boards: Map<string, [number, number, number]>, front = false): HTMLCanvasElement {
+export type ProjectImportance = 'primary' | 'important' | 'normal' | 'background'
+interface ImportanceArt { rank: { sprite: string; states: string[]; signGap: number; y: number }; banner: { sprite: string; states: string[]; doorDx: number; corridorY: number }; mat: { sprite: string; states: string[]; doorDx: number; corridorY: number }; background: { dim: number; signGlow: boolean } }
+export function atlasScene(art: OfficeArt, layout: Layout, names: Map<string, string>, time: number, boards: Map<string, [number, number, number]>, front = false, importance?: Map<string, ProjectImportance>): HTMLCanvasElement {
   const M = art.manifest as OfficeArtManifestV2, C = M.compositions as unknown as Composition, b = layout.bounds
   const canvas = canvasFor(b), ctx = canvas.getContext('2d')!, emission = canvasFor(b), emit = emission.getContext('2d')!
   ctx.imageSmoothingEnabled = emit.imageSmoothingEnabled = false; ctx.translate(-b.x, -b.y); emit.translate(-b.x, -b.y)
@@ -41,7 +43,10 @@ export function atlasScene(art: OfficeArt, layout: Layout, names: Map<string, st
       if (i.sprite && !['agent.user','agent.boss','object.reception','object.bell','object.cooler','object.rack','object.chair.boss','object.desk.boss','object.phone'].includes(i.sprite)) put(i.sprite, i.sprite === 'object.window' ? day : i.state ?? 'default', x, iy, i.sortY === undefined ? iy : y + i.sortY)
     }
   }
-  const rooms = [{ ...layout.lobby, kind: 'lobby', name: officeText('Reception') }, ...layout.lots.map(l => ({ ...l, kind: l.boss ? 'boss' : 'hall', name: names.get(l.departmentId) ?? '' })), ...(layout.server ? [{ ...layout.server, kind: 'server', name: officeText('Server room') }] : [])]
+  // Project importance (0.7.2): rank badge at the sign, banner + mat at the corridor door, dimmed background halls.
+  const IMP = (M.compositions as unknown as { importance?: ImportanceArt }).importance
+  const levelOf = (r: object): ProjectImportance => ('departmentId' in r && importance?.get(r.departmentId as string)) || 'normal'
+  const rooms = [...(!layout.isolated ? [{ ...layout.lobby, kind: 'lobby', name: officeText('Reception') }] : []), ...layout.lots.map(l => ({ ...l, kind: l.boss ? 'boss' : 'hall', name: names.get(l.departmentId) ?? '' })), ...(layout.server ? [{ ...layout.server, kind: 'server', name: officeText('Server room') }] : [])]
   if (!front) {
     for (let y = b.y; y < b.y + b.height; y += 16) for (let x = b.x; x < b.x + b.width; x += 16) tile(`tile.ground.${Math.abs(x / 16 * 7 + y / 16 * 3) % 4}`, x, y)
     for (let y = b.y + 40; y < 0; y += 48) for (let x = b.x + 24; x < b.x + b.width; x += 48) {
@@ -59,11 +64,14 @@ export function atlasScene(art: OfficeArt, layout: Layout, names: Map<string, st
       if (r.kind === 'hall') {
         put('object.board', 'default', r.x + 51, r.y + 46)
         const count = 'departmentId' in r ? boards.get(r.departmentId) ?? [0, 0, 0] : [0,0,0]
-        queue.push({ y: 1e6, layer: 0, draw() { art.text(ctx, count.join('/'), r.x + 28, r.y + 22, 'ink'); art.text(emit, count.join('/'), r.x + 28, r.y + 22, 'ink') } })
+        if ('departmentId' in r && boards.has(r.departmentId)) queue.push({ y: 1e6, layer: 0, draw() { art.text(ctx, count.join('/'), r.x + 28, r.y + 22, 'ink'); art.text(emit, count.join('/'), r.x + 28, r.y + 22, 'ink') } })
         const scale = r.width >= 320 && art.measure(r.name) <= 40 ? 2 : 1, sw = Math.min(r.width - 100, art.measure(r.name) * scale + 20)
-        queue.push({ y: 1e6, layer: 0, draw() { art.sign(ctx, r.name, r.x + r.width / 2, r.y + 18, sw, scale); if (M.theme === 'dark') art.sign(emit, r.name, r.x + r.width / 2, r.y + 18, sw, scale) } })
+        const level = levelOf(r), ranked = !!IMP?.rank.states.includes(level), glow = !(level === 'background' && IMP?.background.signGlow === false)
+        queue.push({ y: 1e6, layer: 0, draw() { art.sign(ctx, r.name, r.x + r.width / 2, r.y + 18, sw, scale); if (M.theme === 'dark' && glow) art.sign(emit, r.name, r.x + r.width / 2, r.y + 18, sw, scale) } })
+        if (IMP && ranked) put(IMP.rank.sprite, level, r.x + r.width / 2 - sw / 2 - IMP.rank.signGap - 8, r.y + IMP.rank.y)
+        if (IMP && level === 'background') light.rect(r.x - b.x, r.y - b.y, r.width, r.height, M.lighting.ambient, -(1 - IMP.background.dim))
         put('object.clock', `${hour % 12}:${new Date(time).getMinutes() >= 30 ? '30' : '00'}`, r.x + r.width / 2 + (r.width >= 320 ? -64 : 30), r.y + 35)
-        if (r.width >= 320) put('object.picture', '0', r.x + r.width / 2 - 33, r.y + 37)
+        if (r.width >= 320 && !ranked) put('object.picture', '0', r.x + r.width / 2 - 33, r.y + 37)
         for (let x = r.x + r.width / 2 + sw / 2 + 10; x + 30 < r.x + r.width - 20; x += 52) put('object.window', day, x + 14, r.y + 45)
         const wide = r.width >= 320 ? C.lounge.wide : [], lounge = [...C.lounge.narrow.filter(i => !wide.some(w => w.replaces === i.sprite || w.replaces === 'narrow' && i.tiles)), ...wide, ...(r.width >= 544 ? C.lounge.widest : [])]
         items(lounge, r, r.y + r.height - 80)
@@ -80,14 +88,19 @@ export function atlasScene(art: OfficeArt, layout: Layout, names: Map<string, st
     }
     for (let x = r.x; x < r.x + r.width; x += 16) if (x < door || x >= door + 32) tile('tile.wall.front', x, r.y + r.height - 16); else if (!front) tile(kind === 'server' ? 'tile.floor.server' : `tile.floor.${kind}.0`, x, r.y + r.height - 16)
   }
-  const c = layout.corridor, entrance = layout.lobby.x + 80
+  const c = layout.corridor, entrance = layout.isolated ? layout.lots[0].x + 32 : layout.lobby.x + 80
   if (!front) {
     for (let x = c.x; x < c.x + c.width; x += 16) { tile(`tile.wall.face.${x / 16 % 2}`, x, 0); for (let y = 32; y < 80; y += 16) tile(`tile.floor.corridor.${(x / 16 + y / 16) % 3}`, x, y); tile(x === c.x ? 'tile.runner.l' : x + 16 >= c.x + c.width ? 'tile.runner.r' : 'tile.runner.c', x, 48) }
-    for (const r of rooms) { const door = r.x + (r.kind === 'lobby' ? r.width - 64 : 32); put('object.doorway', r.kind === 'server' ? 'server' : r.kind === 'lobby' ? 'lobby' : 'hall', door + 16, 32) }
+    for (const r of rooms) {
+      const door = r.x + (r.kind === 'lobby' ? r.width - 64 : 32), level = r.kind === 'hall' ? levelOf(r) : 'normal'
+      put('object.doorway', r.kind === 'server' ? 'server' : r.kind === 'lobby' ? 'lobby' : 'hall', door + 16, 32)
+      if (IMP?.banner.states.includes(level)) put(IMP.banner.sprite, level, door + IMP.banner.doorDx, IMP.banner.corridorY)
+      if (IMP?.mat.states.includes(level)) put(IMP.mat.sprite, level, door + IMP.mat.doorDx, IMP.mat.corridorY)
+    }
     for (let x = c.x + 48; x < c.x + c.width - 24; x += 144) { if (rooms.some(r => Math.abs(x - r.x - 48) < 50)) continue; put('object.picture', '0', x + 7, 17); put('object.plant.small', 'default', x + 20, 46) }
     for (let x = c.x; x < c.x + c.width; x += 16) { tile('tile.facade.plain', x, 96); tile(`tile.ground.path.${x / 16 % 2}`, x, 120) }
     for (let x = c.x + 8; x < c.x + c.width - 80; x += 112) { put('object.lamp.post', 'default', x, 148); if (Math.abs(x - entrance) > 64) put('object.bench.park', 'default', x + 40, 153) }
-    put('object.bikes', 'default', layout.lobby.x + 160, 154)
+    if (!layout.isolated) put('object.bikes', 'default', layout.lobby.x + 160, 154)
     for (let y = 80; y < 160; y += 16) for (let x = entrance; x < entrance + 32; x += 16) tile('tile.ground.path.0', x, y)
     pool('corridor', c.x + c.width / 2, 48, c.width / 2)
   }

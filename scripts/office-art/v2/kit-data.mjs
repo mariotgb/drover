@@ -69,7 +69,7 @@ export function compositions(P) {
     wall: {
       board: { sprite: 'object.board', x: 51, y: 46 },
       clock: { sprite: 'object.clock', narrow: { xc: 30, y: 35 }, wide: { xc: -64, y: 35 } },
-      picture: { sprite: 'object.picture', wideOnly: true, xc: -33, y: 37 },
+      picture: { sprite: 'object.picture', wideOnly: true, xc: -33, y: 37, hideWithRank: true },
       windows: { sprite: 'object.window', from: 'signRight', gap: 10, step: 52, width: 30, end: 'wallRight', endGap: 4, anchorDx: 14, y: 45 },
       sign: { top: 15, scale2MinWidth: 20 * T, scale2MaxText: 40 }
     },
@@ -105,6 +105,16 @@ export function compositions(P) {
       bedAboveRooms: 'object.flowerbed', hedge: 'object.hedge',
       sidewalk: n ? null : 'tile.ground.path', entrancePath: n ? null : 'tile.ground.path',
       street: { every: 7 * T, lamp: 'object.lamp.post', bench: 'object.bench.park', bikes: 'object.bikes', entrance: 'object.entrance' }
+    },
+    // Project importance (0.7.2): primary | important | normal | background. Normal draws nothing.
+    // rank: left of the hall sign (x = sign left − gap, bottom y from hall.y); banner: corridor wall left of the hall door;
+    // mat: corridor floor in front of the door. Background halls: lights × dim, neon sign unlit, plaques at plaqueAlpha.
+    importance: {
+      rank: { sprite: 'object.rank', states: ['primary', 'important', 'background'], signGap: 2, y: 34 },
+      banner: { sprite: 'object.banner', states: ['primary', 'important'], doorDx: -10, corridorY: 29 },
+      mat: { sprite: 'object.mat', states: ['primary', 'important'], doorDx: 16, corridorY: 46 },
+      background: { dim: n ? 0.7 : 0.82, signGlow: false, plaqueAlpha: 0.75 },
+      primary: { signScale: 2 }
     },
     // Decorative pet: never touches desks, walks aisles and the lounge only.
     pet: n ? { sprite: 'object.robot', rest: 'charge', move: 'move', speed: 18 } : { sprite: 'object.cat', rest: 'sleep', move: 'walk:side', speed: 14, restOn: 'object.sofa' },

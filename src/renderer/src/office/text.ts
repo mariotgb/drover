@@ -38,10 +38,13 @@ export function officeText(key: OfficeText, params?: Record<string, string | num
   const lang = language(), value = lang === 'en' ? key : messages[key][positions[lang]]
   return value.replace(/\{(\w+)\}/g, (all, name: string) => params?.[name] === undefined ? all : String(params[name]))
 }
+const ageFormats = new Map<string, Intl.RelativeTimeFormat>()
 export function eventAge(ts: number, now: number) {
   const seconds = Math.max(0, Math.floor((now - ts) / 1000))
   if (seconds < 2) return officeText('Now')
-  const r = new Intl.RelativeTimeFormat(locale(), { numeric: 'auto', style: 'short' })
+  const lang = locale()
+  let r = ageFormats.get(lang)
+  if (!r) { r = new Intl.RelativeTimeFormat(lang, { numeric: 'auto', style: 'short' }); ageFormats.set(lang, r) }
   return seconds < 60 ? r.format(-seconds, 'second') : r.format(-Math.floor(seconds / 60), 'minute')
 }
 export const officeMessages = messages

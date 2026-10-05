@@ -9,6 +9,8 @@ import { join, delimiter } from 'node:path'
 // Resolve the user's login shell environment; explicit reconnect refreshes it.
 
 let resolved: Promise<NodeJS.ProcessEnv> | null = null
+let probeLog: ((event: string, details: Record<string, unknown>) => void) | undefined
+export function setEnvProbeLogger(logger: typeof probeLog): void { probeLog = logger }
 
 /** Always dropped: Electron internals and herdr pane context. */
 const ALWAYS_DROP = [
@@ -117,7 +119,9 @@ function resolveFromShell(): Promise<NodeJS.ProcessEnv> {
         stdio: ['ignore', 'pipe', 'ignore'],
         detached: true
       })
+      probeLog?.('env-probe-start', { pid: child.pid, parentPid: process.pid, shell, executable: process.execPath, detached: true })
       const timer = setTimeout(() => {
+        probeLog?.('env-probe-timeout', { pid: child.pid, parentPid: process.pid, signal: 'SIGKILL' })
         try {
           child.kill('SIGKILL')
         } catch {
@@ -132,7 +136,8 @@ function resolveFromShell(): Promise<NodeJS.ProcessEnv> {
         clearTimeout(timer)
         finish(null)
       })
-      child.on('close', () => {
+      child.on('close', (code, signal) => {
+        probeLog?.('env-probe-exit', { pid: child.pid, parentPid: process.pid, code, signal })
         clearTimeout(timer)
         const start = stdout.indexOf(mark)
         const end = stdout.lastIndexOf(mark)

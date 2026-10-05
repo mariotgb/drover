@@ -2,6 +2,7 @@ import type { OfficeState, OfficeUpdate } from '@shared/office'
 import type { BossBroadcastRequest, BossDelivery, BossOpenRequest, BossSettings } from '@shared/boss'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { TranscriptCursor } from '@shared/types'
+import type { CodexIntegrationStatus, CodexIntegrationInstallResult, CodexDaemonRestartPlan, CodexDaemonRestartResult } from '@shared/codexIntegration'
 import type {
   RemoteAccessSettings, RemoteDevice, RemotePairingCode, RemoteStatus,
   RemotePushStatus, RemotePushPreferences, RemotePushSubscription
@@ -43,6 +44,10 @@ const api = {
   reconnect: () => ipcRenderer.invoke('herdr:reconnect'),
   herdrVersion: () => ipcRenderer.invoke('herdr:version'),
   cli: (args: string[]) => ipcRenderer.invoke('herdr:cli', args),
+  codexIntegrationStatus: (): Promise<CodexIntegrationStatus> => ipcRenderer.invoke('codex:integration-status'),
+  codexIntegrationInstall: (): Promise<CodexIntegrationInstallResult> => ipcRenderer.invoke('codex:integration-install'),
+  codexDaemonRestartPlan: (): Promise<CodexDaemonRestartPlan> => ipcRenderer.invoke('codex:daemon-restart-plan'),
+  codexDaemonRestart: (token: string): Promise<CodexDaemonRestartResult> => ipcRenderer.invoke('codex:daemon-restart', token),
   agentKinds: () => ipcRenderer.invoke('agents:kinds'),
   limits: () => ipcRenderer.invoke('limits:get'),
   refreshLimits: () => ipcRenderer.invoke('limits:refresh'),
@@ -56,6 +61,8 @@ const api = {
   setClaudeStatusline: (enable: boolean) => ipcRenderer.invoke('claude-statusline:set', enable),
   sendPrompt: (req: unknown) => ipcRenderer.invoke('agent:send', req),
   createAgent: (req: unknown) => ipcRenderer.invoke('agent:create', req),
+  planAgentRestart: (selection: unknown) => ipcRenderer.invoke('agent:restart-plan', selection),
+  restartAgents: (token: string) => ipcRenderer.invoke('agent:restart', token),
   modelCatalog: () => ipcRenderer.invoke('models:catalog'),
   pickPreviewFile: (defaultPath?: string) => ipcRenderer.invoke('preview:pick-file', defaultPath),
   watchTasks: (cwd: string) => ipcRenderer.invoke('tasks:watch', cwd),

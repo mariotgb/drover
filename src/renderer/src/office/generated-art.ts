@@ -12,6 +12,13 @@ import * as O from '../../../../scripts/office-art/v2/overlay.mjs'
 // @ts-expect-error The art generator is authored as plain JavaScript.
 import { LightMap, glow } from '../../../../scripts/office-art/v2/light.mjs'
 import type { Layout, Point } from './layout'
+
+function canvasLayout(layout: Layout): Layout {
+  if (!layout.bounds.x) return layout
+  const offset = layout.bounds.x
+  const shift = <T extends { x: number }>(r: T): T => ({ ...r, x: r.x - offset })
+  return { ...layout, lots: layout.lots.map(shift), lobby: shift(layout.lobby), server: layout.server && shift(layout.server), corridor: shift(layout.corridor), bounds: { ...layout.bounds, x: 0 } }
+}
 import type { OfficeArtFrame } from '@shared/office'
 export type OfficeTheme = 'cozy' | 'neon'
 export const officeTheme = (dark: boolean): OfficeTheme => dark ? 'neon' : 'cozy'
@@ -111,22 +118,36 @@ export class GeneratedArt {
     this.cache.set(key, { canvas, frame }); ctx.drawImage(canvas, Number(data.x) - cx, Number(data.y) - cy)
   }
   front(layout: Layout): HTMLCanvasElement {
+    layout = canvasLayout(layout)
     const key = `front:${JSON.stringify([layout.lots, layout.corridor, layout.server, this.theme])}`, old = this.cache.get(key)
     if (old) return old.canvas
     const P = THEMES[this.theme], b = layout.bounds, pix = new Pix(b.width, b.height), emit = new Pix(b.width, b.height)
-    const rooms = [layout.lobby, ...layout.lots, ...(layout.server ? [layout.server] : [])]
+    const rooms = [...(!layout.isolated ? [layout.lobby] : []), ...layout.lots, ...(layout.server ? [layout.server] : [])]
     for (const r of rooms) Pr.wallFront(P, pix, r.x, r.y + r.height - 16 - b.y, r.width, [[r.x + (r === layout.lobby ? r.width - 64 : 32), 32]])
     Pr.wallFront(P, pix, layout.corridor.x, 80 - b.y, layout.corridor.width, [[layout.lobby.x + 80, 32]])
     const light = new LightMap(b.width, b.height, P.ambient); light.apply(pix, 12); pix.blit(emit, 0, 0, emit.w, emit.h, 0, 0)
     const canvas = pixelCanvas(pix), frame = { rect: { x: 0, y: 0, width: b.width, height: b.height }, anchor: { x: 0, y: 0 }, hitRect: { x: 0, y: 0, width: b.width, height: b.height } }
     this.cache.set(key, { canvas, frame }); return canvas
   }
+  board(ctx: CanvasRenderingContext2D, lot: Point, counts: [number, number, number]) {
+    const key = `board:${this.theme}:${counts.join(',')}`
+    let cached = this.cache.get(key)
+    if (!cached) {
+      const pix = new Pix(64, 40), emit = new Pix(64, 40), P = THEMES[this.theme]
+      Pr.taskBoard(P, pix, 4, 3, counts, emit)
+      new LightMap(64, 40, P.ambient).apply(pix, 12); pix.blit(emit, 0, 0, emit.w, emit.h, 0, 0)
+      const canvas = pixelCanvas(pix), frame = { rect: { x: 0, y: 0, width: 64, height: 40 }, anchor: { x: 0, y: 0 }, hitRect: { x: 0, y: 0, width: 64, height: 40 } }
+      cached = { canvas, frame }; if (this.cache.size > 2500) this.cache.clear(); this.cache.set(key, cached)
+    }
+    ctx.drawImage(cached.canvas, lot.x + 16, lot.y + 16)
+  }
   bake(layout: Layout, names: Map<string, string>, time: number, boards = new Map<string, [number, number, number]>()): HTMLCanvasElement {
+    layout = canvasLayout(layout)
     const P = THEMES[this.theme], { bounds } = layout, oy = -bounds.y
     const world = new Pix(bounds.width, bounds.height), emit = new Pix(bounds.width, bounds.height), light = new LightMap(bounds.width, bounds.height, P.ambient)
     ground(P, world, 0, 0, bounds.width, bounds.height)
     const stamp = (s: GeneratedSprite, x: number, y: number) => world.blit(s.pix, 0, 0, s.pix.w, s.pix.h, x - s.ax, y + oy - s.ay)
-    const rooms = [{ ...layout.lobby, name: '', kind: 'lobby' }, ...layout.lots.map(l => ({ ...l, name: names.get(l.departmentId) ?? '', kind: 'hall' })), ...(layout.server ? [{ ...layout.server, name: '', kind: 'server' }] : [])]
+    const rooms = [...(!layout.isolated ? [{ ...layout.lobby, name: '', kind: 'lobby' }] : []), ...layout.lots.map(l => ({ ...l, name: names.get(l.departmentId) ?? '', kind: 'hall' })), ...(layout.server ? [{ ...layout.server, name: '', kind: 'server' }] : [])]
     for (let y = bounds.y + 24; y < 0; y += 48) for (let x = 24; x < bounds.width; x += 48) {
       if (rooms.some(r => x + 24 >= r.x && x - 24 < r.x + r.width && y + 24 >= r.y && y - 32 < r.y + r.height)) continue
       stamp(this.theme === 'cozy' ? Pr.tree(P, 0.9) : Pr.lampPost(P), x + (y % 3) * 4, y)
@@ -165,7 +186,7 @@ export class GeneratedArt {
     world.rect(layout.lobby.x + 80, oy + 80, 32, 40, P.path[0])
     floor(P, world, 'corridor', c.x, oy + 120, c.width, 16)
     for (let x = c.x; x < c.x + c.width - 80; x += 112) { stamp(Pr.parkBench(P), x + 40, 147); stamp(Pr.lampPost(P), x + 4, 140) }
-    stamp(Pr.bikeRack(P), layout.lobby.x + 156, 147)
+    if (!layout.isolated) stamp(Pr.bikeRack(P), layout.lobby.x + 156, 147)
     light.apply(world, 12); world.blit(emit, 0, 0, emit.w, emit.h, 0, 0)
     return pixelCanvas(world)
   }
