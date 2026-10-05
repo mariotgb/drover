@@ -10,6 +10,8 @@ export interface CodexIntegrationStatus {
   noDaemonSupported?: boolean
   daemonRunning?: boolean
   staleDaemonContext?: boolean
+  /** Changes when the concrete warning causes change, not on routine polling. */
+  warningKey?: string
 }
 
 export interface CodexIntegrationInstallResult {

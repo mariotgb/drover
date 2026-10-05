@@ -222,6 +222,7 @@ async function createAgentConnected(service: HerdrService, req: NewAgentRequest)
         label: req.workspaceLabel || basename(req.folder),
         focus: false
       })
+      if (!res.root_pane?.pane_id) throw new HerdrApiError('pane_creation_failed', 'herdr created the workspace but did not return a shell pane. Refresh the connection and try again.')
       paneId = res.root_pane.pane_id
       const tabLabel = req.tabLabel || req.name
       if (tabLabel) {
@@ -242,6 +243,7 @@ async function createAgentConnected(service: HerdrService, req: NewAgentRequest)
         ...(req.tabLabel || req.name ? { label: req.tabLabel || req.name } : {}),
         focus: false
       })
+      if (!res.root_pane?.pane_id) throw new HerdrApiError('pane_creation_failed', 'herdr did not return a shell pane for the new tab. Refresh the connection and try again.')
       paneId = res.root_pane.pane_id
     }
   } catch (e) {

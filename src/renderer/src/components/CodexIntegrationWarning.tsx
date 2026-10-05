@@ -9,16 +9,20 @@ import { useStore } from '../store'
 import { statusLabel } from '../model'
 import { Modal } from './Modal'
 import '../styles/codex-integration.css'
+import { codexWarningKey } from '../codex-warning'
 
 const useIntegration = create<{
   status: CodexIntegrationStatus | null
   busy: boolean
+  dismissed: string | null
   result: { operation: 'integration' | 'daemon'; outcome: 'ok' | 'warning' | 'error'; detail: string } | null
-}>(() => ({ status: null, busy: false, result: null }))
+}>(() => ({ status: null, busy: false, result: null, dismissed: null }))
 let checking: Promise<void> | null = null
 function refreshStatus() {
   if (isRemote || useStore.getState().platform !== 'darwin' || checking || useIntegration.getState().busy) return
-  checking = api.codexIntegrationStatus().then(status => { useIntegration.setState({ status }) })
+  checking = api.codexIntegrationStatus().then(status => {
+    useIntegration.setState(state => ({ status, dismissed: status.status === 'unavailable' || state.dismissed === codexWarningKey(status) ? state.dismissed : null }))
+  })
     .catch(() => { /* An unavailable check must not claim the integration is broken. */ })
     .finally(() => { checking = null })
 }
@@ -42,7 +46,7 @@ async function installIntegration() {
 
 /** Local preload only. Mounting/focus checks status; installation requires a click. */
 export function CodexIntegrationWarning() {
-  const { status, busy, result } = useIntegration()
+  const { status, busy, result, dismissed } = useIntegration()
   const [plan, setPlan] = useState<CodexDaemonRestartPlan | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
   const [planError, setPlanError] = useState<string | null>(null)
@@ -60,8 +64,9 @@ export function CodexIntegrationWarning() {
   useEffect(() => {
     if (isRemote || platform !== 'darwin') return
     refreshStatus()
+    const timer = window.setInterval(refreshStatus, 15000)
     window.addEventListener('focus', refreshStatus)
-    return () => window.removeEventListener('focus', refreshStatus)
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', refreshStatus) }
   }, [connectionStatus, session, platform])
   useEffect(() => {
     if (!plan) return
@@ -102,18 +107,20 @@ export function CodexIntegrationWarning() {
       setPlanError(t('Could not restart the Codex service. Refresh the agent list and try again.')); setPlanExpired(true)
     } finally { useIntegration.setState({ busy: false }) }
   }
-  if (isRemote || platform !== 'darwin' || (status?.status !== 'warning' && !result && !busy && !plan)) return null
+  const warningVisible = status?.status === 'warning' && dismissed !== codexWarningKey(status)
+  if (isRemote || platform !== 'darwin' || (!warningVisible && !result && !busy && !plan)) return null
   const resultLabel = result?.operation === 'daemon'
     ? result.outcome === 'ok' ? t('Codex service restarted') : result.outcome === 'warning' ? t('Codex service restarted, but the warning remains.') : t('Could not restart the Codex service')
     : result?.outcome === 'ok' ? t('Codex integration reinstalled') : result?.outcome === 'warning' ? t('Codex integration reinstalled, but the warning remains.') : t('Could not reinstall Codex integration')
   return <><div className="codex-integration-warning" role="status">
-    {status?.status === 'warning' && <>
+    {warningVisible && <>
       <p><AlertTriangle size={15} aria-hidden="true" />{t('Codex agents will not be restored after restarting herdr.')}</p>
       <p className="codex-integration-explanation">{t('The shared Codex service may retain stale HERDR_* variables from another pane.')} <button type="button" className="codex-issue-link" title="herdrdev/herdr#4649" aria-label={t('Known herdr issue')} onClick={() => void api.openExternal('https://github.com/herdrdev/herdr/issues/4649')}><CircleHelp size={14} /></button></p>
     </>}
-    {status?.status === 'warning' && <div className="codex-repair-actions">
+    {warningVisible && <div className="codex-repair-actions">
       <button type="button" className="btn btn-sm btn-primary" disabled={busy || planLoading} onClick={() => void loadPlan()}>{planLoading ? t('Checking Codex agents…') : t('Restart Codex service')}</button>
       <button type="button" className="btn btn-sm" disabled={busy || planLoading} onClick={() => void installIntegration()}>{t('Reinstall Codex integration')}</button>
+      <button type="button" className="btn btn-sm" disabled={busy || planLoading} onClick={() => useIntegration.setState({ dismissed: codexWarningKey(status), result: null })}>{t('Dismiss')}</button>
     </div>}
     {busy && <p>{t('Applying Codex repair…')}</p>}
     {planError && !plan && <p className="form-error">{planError}</p>}

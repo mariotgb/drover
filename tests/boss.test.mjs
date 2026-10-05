@@ -2,9 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, mkdirSync, realpathSync, symlinkSync, existsSync } from 'node:fs'
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -224,6 +224,92 @@ test('revalidates session and exclusions after a slow readiness probe', async t 
     assert.equal(delivery.status, change === 'excluded' ? 'excluded' : 'error')
     assert.equal(f.calls.some(c => c[0] === 'agent.prompt'), false)
   }
+})
+
+for (const state of ['empty pane', 'no panes', 'clean start']) test(`opening HQ: ${state} reuses the available location and starts one boss`, async t => {
+  const f = await fixture(t, { restoreAllowed: () => false })
+  const physical = join(f.root, 'physical-hq'), folder = join(f.root, 'hq-alias')
+  mkdirSync(physical); symlinkSync(physical, folder, 'dir')
+  await f.boss.setSettings({ hqFolder: folder })
+  assert.equal(await readFile(join(f.root, 'boss-settings.json'), 'utf8').then(JSON.parse).then(s => s.hqFolder), folder)
+  await assert.rejects(readFile(join(f.root, 'boss-binding.json')), { code: 'ENOENT' })
+  if (state !== 'clean start') f.svc.snapshot.workspaces.push({ workspace_id: 'legacy-hq', label: 'Штаб', number: 5 })
+  if (state === 'empty pane') {
+    f.svc.snapshot.tabs.push({ workspace_id: 'legacy-hq', tab_id: 'legacy-hq:t1' })
+    f.svc.snapshot.panes.push({ pane_id: 'legacy-hq:p1', workspace_id: 'legacy-hq', tab_id: 'legacy-hq:t1',
+      terminal_id: 'legacy-shell', cwd: realpathSync(folder), agent: null, agent_status: 'unknown' })
+  }
+  const original = f.svc.request.bind(f.svc)
+  f.svc.request = async (method, params) => {
+    if (method === 'session.snapshot') return { snapshot: f.svc.snapshot }
+    if (method === 'tab.create') {
+      f.calls.push([method, params])
+      const pane = { pane_id: 'legacy-hq:p1', workspace_id: params.workspace_id, tab_id: 'legacy-hq:t1',
+        terminal_id: 'created-shell', cwd: realpathSync(params.cwd), agent: null, agent_status: 'unknown' }
+      f.svc.snapshot.tabs.push({ workspace_id: params.workspace_id, tab_id: pane.tab_id })
+      f.svc.snapshot.panes.push(pane)
+      return { root_pane: pane }
+    }
+    const result = await original(method, params)
+    if (method === 'workspace.create') result.root_pane.cwd = realpathSync(folder)
+    if (method === 'agent.start') f.svc.snapshot.agents.find(a => a.pane_id === params.pane_id).agent_status = 'idle'
+    return result
+  }
+  const req = { kind: 'codex', prompt: 'ROLE' }
+  const opened = await f.boss.open(req)
+  assert.equal(opened.ok, true)
+  assert.equal(opened.paneId, state === 'clean start' ? 'hq:p1' : 'legacy-hq:p1')
+  assert.equal(f.calls.filter(([m]) => m === 'workspace.create').length, state === 'clean start' ? 1 : 0)
+  assert.equal(f.calls.filter(([m]) => m === 'tab.create').length, state === 'no panes' ? 1 : 0)
+  assert.equal(f.calls.filter(([m]) => m === 'agent.start').length, 1)
+  assert.equal(f.boss.isHqPane(opened.paneId), true)
+  assert.ok(!(await f.boss.roster()).projects.some(p => p.cwd === physical))
+  assert.equal((await f.boss.open(req)).paneId, opened.paneId)
+  assert.equal(f.calls.filter(([m]) => m === 'agent.start').length, 1)
+})
+
+test('boss opening uses authoritative snapshots even while service refresh is in flight', async t => {
+  const f = await fixture(t, { restoreAllowed: () => false })
+  const folder = (await f.boss.settings()).hqFolder
+  mkdirSync(folder, { recursive: true })
+  const live = structuredClone(f.svc.snapshot)
+  live.workspaces.push({ workspace_id: 'legacy-hq', label: 'Штаб', number: 5 })
+  live.panes.push({ workspace_id: 'legacy-hq', pane_id: 'legacy-hq:p1', tab_id: 'legacy-hq:t1', terminal_id: 'shell', cwd: folder, agent: null })
+  const original = f.svc.request.bind(f.svc)
+  f.svc.refresh = async () => {} // HerdrService.refresh returns before an in-flight read completes.
+  f.svc.request = async (method, params) => {
+    if (method === 'session.snapshot') return { snapshot: live }
+    if (method === 'agent.start') {
+      f.calls.push([method, params])
+      live.agents.push({ ...live.panes.find(p => p.pane_id === params.pane_id), agent: params.kind, name: params.name,
+        agent_status: 'idle', interactive_ready: true })
+      return {}
+    }
+    if (method === 'agent.get') return { agent: live.agents.find(a => a.pane_id === params.target) }
+    return original(method, params)
+  }
+  const opened = await f.boss.open({ kind: 'codex', prompt: 'ROLE' })
+  assert.equal(opened.ok, true)
+  assert.equal(opened.paneId, 'legacy-hq:p1')
+  assert.equal(f.calls.some(([m]) => m === 'workspace.create' || m === 'tab.create'), false)
+  assert.equal(f.calls.filter(([m]) => m === 'agent.start').length, 1)
+  assert.equal(f.svc.snapshot.panes.some(p => p.pane_id === opened.paneId), false, 'shared snapshot is still stale')
+})
+
+test('user HQ path matches symlinks, trailing slash and filesystem-supported case variants without writing HQ', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'drover-hq-path-'))
+  const actual = join(homedir(), '.drover', 'hq')
+  const folder = existsSync(actual) ? actual : join(root, '.drover', 'hq')
+  if (!existsSync(folder)) mkdirSync(folder, { recursive: true })
+  const alias = join(root, 'HQ-link'); symlinkSync(folder, alias, 'dir')
+  const store = new m.BossSettingsStore(join(root, 'boss-settings.json'), folder + '/')
+  const svc = { sessionName: 'path-test', snapshot: { panes: [{ pane_id: 'hq:p1', workspace_id: 'hq', cwd: realpathSync(folder) }], agents: [] } }
+  const boss = new m.BossService(svc, store, () => ({}), () => {}, () => {}, { restoreAllowed: () => false })
+  t.after(() => { boss.dispose(); rmSync(root, { recursive: true, force: true }) })
+  await boss.settings()
+  for (const value of [folder, folder + '/', alias]) assert.equal(boss.isHqFolder(value), true, value)
+  if (existsSync(folder.toUpperCase())) assert.equal(boss.isHqFolder(folder.toUpperCase()), true)
+  assert.equal(boss.isHqPane('hq:p1'), true)
 })
 
 test('opening HQ creates board/roster before role prompt, and reopens without duplicate agents or role prompts', async t => {

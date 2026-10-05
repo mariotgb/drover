@@ -39,9 +39,17 @@ function daemonFixture(extra = {}) {
   const snapshot = { agents, panes: agents, tabs: [], workspaces: [], layouts: [] }
   const calls = []
   const service = { codexLaunch: { supportsNoDaemon: async () => true } }
+  let running = true
   const daemon = new m.CodexDaemon(service, {
-    run: async args => { calls.push(args); return { code: 0, stdout: JSON.stringify({ status: 'running' }), stderr: '' } },
-    daemonContext: async () => ({ identity: '123', paneId: 'stale:p1', socketPath: '/test.sock' }),
+    run: async args => {
+      calls.push(args)
+      if (args.at(-1) === 'stop') running = false
+      if (args.at(-1) === 'start') running = true
+      return { code: 0, stdout: JSON.stringify({ status: running ? 'running' : 'stopped' }), stderr: '' }
+    },
+    probe: async () => ({ code: 0, stdout: 'Accepts new sessions', stderr: '' }),
+    wait: async () => {},
+    daemonContext: async () => ({ identity: running ? '123' : '', paneId: 'stale:p1', socketPath: '/test.sock' }),
     snapshots: async () => [{ session: 'isolated', snapshot }], ...extra
   })
   return { daemon, calls, snapshot, service }
@@ -56,7 +64,8 @@ test('daemon plan is read-only, includes interruption list and wait recommendati
   assert.deepEqual(plan.agents, [{ session: 'isolated', paneId: 'w1:p1', name: 'worker', status: 'working', hasSession: false }])
   assert.ok(f.calls.every(args => !args.includes('restart')))
   await f.daemon.execute(plan.token)
-  assert.equal(f.calls.filter(args => args.includes('restart')).length, 1)
+  assert.deepEqual(f.calls.slice(-4).map(args => args.at(-1)), ['stop', 'version', 'start', 'version'])
+  assert.equal(f.calls.some(args => args.includes('restart')), false)
   await assert.rejects(f.daemon.execute(plan.token), /fresh/)
 })
 
@@ -67,7 +76,7 @@ test('daemon status changes do not invalidate a confirmed restart plan', async (
     f.snapshot.agents[0].agent_status = status
     assert.equal((await f.daemon.execute(plan.token)).outcome, 'completed')
   }
-  assert.equal(f.calls.filter(args => args.includes('restart')).length, 5)
+  assert.equal(f.calls.filter(args => args.includes('start')).length, 5)
 })
 
 test('daemon identity and agent membership changes return a fresh plan requiring another confirmation', async () => {
@@ -86,12 +95,12 @@ test('daemon identity and agent membership changes return a fresh plan requiring
     assert.deepEqual(result.plan.agents.map(agent => agent.name), f.snapshot.agents.map(agent => agent.name))
     assert.equal(f.calls.some(args => args.includes('restart')), false)
     assert.equal((await f.daemon.execute(result.plan.token)).outcome, 'completed')
-    assert.equal(f.calls.filter(args => args.includes('restart')).length, 1)
+    assert.equal(f.calls.filter(args => args.includes('start')).length, 1)
   }
   for (const field of ['identity', 'session']) {
     let identity = '123', session = 'isolated'
     const f = daemonFixture({
-      daemonContext: async () => ({ identity, paneId: 'stale:p1', socketPath: '/test.sock' }),
+      daemonContext: async () => ({ identity: f.calls.at(-1)?.at(-1) === 'version' && f.calls.at(-2)?.at(-1) === 'stop' ? '' : identity, paneId: 'stale:p1', socketPath: '/test.sock' }),
       snapshots: async () => [{ session, snapshot: f.snapshot }]
     })
     const plan = await f.daemon.plan()
@@ -184,4 +193,60 @@ test('daemon execute checks expiry again after asynchronous inventory revalidati
     await assert.rejects(f.daemon.execute(plan.token), /fresh/)
     assert.equal(f.calls.some(args => args.includes('restart')), false)
   } finally { Date.now = original }
+})
+
+test('daemon waits for the old process to stop, then checks a new session; draining never counts as success', async () => {
+  for (const scenario of ['delayed-stop', 'stop-fails', 'never-stops', 'start-fails', 'not-running', 'draining', 'version-unavailable']) {
+    const calls = []; let phase = 'old', polls = 0, probes = 0
+    const result = (code, stdout = '', stderr = '') => ({ code, stdout, stderr })
+    const f = daemonFixture({
+      run: async args => {
+        const command = args.at(-1); calls.push(command)
+        if (command === 'stop') { if (scenario === 'stop-fails') return result(1, '', 'stop rejected'); phase = 'stopping'; return result(0) }
+        if (command === 'start') { phase = 'new'; return scenario === 'start-fails' ? result(1, '', 'start rejected') : result(0) }
+        if (phase === 'stopping') {
+          polls++
+          if (scenario === 'never-stops') return result(0, '{"status":"running"}')
+          if (scenario === 'version-unavailable') return result(1, '', 'permission denied')
+          if (scenario === 'delayed-stop' && polls === 1) return result(0, '{"status":"running"}')
+          phase = 'stopped'
+          return result(1, '', 'failed to connect to socket: No such file or directory')
+        }
+        return result(0, JSON.stringify({ status: phase === 'new' && scenario === 'not-running' ? 'stopped' : 'running' }))
+      },
+      daemonContext: async () => ({ identity: phase === 'stopped' ? '' : '123', paneId: null, socketPath: null }),
+      probe: async () => { probes++; return scenario === 'draining' ? result(1, '', 'Server is draining; retry after reconnecting') : result(0, 'accepts sessions') }
+    })
+    const plan = await f.daemon.plan(), executed = await f.daemon.execute(plan.token)
+    assert.equal(executed.code === 0, scenario === 'delayed-stop', scenario)
+    assert.equal(calls.includes('restart'), false)
+    if (['stop-fails', 'never-stops', 'version-unavailable'].includes(scenario)) assert.equal(calls.includes('start'), false)
+    if (scenario !== 'delayed-stop') assert.match(executed.stderr, /Codex service|Codex.*shutdown/)
+    assert.equal(probes, ['delayed-stop', 'draining'].includes(scenario) ? 1 : 0)
+    if (scenario === 'draining') assert.match(executed.stderr, /draining/)
+  }
+})
+
+test('daemon probe uses an ephemeral session without turns, removes inherited HERDR context, and rejects draining', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'drover-daemon-probe-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(join(dir, 'codex'), `#!${process.execPath}
+const readline = require('node:readline');
+if (process.argv.slice(2).join(' ') !== 'app-server proxy') process.exit(2);
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+readline.createInterface({input:process.stdin}).on('line', line => {
+ const request = JSON.parse(line);
+ if (Object.keys(process.env).some(k => k.startsWith('HERDR_')) || process.env.CODEX_THREAD_ID) return send({id:request.id,error:{message:'inherited context'}});
+ if (request.method === 'initialize') send({id:request.id,result:{}});
+ else if (request.method === 'thread/start') {
+  if (!request.params.ephemeral || request.params.sandbox !== 'readOnly') process.exit(3);
+  send(process.env.TEST_DRAINING ? {id:request.id,error:{message:'Server is draining; retry after reconnecting'}} : {id:request.id,result:{thread:{id:'test',ephemeral:true}}});
+ } else if (request.method === 'thread/unsubscribe') send({id:request.id,result:{}});
+ else if (request.method !== 'initialized') process.exit(4);
+});
+`, { mode: 0o700 })
+  const env = { PATH: dir, HERDR_PANE_ID: 'old', HERDR_SOCKET_PATH: 'old.sock', HERDR_EXTRA: 'old', CODEX_THREAD_ID: 'old' }
+  assert.equal((await m.probeCodexDaemon(env)).code, 0)
+  assert.match((await m.probeCodexDaemon({ ...env, TEST_DRAINING: '1' })).stderr, /draining/)
+  assert.deepEqual(m.daemonEnvironment(env), { PATH: dir })
 })

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 import { agentKindDef } from '@shared/agents'
-import type { AgentInfo, HerdrSnapshot } from '@shared/types'
+import { HerdrApiError, type AgentInfo, type HerdrSnapshot } from '@shared/types'
 import type { AgentLaunch } from '@shared/agentRestart'
 import { modelArgs, type ModelChoice } from '@shared/models'
 import { projectLeadRoster, type BossAssignment, type BossBroadcastRequest, type BossDelivery, type BossLead, type BossOpenRequest, type BossOpenResult, type BossRoster, type BossSettings } from '@shared/boss'
@@ -16,6 +16,7 @@ import { provisionHq } from './hq'
 import { BossLocalServer } from './local'
 import { formatBossAssignment, parseBossReply } from './protocol'
 import { access, readFile, readdir, unlink } from 'node:fs/promises'
+import { realpathSync, statSync } from 'node:fs'
 
 interface BossRuntime {
   instructions?: string
@@ -38,6 +39,20 @@ interface Pending {
 }
 const identity = (agent: AgentInfo) => JSON.stringify([agent.terminal_id, agent.agent_session, agent.agent, agent.name])
 const RECEIPT_LIMIT = 10_000
+
+// Herdr reports physical cwd paths; settings may contain a symlink (e.g. /tmp on macOS).
+function hqPath(folder: string): string {
+  try { return realpathSync(folder) } catch { return resolve(folder) }
+}
+function sameHqFolder(left: string, right: string): boolean {
+  if (hqPath(left) === hqPath(right)) return true
+  // realpath does not consistently fix letter case on case-insensitive macOS.
+  // Inode comparison respects the actual filesystem rather than lowercasing paths.
+  try {
+    const a = statSync(left), b = statSync(right)
+    return a.dev === b.dev && a.ino === b.ino
+  } catch { return false }
+}
 
 /** Native resume arguments, matching herdr's agent_resume plans. */
 export function bossResumeArgs(kind: string, value: string): string[] {
@@ -100,7 +115,7 @@ export class BossService {
   async setSettings(patch: Partial<BossSettings>): Promise<BossSettings> {
     await this.ready
     const binding = this.store.globalBinding()
-    if (binding && patch.hqFolder && resolve(patch.hqFolder) !== binding.folder) throw new Error('The Main boss is already bound to its headquarters')
+    if (binding && patch.hqFolder && !sameHqFolder(patch.hqFolder, binding.folder)) throw new Error('The Main boss is already bound to its headquarters')
     // Serialize settings changes alongside roster writes, preserving their order.
     let next!: BossSettings
     const operation = this.writes.then(async () => { next = await this.store.set(patch); this.folders.add(next.hqFolder); this.lastRoster = '' })
@@ -144,8 +159,14 @@ export class BossService {
     void this.drain()
   }
   isHqFolder(folder: string): boolean {
-    const normalized = resolve(folder)
-    return [...this.folders].some(hq => normalized === hq || normalized.startsWith(hq + sep))
+    const normalized = hqPath(folder)
+    return [...this.folders].some(hq => {
+      const root = hqPath(hq)
+      if (normalized === root || normalized.startsWith(root + sep)) return true
+      const candidate = normalized.slice(0, root.length)
+      if (candidate.toLowerCase() !== root.toLowerCase() || (normalized.length > root.length && normalized[root.length] !== sep)) return false
+      return sameHqFolder(candidate, root)
+    })
   }
   private hqWorkspaces(): Set<string> {
     return new Set((this.service.snapshot?.panes ?? []).filter(p => p.cwd && this.isHqFolder(p.cwd)).map(p => p.workspace_id))
@@ -159,7 +180,7 @@ export class BossService {
     if (this.store.globalBinding() && this.store.globalBinding()!.session !== this.service.sessionName) return false
     const binding = this.store.binding(this.service.sessionName)
     if (binding) return paneId === binding.paneId && !!pane && !!this.service.snapshot?.agents.some(a => a.pane_id === paneId && a.agent === binding.kind)
-    return !!pane && this.service.snapshot!.panes.some(p => p.workspace_id === pane.workspace_id && p.cwd === this.store.get().hqFolder) &&
+    return !!pane && this.service.snapshot!.panes.some(p => p.workspace_id === pane.workspace_id && !!p.cwd && sameHqFolder(p.cwd, this.store.get().hqFolder)) &&
       !!this.service.snapshot?.agents.some(a => a.pane_id === paneId && /^drover-boss(?:-\d+)?$/.test(a.name ?? ''))
   }
   async open(req: BossOpenRequest): Promise<BossOpenResult> {
@@ -172,13 +193,14 @@ export class BossService {
       needsSessionSwitch: true, session: owner.session, folder: owner.folder, paneId: owner.paneId, workspaceId: owner.workspaceId,
       error: `The Main boss belongs to session ${owner.session}. Confirm switching to that session to open it.` }
     if (this.opening) return this.opening
-    await this.captureBinding()
-    const existing = this.current().boss
-    if (existing) return { ok: true, folder: this.current().hqFolder, paneId: existing.paneId, existing: true }
-    const binding = this.store.binding(this.service.sessionName)
-    if (binding) return this.startBound(binding)
     const installed = this.runtime.kindInstalled ? this.runtime.kindInstalled(req.kind) : definition.binaries.some(binary => which(binary, this.service.env ?? process.env))
-    if (!installed) throw new Error(`Agent is not installed: ${req.kind}`)
+    if (!installed && !this.store.binding(this.service.sessionName) && !this.current().boss) throw new Error(`Agent is not installed: ${req.kind}`)
+    const snapshot = await this.hqSnapshot()
+    await this.captureBinding(snapshot)
+    const binding = this.store.binding(this.service.sessionName)
+    const existing = binding && snapshot?.agents.find(a => a.pane_id === binding.paneId && a.agent === binding.kind)
+    if (existing) return { ok: true, folder: binding.folder, paneId: existing.pane_id, workspaceId: existing.workspace_id, existing: true }
+    if (binding) return this.startBound(binding)
     if (this.opening) return this.opening
     this.opening = this.openHq(req).finally(() => { this.opening = null })
     return this.opening
@@ -190,15 +212,18 @@ export class BossService {
     const folder = this.store.get().hqFolder
     await ensureBoard(folder)
     await this.prepare(folder, req.kind)
-    const snapshot = this.service.snapshot
-    const panes = (snapshot?.panes ?? []).filter(p => p.cwd === folder)
+    const snapshot = await this.hqSnapshot()
+    const panes = (snapshot?.panes ?? []).filter(p => p.cwd && sameHqFolder(p.cwd, folder))
     const existing = snapshot?.agents.find(a => panes.some(p => p.workspace_id === a.workspace_id) && /^drover-boss(?:-\d+)?$/.test(a.name ?? ''))
     if (existing) {
-      await this.captureBinding()
+      await this.captureBinding(snapshot)
       return { ok: true, folder, paneId: existing.pane_id, workspaceId: existing.workspace_id, existing: true }
     }
     const shell = panes.find(p => !p.agent && !snapshot?.agents.some(a => a.pane_id === p.pane_id))
-    const workspaceId = panes[0]?.workspace_id ?? null
+    // A workspace can survive with no panes. Reuse only an empty HQ-labelled
+    // workspace; its label alone must never select an unrelated occupied pane.
+    const workspaceId = panes[0]?.workspace_id ?? snapshot?.workspaces.find(w =>
+      w.label === 'Штаб' && !snapshot.panes.some(p => p.workspace_id === w.workspace_id))?.workspace_id ?? null
     if (this.disposed || session !== this.service.sessionName) return { ok: false, folder, error: 'The HQ session has changed' }
     // Reserve and persist the location before launching: a crash or a startup
     // dialog cannot make the next click allocate another boss pane.
@@ -208,13 +233,22 @@ export class BossService {
       splitTarget: shell?.pane_id })
     if (!location.ok || !location.paneId) return { ...location, folder }
     if (session !== this.service.sessionName) return { ok: false, folder, error: 'The HQ session has changed' }
-    await this.service.refresh?.()
-    const pane = this.service.snapshot?.panes.find(p => p.pane_id === location.paneId)
-    if (!pane) return { ok: false, folder, error: 'HQ pane has not appeared in the session snapshot' }
+    // refresh() can return immediately while another refresh is in flight.
+    // Read the authoritative snapshot directly after reserving the location.
+    const pane = (await this.hqSnapshot())?.panes.find(p => p.pane_id === location.paneId)
+    if (!pane) return { ok: false, folder, code: 'hq_pane_unavailable', error: 'Could not find the HQ pane after creating it. Refresh the herdr connection and try again.' }
     const binding: BossBinding = { session, folder, paneId: pane.pane_id,
       workspaceId: pane.workspace_id, kind: req.kind, name: 'drover-boss', args: req.args ?? [], prompt: req.prompt }
     await this.persistBinding(binding)
     return this.launchBound(binding)
+  }
+
+  private async hqSnapshot(): Promise<HerdrSnapshot | null> {
+    const client = this.service.client, generation = this.service.connectionGeneration, session = this.service.sessionName
+    const result = await this.service.request<{ snapshot: HerdrSnapshot }>('session.snapshot', {}, 8000)
+    if (client !== this.service.client || generation !== this.service.connectionGeneration || session !== this.service.sessionName)
+      throw new HerdrApiError('session_changed', 'The HQ connection changed. Reconnect to the boss session and try again.')
+    return result.snapshot ?? this.service.snapshot
   }
 
   private async persistBinding(binding: BossBinding): Promise<void> {
@@ -271,11 +305,12 @@ export class BossService {
       agent: launch.kind, kind: 'id', value: launch.sessionId, source: 'drover:restart'
     } : undefined } : null)
   }
-  private async captureBinding(): Promise<void> {
+  private async captureBinding(snapshot = this.service.snapshot): Promise<void> {
     const session = this.service.sessionName
     if (this.store.globalBinding() && this.store.globalBinding()!.session !== session) return
     const binding = this.store.binding(session)
-    const agent = this.service.snapshot?.agents.find(a => binding ? a.pane_id === binding.paneId : this.isBoss(a.pane_id))
+    const agent = snapshot?.agents.find(a => binding ? a.pane_id === binding.paneId :
+      /^drover-boss(?:-\d+)?$/.test(a.name ?? '') && snapshot.panes.some(p => p.workspace_id === a.workspace_id && p.cwd && sameHqFolder(p.cwd, this.store.get().hqFolder)))
     if (!agent || (binding && agent.agent !== binding.kind)) return
     const next: BossBinding = binding ? { ...binding, name: agent.name || binding.name, agentSession: agent.agent_session ?? binding.agentSession } : {
       session, folder: this.store.get().hqFolder, workspaceId: agent.workspace_id, paneId: agent.pane_id,
@@ -296,10 +331,10 @@ export class BossService {
   }
   private async launchBound(binding: BossBinding): Promise<BossOpenResult> {
     if (this.disposed || binding.session !== this.service.sessionName) return { ok: false, folder: binding.folder, error: 'The HQ session has changed' }
-    const snapshot = this.service.snapshot
     const client = this.service.client, generation = this.service.connectionGeneration
-    const pane = snapshot?.panes.find(p => p.pane_id === binding.paneId && p.workspace_id === binding.workspaceId && p.cwd === binding.folder)
-    if (!pane) return { ok: false, folder: binding.folder, paneId: binding.paneId, error: 'The existing HQ pane is unavailable; reconnect to its session' }
+    const snapshot = await this.hqSnapshot()
+    const pane = snapshot?.panes.find(p => p.pane_id === binding.paneId && p.workspace_id === binding.workspaceId && !!p.cwd && sameHqFolder(p.cwd, binding.folder))
+    if (!pane) return { ok: false, folder: binding.folder, paneId: binding.paneId, code: 'hq_pane_unavailable', error: 'The saved HQ pane is missing or its folder has changed. Reconnect to the boss session and check the HQ folder.' }
     const occupant = snapshot?.agents.find(a => a.pane_id === binding.paneId)
     if (occupant || pane.agent) return { ok: !!occupant && occupant.agent === binding.kind, folder: binding.folder, paneId: binding.paneId,
       workspaceId: binding.workspaceId, existing: true, ...(occupant?.agent === binding.kind ? {} : { error: 'The HQ pane is occupied' }) }
