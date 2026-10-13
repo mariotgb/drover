@@ -71,7 +71,6 @@
       ],
       "icon": "resources/icon.png",
       "category": "Development",
-      "desktopName": "drover.desktop",
       "syncDesktopName": true,
       "maintainer": "mariotgb",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
