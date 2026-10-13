@@ -183,6 +183,8 @@ export class HerdrService extends EventEmitter<Events> {
         this.startedHere = false
         this.startedChild = null
       }
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
       this.setConnection({ status: 'connected', error: undefined, version: pong?.version })
       this.subscribeLifecycle(gen)
       await this.refresh()
@@ -298,22 +300,31 @@ export class HerdrService extends EventEmitter<Events> {
 
   private subscribeLifecycle(gen: number) {
     if (!this.client) return
-    this.lifecycleSub?.close()
-    this.lifecycleSub = this.client.subscribe(
+    const client = this.client
+    const previous = this.lifecycleSub
+    this.lifecycleSub = null
+    previous?.close()
+    const subscription = client.subscribe(
       LIFECYCLE_EVENTS.map((type) => ({ type })),
       {
-        onEvent: () => this.scheduleRefresh(),
+        onEvent: () => {
+          if (gen === this.generation && client === this.client && this.lifecycleSub === subscription) this.scheduleRefresh()
+        },
         onClose: () => {
-          if (gen !== this.generation) return
+          // Replacing our own stream is not a transport failure. A callback
+          // from an older handle must never tear down its replacement.
+          if (gen !== this.generation || client !== this.client || this.lifecycleSub !== subscription) return
           this.lifecycleSub = null
-          this.statusSub?.close()
+          const status = this.statusSub
           this.statusSub = null
           this.statusPaneKey = ''
+          status?.close()
           this.setConnection({ status: 'disconnected', error: 'lost connection to herdr server' })
           this.scheduleReconnect(gen)
         }
       }
     )
+    this.lifecycleSub = subscription
   }
 
   /** Agent status events are pane-scoped, so the subscription follows the pane set. */
@@ -322,21 +333,27 @@ export class HerdrService extends EventEmitter<Events> {
     const ids = snapshot.panes.map((p) => p.pane_id).sort()
     const key = ids.join(',')
     if (key === this.statusPaneKey && this.statusSub && !this.statusSub.closed) return
-    this.statusSub?.close()
+    const previous = this.statusSub
     this.statusSub = null
+    previous?.close()
     this.statusPaneKey = key
     if (!ids.length) return
     const gen = this.generation
-    this.statusSub = this.client.subscribe(
+    const client = this.client
+    const subscription = client.subscribe(
       ids.map((pane_id) => ({ type: 'pane.agent_status_changed', pane_id })),
       {
-        onEvent: () => this.scheduleRefresh(15),
+        onEvent: () => {
+          if (gen === this.generation && client === this.client && this.statusSub === subscription) this.scheduleRefresh(15)
+        },
         onClose: () => {
-          if (gen !== this.generation) return
+          if (gen !== this.generation || client !== this.client || this.statusSub !== subscription) return
+          this.statusSub = null
           this.statusPaneKey = ''
         }
       }
     )
+    this.statusSub = subscription
   }
 
   scheduleRefresh(delay = 60) {
@@ -423,7 +440,7 @@ export class HerdrService extends EventEmitter<Events> {
     }
     const result = await client.request<T>(method, params, timeoutMs)
     if (method === 'agent.start' && client === this.client && generation === this.generation) await this.agentRestore?.launched(params)
-    if (client === this.client && generation === this.generation && !method.endsWith('.list') && !method.endsWith('.get') && !method.endsWith('.read') && method !== 'session.snapshot') {
+    if (client === this.client && generation === this.generation && !method.endsWith('.list') && !method.endsWith('.get') && !method.endsWith('.read') && method !== 'session.snapshot' && method !== 'pane.process_info') {
       this.scheduleRefresh(30)
     }
     return result
