@@ -448,7 +448,7 @@ export class OfficeEngine {
           add('agent.user', throwing ? 'throw:front' : 'idle:front', p, throwing ? now - throwing.startedAt : frameTime)
         } else {
           const active = this.connected && now - (this.machineActivity.get(node.id) ?? -Infinity) < 4000
-          add('object.machine', active ? 'active' : 'idle', { x: p.x, y: p.y + 28 }, frameTime)
+          add('object.machine', active ? 'active' : node.state === 'offline' ? 'off' : 'idle', { x: p.x, y: p.y + 28 }, frameTime)
           if (active) objects.push({ y: Infinity, paint: () => this.art.overlay(ctx, 'waves', { x: p.x, y: p.y - 10, phase: motion ? Math.floor(now / 200) % 3 : 0 }) })
         }
       }

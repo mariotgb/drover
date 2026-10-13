@@ -18,6 +18,7 @@ These helpers are optional system configuration scripts. Run Mac commands as you
 | `bridge/mac-ssh-config.template` | Mac | `ssh pc` / `ssh homeserver` through the restricted VPS jump user |
 | `bridge/iphone-ssh-config.example` | iPhone SSH client | Optional SSH to Mac, separate from browser pairing |
 | `tests/setup_checks.py` | Mac | Offline SSH policy/rollback regression checks using temporary files |
+| `machines/` | Bridge + Linux/macOS/Windows target | Dynamic Machines provisioning, one-time capability installers, retirement; [contract and limitations](machines/README.md) |
 
 The bridge account names, labels and loopback ports are shared defaults, not personal server names. `VPS_HOST` is required; `VPS_PORT=22` and `VPS_USER=bridge-mac` are defaults. Mac paths are derived from `$HOME`; `__HOME__`, `__VPS_HOST__`, `__VPS_PORT__`, `__VPS_USER__` and `__MAC_USER__` are template placeholders. Do not install templates containing unresolved placeholders manually.
 

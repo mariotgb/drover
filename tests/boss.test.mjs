@@ -10,6 +10,15 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 const execute = promisify(execFile)
 
+async function waitForCondition(check, description, timeoutMs = 5000) {
+  const deadline = performance.now() + timeoutMs
+  do {
+    if (await check()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  } while (performance.now() < deadline)
+  assert.fail(`Timed out waiting for ${description}`)
+}
+
 const bundleDir = mkdtempSync(join(tmpdir(), 'drover-boss-bundle-'))
 await build({ stdin: { contents: `
   export * from './src/shared/boss'
@@ -578,7 +587,7 @@ test('reply rejects unassigned/stale incarnations and blocked boss; fallback rep
   const file = join((await f.boss.settings()).hqFolder, '.drover', 'boss-requests.json')
   assert.equal(JSON.parse(await readFile(file, 'utf8')).requests[0].projects[0].replyUnconfirmed, undefined)
   f.boss.observeConfirmedReply('w2:p2', 'hq:p1', '[Ответ /project/a · reply-1] result')
-  await new Promise(r => setTimeout(r, 20))
+  await waitForCondition(async () => JSON.parse(await readFile(file, 'utf8')).requests[0].projects[0].replyUnconfirmed, 'unconfirmed reply to be persisted')
   const project = JSON.parse(await readFile(file, 'utf8')).requests[0].projects[0]
   assert.equal(project.awaitingReply, true)
   assert.ok(project.replyUnconfirmed)

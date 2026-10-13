@@ -4,6 +4,7 @@ import { RefreshCw } from 'lucide-react'
 import type { AppSettings, ClaudeStatuslineState, HerdrSessionInfo } from '@shared/types'
 import { api, isRemote } from '../api'
 import { RemoteAccessSettings } from './RemoteAccessSettings'
+import { MachinesSettings } from './MachinesSettings'
 import { PushSettings } from './PushSettings'
 import { LANGUAGES, t, type LangSetting } from '../i18n'
 import { toast, updateSettings, useStore } from '../store'
@@ -26,7 +27,7 @@ export function SettingsDialog({ initialTab }: { initialTab?: string }) {
     { id: 'roles', label: t('Roles') },
     ...(!isRemote ? [{ id: 'boss', label: t('Main boss') }] : []),
     { id: 'notifications', label: t('Notifications') },
-    ...(!isRemote ? [{ id: 'remote', label: t('Remote access') }, { id: 'herdr', label: 'herdr' }] : []),
+    ...(!isRemote ? [{ id: 'machines', label: t('Machines') }, { id: 'remote', label: t('Remote access') }, { id: 'herdr', label: 'herdr' }] : []),
     { id: 'integrations', label: t('Integrations') },
     { id: 'plugins', label: t('Plugins') },
     { id: 'about', label: t('About') }
@@ -48,6 +49,7 @@ export function SettingsDialog({ initialTab }: { initialTab?: string }) {
         </nav>
         <div className="settings-pane">
           {tab === 'remote' && <RemoteAccessSettings />}
+          {tab === 'machines' && !isRemote && <MachinesSettings />}
           {tab === 'general' && <General />}
           {tab === 'appearance' && <AppearanceSettingsPane />}
           {tab === 'roles' && <RolesSettingsPane />}

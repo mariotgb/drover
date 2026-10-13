@@ -10,6 +10,7 @@ import { HerdrApiError } from '@shared/types'
 import { loginEnv } from '../env'
 import { HerdrClient, type SubscriptionHandle } from './client'
 import { CodexLaunch } from '../codexLaunch'
+import { machineLaunchArgs } from '../machines/launch'
 import {
   defaultSocketPath,
   findHerdr,
@@ -81,7 +82,7 @@ export class HerdrService extends EventEmitter<Events> {
   readonly codexLaunch = new CodexLaunch(() => this.env)
 
   constructor(
-    private opts: { logDir: string; autoStartServer: () => boolean }
+    private opts: { logDir: string; autoStartServer: () => boolean; machineInstructions?: (cwd: string) => Promise<string | null> }
   ) {
     super()
   }
@@ -317,6 +318,13 @@ export class HerdrService extends EventEmitter<Events> {
   ): Promise<T> {
     if (!this.client) throw new HerdrApiError('not_connected', 'not connected to herdr')
     const client = this.client, generation = this.generation
+    if (method === 'agent.start' && this.opts.machineInstructions) {
+      const pane = this.snapshot?.panes.find(p => p.pane_id === params.pane_id)
+      const cwd = pane?.foreground_cwd || pane?.cwd
+      const pointer = cwd ? await this.opts.machineInstructions(cwd) : null
+      if (pointer) params = { ...params, args: machineLaunchArgs(String(params.kind), Array.isArray(params.args) ? params.args as string[] : [], pointer) }
+      if (client !== this.client || generation !== this.generation) throw new HerdrApiError('session_changed', 'The herdr session changed before agent launch')
+    }
     if (method === 'agent.start' && params.kind === 'codex') {
       params = { ...params, args: await this.codexLaunch.args(Array.isArray(params.args) ? params.args as string[] : []) }
       if (client !== this.client || generation !== this.generation) throw new HerdrApiError('session_changed', 'The herdr session changed before agent launch')

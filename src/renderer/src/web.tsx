@@ -11,6 +11,7 @@ import './styles/chat.css'
 import './styles/dialogs.css'
 import './styles/remote.css'
 import './styles/mobile.css'
+import './styles/machines.css'
 import './styles/mobile-design.css'
 import { trackMobileViewport } from './mobile'
 

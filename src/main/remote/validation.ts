@@ -127,6 +127,7 @@ function positional(args: unknown[], checks: Check[], min = checks.length) {
 }
 export function validateRpcArgs(method: string, args: unknown[]): void {
   switch (method) {
+    case 'machinesStatus': positional(args, []); return
     case 'request': positional(args, [str(100, 1), v => plain(v), optional(number(100, 120_000))], 2); validateHerdrRequest(args); return
     case 'setSettings': positional(args, [v => plain(v)]); validateSettingsPatch(args[0], true); return
     case 'termOpen': positional(args, [terminalId, id, number(1, 1000), number(1, 500)]); return

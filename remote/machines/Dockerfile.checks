@@ -1,0 +1,5 @@
+FROM ubuntu:24.04
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 openssh-server openssh-client sudo curl bubblewrap caddy && rm -rf /var/lib/apt/lists/*
+COPY . /fixture/remote
+RUN mkdir -p /run/sshd && ssh-keygen -A
+CMD ["python3", "/fixture/remote/machines/tests.py"]

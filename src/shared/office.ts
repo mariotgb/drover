@@ -89,6 +89,8 @@ export interface OfficeExternalNode {
   id: OfficeNodeId
   kind: 'user' | 'machine'
   name: string
+  /** Machines only: last check from the machines store. Unset = unknown (drawn as reachable). */
+  state?: 'online' | 'offline' | 'unknown'
 }
 export interface OfficeLink {
   id: string

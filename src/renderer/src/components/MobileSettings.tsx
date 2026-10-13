@@ -11,6 +11,7 @@ import { locale, t } from '../i18n'
 import { toast, updateSettings, useStore } from '../store'
 import { ACCENTS } from './AppearanceSettings'
 import { Spinner } from './primitives'
+import { MobileMachinesGroup } from './MobileMachines'
 
 type Page = 'main' | 'theme' | 'background' | 'font' | 'mono'
 
@@ -144,6 +145,7 @@ function MainPage({ open }: { open: (page: Page) => void }) {
     <Group title={t('Agents list')} footer={t('Other agents of a project fold into one row that opens on tap. Agents waiting for an answer stay in sight. Pick the lead in the agent menu.')}>
       <ToggleRow label={t('Show only the project lead')} on={leadOnly} onChange={(v) => void updateSettings({ leadOnly: v })} />
     </Group>
+    <MobileMachinesGroup />
     <NotificationGroup />
     <DeviceGroup />
     <AboutGroup />

@@ -62,6 +62,8 @@ import { RemoteServer, validateRemoteSettings } from './remote/server'
 import { LifecycleJournal, mayStopServer } from './lifecycle'
 import { CodexIntegration } from './codexIntegration'
 import { CodexDaemon } from './codexDaemon'
+import { MachinesService } from './machines/service'
+import { registerMachinesIpc } from './machines/ipc'
 
 app.setName('Drover')
 
@@ -95,9 +97,10 @@ let attachedSession: string | null = null
 let quitReason = 'app.quit'
 const settings = SettingsStore.at(userData)
 if (process.env.DROVER_SESSION) settings.set({ session: process.env.DROVER_SESSION })
-const service = new HerdrService({
+const service: HerdrService = new HerdrService({
   logDir: join(userData, 'logs'),
-  autoStartServer: () => settings.get().autoStartServer
+  autoStartServer: () => settings.get().autoStartServer,
+  machineInstructions: cwd => machines.agentInstructions(cwd)
 })
 const serverWatchdog = new ServerWatchdog(join(userData, 'logs'), (event, details) => lifecycle.record(event, details))
 function syncServerWatchdog(): void {
@@ -118,6 +121,22 @@ let win: BrowserWindow | null = null
 let selectedPaneId: string | null = null
 const rpcHandlers = new RpcHandlers()
 let remote: RemoteServer | null = null
+// An isolated profile must never create keys or pointers in the real home.
+const machines: MachinesService = new MachinesService({
+  userData, home: process.env.DROVER_USER_DATA ? join(userData, 'machines-home') : homedir(),
+  env: () => service.env.PATH ? service.env : process.env,
+  runtime: process.execPath,
+  changed: state => { if (win && !win.isDestroyed()) win.webContents.send('machines:changed', state) },
+  confirmInclude: async () => {
+    if (!win || win.isDestroyed()) return false
+    const response = await dialog.showMessageBox(win, {
+      type: 'warning', message: 'Add Drover machines to SSH configuration?',
+      detail: 'Drover will back up your SSH configuration and add one Include line. Agents and Terminal will be able to use the machine aliases.',
+      buttons: ['Add Include', 'Cancel'], defaultId: 1, cancelId: 1
+    })
+    return response.response === 0
+  }
+})
 settings.onSaveError((error) => {
   void remote?.persistenceFailed(error)
   void app.whenReady().then(() => dialog.showErrorBox(mt('Could not save settings'), error.message))
@@ -387,6 +406,8 @@ function readonlyBlocked(method: string): boolean {
 }
 
 function registerIpc() {
+  handle('machines:status', () => machines.status())
+  registerMachinesIpc(ipcMain, machines, event => !READONLY && !!win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame)
   ipcMain.handle('codex:integration-status', () => codexIntegration.status())
   ipcMain.handle('codex:integration-install', () => {
     if (process.platform !== 'darwin' || READONLY) throw new Error('Codex integration installation is only available in the local Mac app')
@@ -716,6 +737,7 @@ app.whenReady().then(() => {
   applyTheme(settings.get())
   setMainLanguage(settings.get().language)
   registerIpc()
+  if (!READONLY) void machines.state().catch(() => undefined)
   remote = new RemoteServer({
     webRoot: join(__dirname, '..', REMOTE_WEB_DIRECTORY), userData, handlers: rpcHandlers,
     settings: () => {
@@ -801,6 +823,7 @@ app.on('before-quit', (e) => {
   void remote?.stop()
   bridges.closeAll()
   office.dispose()
+  machines.dispose()
   boss.dispose()
   transcripts.dispose()
   boards.dispose()

@@ -1,4 +1,5 @@
 import type { OfficeState, OfficeUpdate } from '@shared/office'
+import type { MachinesApi, MachinesState, MachinesStatus } from '@shared/machines'
 import type { BossBroadcastRequest, BossDelivery, BossOpenRequest, BossSettings } from '@shared/boss'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { TranscriptCursor } from '@shared/types'
@@ -17,6 +18,22 @@ function on(channel: string, fn: Listener): () => void {
 }
 
 const api = {
+  machinesStatus: (): Promise<MachinesStatus> => ipcRenderer.invoke('machines:status'),
+  machines: {
+    state: () => ipcRenderer.invoke('machines:state'),
+    onChange: (fn: (state: MachinesState) => void) => on('machines:changed', fn),
+    probeHostKey: (host, port) => ipcRenderer.invoke('machines:probe-host-key', host, port),
+    add: (draft) => ipcRenderer.invoke('machines:add', draft),
+    installKey: (id, options) => ipcRenderer.invoke('machines:install-key', id, options),
+    check: (id) => ipcRenderer.invoke('machines:check', id),
+    remove: (id) => ipcRenderer.invoke('machines:remove', id),
+    setPermissions: (id, permissions) => ipcRenderer.invoke('machines:permissions', id, permissions),
+    setBridge: (id) => ipcRenderer.invoke('machines:set-bridge', id),
+    setupBridge: (id, options) => ipcRenderer.invoke('machines:setup-bridge', id, options),
+    installCommand: (id, os) => ipcRenderer.invoke('machines:install-command', id, os),
+    revokeAgentsKey: () => ipcRenderer.invoke('machines:revoke-key'),
+    addSshInclude: () => ipcRenderer.invoke('machines:add-ssh-include')
+  } satisfies MachinesApi,
   init: () => ipcRenderer.invoke('app:init'),
   officeInit: (): Promise<OfficeState | null> => ipcRenderer.invoke('office:init'),
   officeStop: (): void => ipcRenderer.send('office:stop'),

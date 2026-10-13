@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactNode, type TouchEvent } from 'react'
+import { MobileMachinesAlert } from './MobileMachines'
 import clsx from 'clsx'
 import { Bell, Brain, FolderClosed, Globe, ListChecks, Menu as MenuIcon, MoreHorizontal, Pencil, Search, Settings, Square, SquareTerminal, Trash2, X } from 'lucide-react'
 import { agentKindDef } from '@shared/agents'
@@ -330,6 +331,7 @@ function DrawerContent() {
         ))}
         {!shown.length && <p className="mw-drawer-empty">{q ? t('No results. Try another search.') : t('Open a workspace on your Mac to see it here.')}</p>}
       </div>
+      <MobileMachinesAlert />
       <MobileUsage />
       <div className="mw-drawer-foot">
         <button type="button" className="mw-settings-btn" onClick={() => useStore.setState({ mobileSettings: true, mobileDrawer: false })}>

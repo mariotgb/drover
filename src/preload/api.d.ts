@@ -50,6 +50,8 @@ export interface BoardWriteResult<T = unknown> {
 }
 
 export interface DroverApi {
+  machines: import('../shared/machines').MachinesApi
+  machinesStatus(): Promise<import('../shared/machines').MachinesStatus>
   codexIntegrationStatus(): Promise<import('../shared/codexIntegration').CodexIntegrationStatus>
   codexIntegrationInstall(): Promise<import('../shared/codexIntegration').CodexIntegrationInstallResult>
   codexDaemonRestartPlan(): Promise<import('../shared/codexIntegration').CodexDaemonRestartPlan>

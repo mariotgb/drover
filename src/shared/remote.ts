@@ -48,6 +48,7 @@ export function remoteUsesProxy(settings: Pick<RemoteAccessSettings, 'remotePubl
 /** Explicit allowlist. Includes send-style preload calls: browser invokes them as RPC. */
 export const REMOTE_METHOD_CHANNELS = {
   init: 'app:init', setSettings: 'settings:set',
+  machinesStatus: 'machines:status',
   request: 'herdr:request', sessions: 'herdr:sessions', startServer: 'herdr:start-server',
   reconnect: 'herdr:reconnect', herdrVersion: 'herdr:version', agentKinds: 'agents:kinds',
   limits: 'limits:get', refreshLimits: 'limits:refresh', previewServers: 'preview:servers',
@@ -70,6 +71,7 @@ export type RemoteMethod = keyof typeof REMOTE_METHOD_CHANNELS
  */
 /** Must not be circumvented by setSettings: remote* setting keys are desktop-only. */
 export const REMOTE_LOCAL_ONLY_METHODS = [
+  'machines',
   'planAgentRestart', 'restartAgents',
   'officeInit', 'officeStop',
   'bossRoster', 'bossSettings', 'setBossSettings', 'openBoss', 'broadcastBoss',

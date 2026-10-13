@@ -12,7 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
-MARK = '# drover-hub-policy (managed)'
+MARK = os.environ.get('DROVER_POLICY_MARK', '# drover-hub-policy (managed)')
 
 
 def tokens(line):

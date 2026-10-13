@@ -518,13 +518,16 @@ export function rack(P, phase = 0, hot = false) {
   c.outline(OUT, 0.5); shadowEllipse(c, 9, 36, 8, 1)
   return sp(c, 9, 37, { emit: e, lights: [{ dx: 0, dy: -18, rx: 16, ry: 18, color: hot ? [1, 0.85, 0.4] : [0.4, 1, 0.6], k: neon(P) ? (hot ? 0.9 : 0.45) : (hot ? 0.25 : 0.05) }] })
 }
+/** mode 'off': an unreachable machine — dark screen, unlit power LED, no glow. */
 export function machineStation(P, name, mode = 'term') {
-  const c = new Pix(40, 34), e = new Pix(40, 34)
+  const c = new Pix(40, 34), e = new Pix(40, 34), off = mode === 'off'
   c.rect(2, 16, 36, 4, neon(P) ? '#e9edf3' : P.desk.top); c.rect(2, 20, 36, 10, neon(P) ? '#9aa3b2' : P.desk.front)
   c.rect(4, 2, 20, 14, '#3d4450'); screenContent(e, c, 6, 4, 16, 10, mode, name.length * 13)
-  c.rect(26, 4, 9, 12, '#d8dde1'); c.vline(26, 4, 15, '#f2f4f6'); c.set(28, 13, '#7cf28c'); e.set(28, 13, '#7cf28c')
+  c.rect(26, 4, 9, 12, '#d8dde1'); c.vline(26, 4, 15, '#f2f4f6')
+  if (off) c.set(28, 13, '#8a6a6a')
+  else { c.set(28, 13, '#7cf28c'); e.set(28, 13, '#7cf28c') }
   c.outline(OUT, 0.5); shadowEllipse(c, 20, 31, 18, 2)
-  return sp(c, 20, 32, { emit: e, lights: [{ dx: -6, dy: -22, rx: 20, ry: 14, color: [0.4, 1, 0.6], k: neon(P) ? 0.7 : 0.15 }] })
+  return sp(c, 20, 32, { emit: e, lights: off ? [] : [{ dx: -6, dy: -22, rx: 20, ry: 14, color: [0.4, 1, 0.6], k: neon(P) ? 0.7 : 0.15 }] })
 }
 export function reception(P) {
   const c = new Pix(64, 30), top = neon(P) ? '#e9edf3' : P.desk.top
