@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import clsx from 'clsx'
-import { Cable, Check, ChevronRight, Copy, House, KeyRound, Plus, RefreshCw, Server, TriangleAlert } from 'lucide-react'
+import { Cable, Check, ChevronRight, Copy, House, KeyRound, Minus, Plus, RefreshCw, Server, Smartphone, TriangleAlert } from 'lucide-react'
 import { locale, t, tp } from '../i18n'
 import { errorText } from '../api'
 import { toast, useModel } from '../store'
 import { Spinner } from './primitives'
-import { AddMachineWizard, BridgedHostKey, InstallCommandPanel } from './AddMachineWizard'
+import { AddMachineWizard, BridgedHostKey, HostKeyCard, InstallCommandPanel } from './AddMachineWizard'
+import { BridgeChecklist, BridgeWizard, UpgradeBridge, useBridgeJob } from './BridgeWizard'
 import type { MachineChecks } from '@shared/machines'
-import { ago, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState } from '../machines'
+import { ago, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, phoneOnlyBridge, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
 
 export function MachinesSettings() {
   const machines = machinesApi()
@@ -16,6 +17,8 @@ export function MachinesSettings() {
   const [adding, setAdding] = useState(false)
   const [open, setOpen] = useState<string | null>(null)
   const [notes, setNotes] = useState<CleanupNote[]>([])
+  const [bridgeWizard, setBridgeWizard] = useState(false)
+  const [bridgeReport, setBridgeReport] = useState<BridgeProgress[] | null>(null)
   useEffect(() => {
     if (!machines) return
     void machines.state().then(setState, (e) => setError(errorText(e)))
@@ -24,6 +27,7 @@ export function MachinesSettings() {
   if (!machines) return <div className="settings-section machines"><p role="status" className="setting-hint block">{t('Machines are not available in this build.')}</p></div>
   if (!state) return <div className="settings-section machines">{error ? <p role="alert" className="form-error">{error}</p> : <Spinner />}</div>
   if (adding) return <AddMachineWizard api={machines} state={state} onClose={(id) => { setAdding(false); if (id) setOpen(id) }} />
+  if (bridgeWizard) return <BridgeWizard api={machines} onClose={() => setBridgeWizard(false)} />
   const bridge = state.machines.find((m) => m.id === state.bridgeMachineId) ?? null
   return (
     <div className="settings-section machines">
@@ -35,7 +39,7 @@ export function MachinesSettings() {
         <button type="button" className="btn btn-sm btn-primary" onClick={() => setAdding(true)}><Plus size={13} />{t('Add machine')}</button>
       </div>
       {notes.length > 0 && <CleanupNotes notes={notes} onDismiss={() => setNotes([])} />}
-      <BridgeCard api={machines} state={state} bridge={bridge} onOpen={setOpen} />
+      <BridgeCard api={machines} state={state} bridge={bridge} report={bridgeReport} onReport={setBridgeReport} onOpen={setOpen} onSetup={() => setBridgeWizard(true)} />
       {state.machines.length ? (
         <div className="machine-list" role="list">
           {state.machines.map((m) => (
@@ -75,12 +79,42 @@ function useAction() {
   return { busy, error, setError, run }
 }
 
-function BridgeCard({ api, state, bridge, onOpen }: { api: MachinesApi; state: MachinesState; bridge: Machine | null; onOpen: (id: string) => void }) {
-  const candidates = state.machines.filter((m) => m.kind === 'direct' && m.publicIp)
-  const [pick, setPick] = useState(candidates[0]?.id ?? '')
-  const [caddy, setCaddy] = useState(true)
-  const { busy, error, run } = useAction()
-  useEffect(() => { if (!candidates.some((m) => m.id === pick)) setPick(candidates[0]?.id ?? '') }, [candidates.map((m) => m.id).join()])
+type Detect = { state: 'idle' | 'looking' | 'done'; found: ExistingBridge | null; error?: string }
+
+/** Looks once for a bridge set up by hand earlier (LaunchAgent tunnel, Caddy phone site, admin key). */
+function useDetectBridge(api: BridgeApi, skip: boolean) {
+  const [detect, setDetect] = useState<Detect>({ state: 'idle', found: null })
+  const [round, setRound] = useState(0)
+  useEffect(() => {
+    if (skip || !api.detectExistingBridge) { setDetect({ state: 'done', found: null }); return }
+    let live = true
+    setDetect((d) => ({ state: 'looking', found: d.found }))
+    // Detection reads only local files; any failure means the old setup is unreadable (existing_bridge_invalid).
+    api.detectExistingBridge().then((found) => { if (live) setDetect({ state: 'done', found }) }, () => { if (live) setDetect({ state: 'done', found: null, error: machineErrorText({ code: 'existing_bridge_invalid' }) }) })
+    return () => { live = false }
+  }, [api, skip, round])
+  return { ...detect, again: () => setRound((r) => r + 1) }
+}
+
+function BridgeFacts({ url, tunnel, children }: { url?: string; tunnel: 'running' | 'stopped' | 'missing'; children?: React.ReactNode }) {
+  return (
+    <ul className="bridge-facts">
+      <li className={url ? 'ok' : 'off'}>{url ? <Check size={12} strokeWidth={2.6} /> : <Minus size={12} />}<span>{t('Phone site')}</span>{url ? <code>{url}</code> : <span className="dim">{t('not set up')}</span>}</li>
+      <li className={tunnel === 'running' ? 'ok' : 'warn'}>{tunnel === 'running' ? <Check size={12} strokeWidth={2.6} /> : <TriangleAlert size={12} />}<span>{t('Mac tunnel')}</span><span className="dim">{tunnel === 'running' ? t('running') : tunnel === 'stopped' ? t('stopped') : t('not set up')}</span></li>
+      {children}
+    </ul>
+  )
+}
+
+/** A bridge connected from the phone setup keeps its own accounts; Drover does not change them yet. */
+function PhoneOnlyNote() {
+  return <p className="machine-note"><Smartphone size={13} /><span>{t('For now this bridge only serves your phone. Home machines can connect through it after you upgrade it.')}</span></p>
+}
+
+const WHY = () => t('A bridge is a small server with a public IP (a VPS), so your machines and phone can reach this Mac from anywhere.')
+
+function BridgeCard({ api, state, bridge, report, onReport, onOpen, onSetup }: { api: BridgeApi; state: MachinesState; bridge: Machine | null; report: BridgeProgress[] | null; onReport: (steps: BridgeProgress[] | null) => void; onOpen: (id: string) => void; onSetup: () => void }) {
+  const detect = useDetectBridge(api, !!bridge)
   const homes = state.machines.filter((m) => m.kind === 'bridged')
   const homesOnline = homes.filter((m) => m.status.state === 'online').length
   if (bridge) {
@@ -96,10 +130,24 @@ function BridgeCard({ api, state, bridge, onOpen }: { api: MachinesApi; state: M
           </div>
           <div className="setting-hint">
             {setup?.state === 'running' ? t('Setting up: {step}', { step: setup.step ?? '…' })
-              : working ? `${t('Home machines connect out to it — no router setup needed.')} ${homes.length ? tp({ one: '{online} of {n} home machine connected.', other: '{online} of {n} home machines connected.' }, homes.length, { online: homesOnline }) : ''}`
+              : working && phoneOnlyBridge(bridge) ? t('Your phone reaches this Mac through it.')
+              : working ? `${t('Your machines and phone reach this Mac through it — no router setup needed.')} ${homes.length ? tp({ one: '{online} of {n} home machine connected.', other: '{online} of {n} home machines connected.' }, homes.length, { online: homesOnline }) : ''}`
               : machineErrorText(bridge.status.error ?? setup?.error ?? { code: 'bridge_down' }, bridge, bridge.name)}
           </div>
           <PhoneTunnelNote machine={bridge} />
+          {bridge.bridgeConnection && <>
+            <BridgeFacts url={bridge.bridgeConnection.publicUrl} tunnel={bridge.bridgeConnection.macTunnel} />
+            {phoneOnlyBridge(bridge) && <>
+              <PhoneOnlyNote />
+              <UpgradeBridge api={api} machine={bridge} onDone={onReport} />
+            </>}
+          </>}
+          {report && (
+            <div className="bridge-result">
+              <BridgeChecklist steps={report} label={t('Bridge connected')} />
+              <button type="button" className="link-btn" onClick={() => onReport(null)}>{t('Hide')}</button>
+            </div>
+          )}
         </div>
         <span className={clsx('bridge-state', working ? 'ok' : setup?.state === 'running' ? 'wait' : 'bad')}>
           {setup?.state === 'running' ? <Spinner size={11} /> : <span className="conn-dot" />}
@@ -108,32 +156,122 @@ function BridgeCard({ api, state, bridge, onOpen }: { api: MachinesApi; state: M
       </div>
     )
   }
-  if (!candidates.length) {
+  if (detect.state !== 'done') {
     return (
-      <div className="bridge-card muted">
-        <span className="bridge-icon"><Cable size={16} /></span>
+      <div className="bridge-card muted" role="status">
+        <span className="bridge-icon"><Spinner size={13} /></span>
         <div className="bridge-text">
-          <div className="bridge-title">{t('No bridge')}</div>
-          <div className="setting-hint">{t('A home server or PC behind a router is reached from anywhere through a bridge — a server with a public IP (a VPS). Without one, you can still add home machines: they then work only while this Mac is on the same trusted home network, and not from your phone.')}</div>
+          <div className="bridge-title">{t('Looking for your bridge…')}</div>
+          <div className="setting-hint">{t('Checking this Mac for a bridge you set up earlier.')}</div>
         </div>
       </div>
     )
   }
+  if (detect.found) return <FoundBridge api={api} found={detect.found} onReport={onReport} onAgain={detect.again} />
+  return <NoBridge api={api} state={state} onSetup={onSetup} onAgain={detect.again} detectError={detect.error} />
+}
+
+function FoundBridge({ api, found, onReport, onAgain }: { api: BridgeApi; found: ExistingBridge; onReport: (steps: BridgeProgress[]) => void; onAgain: () => void }) {
+  const job = useBridgeJob(api, ADOPT_STEPS)
+  // Adoption needs a fresh probe even when this Mac pinned the key before; a pinned key comes back as known.
+  const [hostKey, setHostKey] = useState<HostKey | null>(null)
+  const [matches, setMatches] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [error, setError] = useState('')
+  // Without an admin key on this Mac, one sign-in with a one-time password installs Drover's own admin key.
+  const [user, setUser] = useState('root')
+  const [password, setPassword] = useState('')
+  const signIn = !found.adminKey
+  const url = found.phoneUrl ?? found.publicUrl
+  const tunnel = found.tunnelRunning || found.macTunnel === 'running' ? 'running' : found.macTunnel
+  const connect = async () => {
+    setError('')
+    let key = hostKey
+    if (!key) {
+      // No local pin: show the server's key first; the user confirms, then presses Connect again.
+      setChecking(true)
+      try { key = await api.probeHostKey(found.host, found.port); setHostKey(key); setMatches(key.known) } catch (e) { setError(errorText(e)) } finally { setChecking(false) }
+      if (!key?.known) return
+    }
+    const secret = signIn ? password : undefined
+    // The password is good for one attempt only, whatever the outcome.
+    setPassword('')
+    const report = await job.start(() => api.adoptExistingBridge!(signIn ? { acceptedFingerprint: key!.fingerprint, user: user.trim() || 'root', password: secret } : { acceptedFingerprint: key!.fingerprint }), !!url)
+    if (report) onReport(report.steps)
+  }
+  const confirmed = !!hostKey && (hostKey.known || matches)
+  return (
+    <div className="bridge-card found">
+      <span className="bridge-icon"><Cable size={16} /></span>
+      <div className="bridge-text">
+        <div className="bridge-title">{t('Found your bridge')}<span className="dim">{found.host}</span></div>
+        <p className="setting-hint">{t('Set up earlier on this Mac. Connect it so Drover can use and check it.')} {WHY()}</p>
+        <BridgeFacts url={url} tunnel={tunnel}>
+          {!found.adminKey && <li className="warn"><TriangleAlert size={12} /><span>{t('Admin key')}</span><span className="dim">{t('not on this Mac yet — sign in once below')}</span></li>}
+        </BridgeFacts>
+        {hostKey && !hostKey.known && job.phase === 'idle' && <HostKeyCard hostKey={hostKey} matches={matches} onMatches={setMatches} hint={t('Compare it with the fingerprint in your provider’s console. If they match, Drover remembers this key and refuses to connect if it ever changes.')} />}
+        {signIn && job.phase !== 'running' && job.phase !== 'done' && (
+          <div className="bridge-signin">
+            <p className="setting-hint">{t('Sign in to {host} once as an administrator. Drover installs its own admin key there and forgets the password; nothing else on the server changes.', { host: found.host })}</p>
+            <div className="field-row">
+              <div className="field bridge-signin-user">
+                <label htmlFor="found-user">{t('Login')}</label>
+                <input id="found-user" className="input mono" value={user} spellCheck={false} onChange={(e) => setUser(e.target.value)} />
+              </div>
+              <div className="field grow">
+                <label htmlFor="found-password">{t('One-time password')}</label>
+                <input id="found-password" className="input" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+              </div>
+            </div>
+          </div>
+        )}
+        {job.steps && <BridgeChecklist steps={job.steps} label={t('Connecting the bridge')} />}
+        {!api.adoptExistingBridge && <p className="machine-note warn">{t('This version of Drover cannot connect an existing bridge yet.')}</p>}
+        {error && <p role="alert" className="form-error">{error}</p>}
+        <div className="machine-actions bridge-actions">
+          {job.phase !== 'running' && job.phase !== 'done' && (
+            <button type="button" className="btn btn-sm btn-primary" disabled={!api.adoptExistingBridge || (signIn && (!password || !user.trim())) || checking || (!!hostKey && !confirmed)} onClick={() => void connect()}>
+              {checking && <Spinner size={12} />}{job.phase === 'failed' ? t('Try again') : t('Connect this bridge')}
+            </button>
+          )}
+          {job.phase === 'idle' && <button type="button" className="link-btn" onClick={onAgain}>{t('Look again')}</button>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NoBridge({ api, state, onSetup, onAgain, detectError }: { api: BridgeApi; state: MachinesState; onSetup: () => void; onAgain: () => void; detectError?: string }) {
+  const candidates = state.machines.filter((m) => m.kind === 'direct' && m.publicIp)
+  const [pick, setPick] = useState(candidates[0]?.id ?? '')
+  const [picking, setPicking] = useState(false)
+  const [caddy, setCaddy] = useState(true)
+  const { busy, error, run } = useAction()
+  useEffect(() => { if (!candidates.some((m) => m.id === pick)) setPick(candidates[0]?.id ?? '') }, [candidates.map((m) => m.id).join()])
   return (
     <div className="bridge-card">
       <span className="bridge-icon"><Cable size={16} /></span>
       <div className="bridge-text">
         <div className="bridge-title">{t('No bridge yet')}</div>
-        <div className="setting-hint">{t('Choose a server with a public IP to link home machines. Drover creates the bridge users, sets up the firewall and checks that it works.')}</div>
-        <div className="bridge-pick">
-          <select className="input select" value={pick} onChange={(e) => setPick(e.target.value)} aria-label={t('Bridge server')}>
-            {candidates.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.host}</option>)}
-          </select>
-          <PhoneSiteCheck value={caddy} onChange={setCaddy} />
-          <button type="button" className="btn btn-sm btn-primary" disabled={!pick || busy !== null} onClick={() => void run('setup', async () => { await api.setupBridge(pick, { caddy }); await api.setBridge(pick) })}>
-            {busy && <Spinner size={12} />}{t('Set up as bridge')}
-          </button>
+        <p className="setting-hint">{WHY()} {t('Without one, home machines work only while this Mac is on the same home network.')}</p>
+        {detectError && <p className="machine-note warn bridge-detect-error"><TriangleAlert size={13} /><span>{detectError}</span></p>}
+        <div className="machine-actions bridge-actions">
+          <button type="button" className="btn btn-sm btn-primary" onClick={onSetup}>{t('Set up bridge')}</button>
+          {candidates.length > 0 && !picking && <button type="button" className="link-btn" onClick={() => setPicking(true)}>{t('Use a server you already added')}</button>}
+          {api.detectExistingBridge && !picking && <button type="button" className="link-btn" onClick={onAgain}>{t('Look again')}</button>}
         </div>
+        {picking && (
+          <div className="bridge-pick">
+            <select className="input select" value={pick} onChange={(e) => setPick(e.target.value)} aria-label={t('Bridge server')}>
+              {candidates.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.host}</option>)}
+            </select>
+            <PhoneSiteCheck value={caddy} onChange={setCaddy} />
+            <button type="button" className="btn btn-sm" onClick={() => setPicking(false)}>{t('Cancel')}</button>
+            <button type="button" className="btn btn-sm btn-primary" disabled={!pick || busy !== null} onClick={() => void run('setup', async () => { await api.setupBridge(pick, { caddy, confirmed: true }); await api.setBridge(pick, { confirmed: true }) })}>
+              {busy && <Spinner size={12} />}{t('Set up as bridge')}
+            </button>
+          </div>
+        )}
         {error && <p role="alert" className="form-error">{error}</p>}
       </div>
     </div>
@@ -180,6 +318,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
   const { busy, error, run } = useAction()
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [confirmBridge, setConfirmBridge] = useState(false)
+  const [confirmRepair, setConfirmRepair] = useState(false)
   const [caddy, setCaddy] = useState(m.bridgeSetup?.caddy ?? true)
   const [command, setCommand] = useState(false)
   const setup = m.bridgeSetup
@@ -207,7 +346,9 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
           <span className="machine-field-value machine-checks">{checksText(m.status.checks)}</span>
         </div>
       )}
-      <AccessEditor api={api} machine={m} />
+      {phoneOnlyBridge(m)
+        ? <div className="machine-section"><div className="machine-section-title">{t('What agents may do')}</div><p className="setting-hint">{t('Access to this bridge can be changed after you upgrade it for home machines.')}</p></div>
+        : <AccessEditor api={api} machine={m} />}
       <LastCleanup machine={m} />
 
       {m.kind === 'bridged' && (
@@ -226,28 +367,48 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
           <div className="machine-section-title">{t('Bridge')}</div>
           {isBridge ? (
             <>
+              {phoneOnlyBridge(m) ? <PhoneOnlyNote /> : <>
               <p className="setting-hint">{setup?.state === 'ready' ? t('This server links your home machines. Last checked {when}.', { when: ago(setup.checkedAt) }) : t('This server is chosen as the bridge but is not set up yet.')}</p>
               <BridgeSteps machine={m} />
-              <div className="machine-actions">
-                <PhoneSiteCheck value={caddy} onChange={setCaddy} />
-                <button type="button" className="btn btn-sm" disabled={busy !== null || setup?.state === 'running'} onClick={() => void run('setup', () => api.setupBridge(m.id, { caddy }))}>
-                  {busy === 'setup' && <Spinner size={12} />}{setup?.state === 'ready' ? t('Check and repair') : t('Set up as bridge')}
-                </button>
-              </div>
+              {confirmRepair ? (
+                <div className="machine-confirm">
+                  <p>{setup?.state === 'ready'
+                    ? t('Check and repair {name}? Drover rewrites the bridge users, SSH access rules and firewall on the server to match what home machines need.', { name: m.name })
+                    : t('Set up {name} as the bridge? Drover writes the bridge users, SSH access rules and firewall on the server.', { name: m.name })}
+                    {' '}{caddy ? t('It also updates the phone site setup; the phone site keeps working.') : t('The phone site keeps working.')}</p>
+                  <PhoneSiteCheck value={caddy} onChange={setCaddy} />
+                  <div className="machine-actions">
+                    <button type="button" className="btn btn-sm" onClick={() => setConfirmRepair(false)}>{t('Cancel')}</button>
+                    <button type="button" className="btn btn-sm btn-primary" disabled={busy !== null || setup?.state === 'running'} onClick={() => void run('setup', async () => { await api.setupBridge(m.id, { caddy, confirmed: true }); setConfirmRepair(false) })}>
+                      {busy === 'setup' && <Spinner size={12} />}{setup?.state === 'ready' ? t('Repair') : t('Set up')}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="machine-actions">
+                  <button type="button" className="btn btn-sm" disabled={busy !== null || setup?.state === 'running'} onClick={() => setConfirmRepair(true)}>
+                    {setup?.state === 'ready' ? t('Check and repair…') : t('Set up as bridge…')}
+                  </button>
+                </div>
+              )}
+              </>}
             </>
           ) : confirmBridge ? (
             <div className="machine-confirm">
               <p>{bridge
                 ? t('Make {name} the bridge instead of {bridge}? Drover sets it up, then moves {n} home machines to it. Machines it cannot reach will need their setup command run again.', { name: m.name, bridge: bridge.name, n: homes })
-                : t('Make {name} the bridge? Drover creates the bridge users, sets up the firewall and checks that it works.', { name: m.name })}</p>
+                : t('Make {name} the bridge? Drover creates the bridge users, sets up the firewall and checks that it works.', { name: m.name })}
+                {bridge?.bridgeConnection && ` ${t('Your phone site stays on {bridge}: this Mac’s phone tunnel keeps running there.', { bridge: bridge.name })}`}</p>
               <PhoneSiteCheck value={caddy} onChange={setCaddy} />
               <div className="machine-actions">
                 <button type="button" className="btn btn-sm" onClick={() => setConfirmBridge(false)}>{t('Cancel')}</button>
-                <button type="button" className="btn btn-sm btn-primary" disabled={busy !== null} onClick={() => void run('bridge', async () => { await api.setupBridge(m.id, { caddy }); await api.setBridge(m.id); setConfirmBridge(false) })}>
+                <button type="button" className="btn btn-sm btn-primary" disabled={busy !== null} onClick={() => void run('bridge', async () => { await api.setupBridge(m.id, { caddy, confirmed: true }); await api.setBridge(m.id, { confirmed: true }); setConfirmBridge(false) })}>
                   {busy === 'bridge' && <Spinner size={12} />}{bridge ? t('Switch bridge') : t('Set up as bridge')}
                 </button>
               </div>
             </div>
+          ) : bridge && phoneOnlyBridge(bridge) ? (
+            <p className="setting-hint">{t('This server has a public IP. To switch bridges, first upgrade {bridge} for home machines.', { bridge: bridge.name })}</p>
           ) : (
             <>
               <p className="setting-hint">{t('This server has a public IP, so it can link home machines that sit behind a router.')}</p>
@@ -262,15 +423,17 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
       <div className="machine-section machine-remove">
         {confirmRemove ? (
           <div className="machine-confirm danger">
-            <p>{isBridge ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge.', { name: m.name }) : t('Remove {name}? Agents lose access to it. Nothing on the machine is deleted.', { name: m.name })}</p>
+            <p>{phoneOnlyBridge(m) ? t('Drover forgets {name}. Nothing changes on the server, and the phone tunnel on this Mac keeps running.', { name: m.name }) : m.bridgeConnection ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge. The phone tunnel on this Mac keeps running.', { name: m.name }) : isBridge ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge.', { name: m.name }) : t('Remove {name}? Agents lose access to it. Nothing on the machine is deleted.', { name: m.name })}</p>
             {suppliedAccount(m) && <SuppliedWarning name={m.name} />}
             <div className="machine-actions">
               <button type="button" className="btn btn-sm" onClick={() => setConfirmRemove(false)}>{t('Cancel')}</button>
-              <button type="button" className="btn btn-sm btn-danger" disabled={busy !== null} onClick={() => void run('remove', async () => { const result = await api.remove(m.id); onNotes([cleanupNote(result, m.name, suppliedAccount(m))]) })}>{busy === 'remove' && <Spinner size={12} />}{t('Remove')}</button>
+              <button type="button" className="btn btn-sm btn-danger" disabled={busy !== null} onClick={() => void run('remove', async () => { const result = await api.remove(m.id, { confirmed: true }); onNotes([cleanupNote(result, m.name, suppliedAccount(m))]) })}>{busy === 'remove' && <Spinner size={12} />}{t('Remove')}</button>
             </div>
           </div>
         ) : (
-          <button type="button" className="link-btn danger" onClick={() => setConfirmRemove(true)}>{t('Remove machine…')}</button>
+          m.bridgeConnection?.source === 'scratch' && phoneOnlyBridge(m)
+            ? <p className="setting-hint">{t('This bridge runs the phone tunnel Drover set up. Finish its setup for home machines before removing it.')}</p>
+            : <button type="button" className="link-btn danger" onClick={() => setConfirmRemove(true)}>{phoneOnlyBridge(m) ? t('Forget this bridge…') : t('Remove machine…')}</button>
         )}
       </div>
     </div>
@@ -490,7 +653,7 @@ function AgentsKeyBlock({ api, state, onNotes }: { api: MachinesApi; state: Mach
           <div className="machine-actions">
             <button type="button" className="btn btn-sm" onClick={() => setConfirm(false)}>{t('Cancel')}</button>
             <button type="button" className="btn btn-sm btn-danger" disabled={busy !== null} onClick={() => void run('revoke', async () => {
-              const reports = await api.revokeAgentsKey()
+              const reports = await api.revokeAgentsKey({ confirmed: true })
               setConfirm(false)
               toast('success', t('Agents key replaced'))
               onNotes(reports.map((r) => cleanupNote(r, r.name, state.machines.find((m) => m.id === r.machineId)?.sessionCleanup?.account === 'supplied')))

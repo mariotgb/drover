@@ -1,5 +1,5 @@
 import type { OfficeState, OfficeUpdate } from '@shared/office'
-import type { MachinesApi, MachinesState, MachinesStatus } from '@shared/machines'
+import type { BridgeProgress, MachinesApi, MachinesState, MachinesStatus } from '@shared/machines'
 import type { BossBroadcastRequest, BossDelivery, BossOpenRequest, BossSettings } from '@shared/boss'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { TranscriptCursor } from '@shared/types'
@@ -26,12 +26,17 @@ const api = {
     add: (draft) => ipcRenderer.invoke('machines:add', draft),
     installKey: (id, options) => ipcRenderer.invoke('machines:install-key', id, options),
     check: (id) => ipcRenderer.invoke('machines:check', id),
-    remove: (id) => ipcRenderer.invoke('machines:remove', id),
+    remove: (id, options) => ipcRenderer.invoke('machines:remove', id, options),
     setPermissions: (id, permissions) => ipcRenderer.invoke('machines:permissions', id, permissions),
-    setBridge: (id) => ipcRenderer.invoke('machines:set-bridge', id),
+    setBridge: (id, options) => ipcRenderer.invoke('machines:set-bridge', id, options),
     setupBridge: (id, options) => ipcRenderer.invoke('machines:setup-bridge', id, options),
+    detectExistingBridge: () => ipcRenderer.invoke('machines:detect-existing-bridge'),
+    adoptExistingBridge: options => ipcRenderer.invoke('machines:adopt-existing-bridge', options),
+    setupBridgeFromScratch: options => ipcRenderer.invoke('machines:setup-bridge-from-scratch', options),
+    repairExistingBridge: options => ipcRenderer.invoke('machines:repair-existing-bridge', options),
+    onBridgeProgress: (fn: (progress: BridgeProgress) => void) => on('machines:bridge-progress', fn),
     installCommand: (id, os) => ipcRenderer.invoke('machines:install-command', id, os),
-    revokeAgentsKey: () => ipcRenderer.invoke('machines:revoke-key'),
+    revokeAgentsKey: options => ipcRenderer.invoke('machines:revoke-key', options),
     addSshInclude: () => ipcRenderer.invoke('machines:add-ssh-include')
   } satisfies MachinesApi,
   init: () => ipcRenderer.invoke('app:init'),

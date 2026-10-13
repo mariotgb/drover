@@ -5,7 +5,7 @@ import { locale, t } from '../i18n'
 import { errorText } from '../api'
 import { Spinner } from './primitives'
 import { CopyCode } from './MachinesSettings'
-import { homePort, isLan, machineErrorText, needsHostKey, osName, validName, type HostKey, type InstallCommand, type Machine, type MachineKind, type MachineOs, type MachinesApi, type MachinesState } from '../machines'
+import { homePort, isLan, phoneOnlyBridge, machineErrorText, needsHostKey, osName, validName, type HostKey, type InstallCommand, type Machine, type MachineKind, type MachineOs, type MachinesApi, type MachinesState } from '../machines'
 
 const OSES: MachineOs[] = ['linux', 'macos', 'windows']
 
@@ -64,10 +64,11 @@ export function AddMachineWizard({ api, state, onClose }: { api: MachinesApi; st
               <strong>{t('Server with a public IP')}</strong>
               <span>{t('A VPS or any computer Drover can reach directly — also one on your home network, by its local address.')}</span>
             </button>
-            <button type="button" className={clsx('kind-card', kind === 'bridged' && 'active')} aria-pressed={kind === 'bridged'} onClick={() => setKind('bridged')}>
+            <button type="button" className={clsx('kind-card', kind === 'bridged' && 'active')} aria-pressed={kind === 'bridged'} disabled={phoneOnlyBridge(bridge)} onClick={() => setKind('bridged')}>
               <House size={20} strokeWidth={1.7} />
               <strong>{t('Home server or PC behind a router')}</strong>
               <span>{t('It connects out to your bridge, so you need no port forwarding. Works away from home too.')}</span>
+              {bridge && phoneOnlyBridge(bridge) && <span className="kind-card-warn"><TriangleAlert size={12} />{t('Upgrade your bridge {bridge} for home machines first, in Settings › Machines.', { bridge: bridge.name })}</span>}
               {!bridge && <span className="kind-card-warn"><TriangleAlert size={12} />{t('No bridge yet: it will work on your home network only.')}</span>}
             </button>
           </div>
@@ -217,7 +218,7 @@ function DirectConnect({ api, draft, hostKey, machine, onAdded, onClose, bridge 
   )
 }
 
-function HostKeyCard({ hostKey, matches, onMatches, hint }: { hostKey: HostKey; matches: boolean; onMatches: (v: boolean) => void; hint: string }) {
+export function HostKeyCard({ hostKey, matches, onMatches, hint }: { hostKey: HostKey; matches: boolean; onMatches: (v: boolean) => void; hint: string }) {
   return (
     <div className={clsx('hostkey', hostKey.known && 'known')}>
       <div className="hostkey-head"><ShieldCheck size={14} />{hostKey.known ? t('This server’s key is already trusted') : t('Check the server’s key')}</div>

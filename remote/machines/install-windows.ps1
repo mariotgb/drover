@@ -49,6 +49,13 @@ function Key-Fingerprint([string]$Text) {
     return $Matches[1]
   } finally { Remove-Item -LiteralPath $tmp -Force }
 }
+function Key-Identity([string]$Line) {
+  if ($Line.TrimStart().StartsWith('#')) { return $null }
+  $tokens = @([regex]::Matches($Line.TrimStart(), '(?:[^\s"\\]|\\.|"(?:[^"\\]|\\.)*")+') | ForEach-Object { $_.Value })
+  $index = if ($tokens.Count -gt 0 -and $tokens[0] -ceq 'ssh-ed25519') { 0 } else { 1 }
+  if ($tokens.Count -gt ($index + 1) -and $tokens[$index] -ceq 'ssh-ed25519') { return $tokens[$index] + ' ' + $tokens[$index + 1] }
+  return $null
+}
 # Preflight before consuming the one-time key download.
 Assert-Path $dir; Assert-Path $sshRoot
 $marker = 'Drover managed agent'
@@ -62,7 +69,7 @@ $d = (Invoke-WebRequest -UseBasicParsing $keyUrl).Content | ConvertFrom-Json
 if ($d.version -ne 1 -or $d.os -ne 'windows' -or $d.permissions -eq 'read-only') { throw 'Read-only Windows access is unsupported; no key installed.' }
 Key-Fingerprint $d.agentsPublicKey | Out-Null
 Key-Fingerprint $d.managementPublicKey | Out-Null
-if ($d.agentsAuthorizedKey -ne "$($d.agentsPublicKey) drover-agents") { throw 'Unsupported Windows forced-command policy.' }
+if ($d.agentsAuthorizedKey -cne "$($d.agentsPublicKey) drover-agents") { throw 'Unsupported Windows forced-command policy.' }
 $private = $null
 if ($d.bridge) {
   $private = $d.bridge.tunnelPrivateKey
@@ -76,7 +83,7 @@ if ($d.recoveryCleanup) {
   if ($oldKeys.Count -gt 1001) { throw 'Too many recovery keys.' }
   $oldBlobs = @()
   foreach ($oldKey in $oldKeys) {
-    if ($oldKey -isnot [string] -or $oldKey -notmatch '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[\w-]+) ([A-Za-z0-9+/]+={0,2})$') { throw 'Invalid recovery key.' }
+    if ($oldKey -isnot [string] -or $oldKey -cnotmatch '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[\w-]+) ([A-Za-z0-9+/]+={0,2})$') { throw 'Invalid recovery key.' }
     $oldBlobs += $Matches[2]
   }
   $oldAuth = "$sshRoot\drover_agent_authorized_keys"; Assert-Path $oldAuth
@@ -94,7 +101,7 @@ if ($d.recoveryCleanup) {
   if (Test-Path -LiteralPath $oldAuth) {
     foreach ($line in [IO.File]::ReadAllLines($oldAuth)) {
       $match = [regex]::Match($line, '(?:^|\s)(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-[\w-]+)\s+([A-Za-z0-9+/]+={0,2})(?:\s|$)')
-      if (-not $match.Success -or $match.Groups[1].Value -notin $oldBlobs) { $kept += $line }
+      if (-not $match.Success -or $match.Groups[1].Value -cnotin $oldBlobs) { $kept += $line }
     }
   }
   if ($oldTask) {
@@ -121,7 +128,7 @@ if ($d.bridge) {
   $derived = "$dir\derived.pub"
   try {
     $p = Start-Process -FilePath $keygen -Wait -PassThru -NoNewWindow -RedirectStandardOutput $derived -ArgumentList ('-y -P "" -f "{0}"' -f "$dir\id_ed25519")
-    if ($p.ExitCode -ne 0 -or (Key-Fingerprint ([IO.File]::ReadAllText($derived))) -ne (Key-Fingerprint $d.bridge.tunnelPublicKey)) { throw 'Tunnel key pair mismatch.' }
+    if ($p.ExitCode -ne 0 -or (Key-Fingerprint ([IO.File]::ReadAllText($derived))) -cne (Key-Fingerprint $d.bridge.tunnelPublicKey)) { throw 'Tunnel key pair mismatch.' }
   } finally { Remove-Item -LiteralPath $derived -Force -ErrorAction SilentlyContinue }
 }
 if (-not $existing) {
@@ -136,7 +143,16 @@ $hidden = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAc
 New-Item $hidden -Force | Out-Null; New-ItemProperty $hidden -Name agent -Value 0 -PropertyType DWord -Force | Out-Null
 Set-Service sshd -StartupType Automatic; Start-Service sshd
 # Dedicated key file: the agents key must never grant access to every administrator.
-Write-Private "$sshRoot\drover_agent_authorized_keys" ($d.agentsAuthorizedKey + "`n" + $d.managementPublicKey + " drover-management`n")
+$auth = "$sshRoot\drover_agent_authorized_keys"; Assert-Path $auth
+$owned = @((Key-Identity $d.agentsPublicKey), (Key-Identity $d.managementPublicKey))
+$kept = ''
+if (Test-Path -LiteralPath $auth) {
+  foreach ($line in [regex]::Matches([IO.File]::ReadAllText($auth), '[^\n]*\n|[^\n]+$')) {
+    if ((Key-Identity $line.Value) -cnotin $owned) { $kept += $line.Value }
+  }
+}
+if ($kept -and -not $kept.EndsWith("`n")) { $kept += "`n" }
+Write-Private $auth ($kept + $d.agentsAuthorizedKey + "`n" + $d.managementPublicKey + " drover-management`n")
 $cfg = "$sshRoot\sshd_config"; Assert-Path $cfg
 $previous = [IO.File]::ReadAllText($cfg)
 $clean = [regex]::Replace($previous, '(?s)\r?\n# BEGIN DROVER MACHINE\r?\n.*?# END DROVER MACHINE\r?\n', "`n")

@@ -28,16 +28,42 @@ os.set_inheritable(fd,True)
 os.execvp('bwrap',['bwrap','--unshare-all','--die-with-parent','--new-session','--ro-bind','/','/','--proc','/proc','--dev','/dev','--tmpfs','/tmp','--tmpfs','/run','--tmpfs','/sys','--cap-drop','ALL','--seccomp',str(fd),'/bin/sh','-c',command])
 `
 
-/** Idempotently replace only Drover agent/management keys; never disable the
- * administrator's password login or change their other authorized keys.
+/** Parse the key fields, including options with quoted spaces. Comments are
+ * not credentials: only exact identities generated/recorded by this install
+ * may be replaced or removed. Key type + blob identifies its fingerprint.
  */
-export function keyInstallScript(publicKey: string, managementPublicKey: string, permissions: MachinePermissions, oldPublicKey?: string): string {
-  for (const key of [publicKey, managementPublicKey, oldPublicKey].filter(Boolean)) {
-    if (!/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: [^\r\n]*)?$/.test(key!)) throw new MachinesFailure('invalid_key', 'Invalid managed public key.')
+const OWNED_KEY_FILTER = `function owned(line, tokens, n, token, quoted, escaped, i, c, kind, blob) {
+  n=0; token=""; quoted=0; escaped=0
+  sub(/^[ \\t]+/, "", line)
+  sub(/\\r$/, "", line)
+  if (line ~ /^#/) return 0
+  for (i=1; i<=length(line)+1; i++) {
+    c=substr(line,i,1)
+    if (i>length(line) || (!quoted && c ~ /[ \\t]/)) {
+      if (token!="") { tokens[++n]=token; token=""; if (n==3) break }
+    } else {
+      token=token c
+      if (escaped) escaped=0
+      else if (c=="\\\\") escaped=1
+      else if (c=="\\\"") quoted=!quoted
+    }
   }
-  const agent = publicKey.split(/\s+/).slice(0, 2).join(' ')
-  const manager = managementPublicKey.split(/\s+/).slice(0, 2).join(' ')
-  const old = oldPublicKey?.split(/\s+/)[1] ?? ''
+  if (n>=2 && tokens[1]=="ssh-ed25519") { kind=tokens[1]; blob=tokens[2] }
+  else if (n>=3) { kind=tokens[2]; blob=tokens[3] }
+  else return 0
+  return kind=="ssh-ed25519" && ((agent!="" && blob==agent) || (manager!="" && blob==manager) || (old!="" && blob==old))
+}
+!owned($0) { print }`
+
+function managedKey(key: string): string {
+  if (!/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: [^\r\n]*)?$/.test(key)) throw new MachinesFailure('invalid_key', 'Invalid managed public key.')
+  return key.split(/\s+/).slice(0, 2).join(' ')
+}
+
+/** Idempotently replace only identities owned by this installation. */
+export function keyInstallScript(publicKey: string, managementPublicKey: string, permissions: MachinePermissions, oldPublicKey?: string): string {
+  const agent = managedKey(publicKey), manager = managedKey(managementPublicKey)
+  const old = oldPublicKey ? managedKey(oldPublicKey).split(' ')[1] : ''
   const guard = permissions.mode === 'read-only' ? `
 [ "$(uname -s)" = Linux ] || { echo 'Drover sandbox requires Linux' >&2; exit 73; }
 command -v bwrap >/dev/null || { echo 'Drover sandbox needs bubblewrap' >&2; exit 73; }
@@ -61,7 +87,7 @@ chmod 600 "$auth"
 ${guard}
 tmp=$(mktemp "$HOME/.ssh/drover-auth.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
-awk -v agent=${quote(agent.split(' ')[1])} -v manager=${quote(manager.split(' ')[1])} -v old=${quote(old)} 'index($0,agent)==0 && index($0,manager)==0 && (old=="" || index($0,old)==0) && $0 !~ / drover-agents$/ && $0 !~ / drover-management$/' "$auth" > "$tmp"
+awk -v agent=${quote(agent.split(' ')[1])} -v manager=${quote(manager.split(' ')[1])} -v old=${quote(old)} ${quote(OWNED_KEY_FILTER)} "$auth" > "$tmp"
 printf '%s\\n' "$line" >> "$tmp"
 printf '%s\\n' ${quote(manager + ' drover-management')} >> "$tmp"
 chmod 600 "$tmp"
@@ -69,14 +95,36 @@ mv "$tmp" "$auth"
 `
 }
 
+/** Add only this install's administrator identity during bridge bootstrap. */
+export function adminKeyInstallScript(managementPublicKey: string): string {
+  const manager = managedKey(managementPublicKey)
+  return `set -eu
+umask 077
+[ ! -L "$HOME/.ssh" ] || exit 74
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+auth="$HOME/.ssh/authorized_keys"
+[ ! -L "$auth" ] || exit 74
+touch "$auth"
+chmod 600 "$auth"
+tmp=$(mktemp "$HOME/.ssh/drover-auth.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+awk -v agent='' -v manager=${quote(manager.split(' ')[1])} -v old='' ${quote(OWNED_KEY_FILTER)} "$auth" > "$tmp"
+printf '%s\\n' ${quote(manager + ' drover-management')} >> "$tmp"
+chmod 600 "$tmp"
+mv "$tmp" "$auth"
+`
+}
+
 export function removeKeyScript(publicKey: string, managementPublicKey: string, removeManagement = false): string {
+  const agent = managedKey(publicKey), manager = managedKey(managementPublicKey)
   return `set -eu
 umask 077
 auth="$HOME/.ssh/authorized_keys"
 [ -f "$auth" ] && [ ! -L "$auth" ] || exit 74
 tmp=$(mktemp "$HOME/.ssh/drover-auth.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
-awk -v agent=${quote(publicKey.split(/\s+/)[1] ?? '')} -v manager=${quote(removeManagement ? managementPublicKey.split(/\s+/)[1] : '')} 'index($0,agent)==0 && (manager=="" || index($0,manager)==0)' "$auth" > "$tmp"
+awk -v agent=${quote(agent.split(' ')[1])} -v manager=${quote(removeManagement ? manager.split(' ')[1] : '')} -v old='' ${quote(OWNED_KEY_FILTER)} "$auth" > "$tmp"
 chmod 600 "$tmp"
 mv "$tmp" "$auth"
 `
@@ -87,14 +135,21 @@ mv "$tmp" "$auth"
  */
 export function windowsKeyScript(agentsPublicKey: string, managementPublicKey: string, remove = false, removeManagement = false): string {
   const ps = (value: string) => `'${value.replace(/'/g, "''")}'`
-  const agent = agentsPublicKey.split(/\s+/).slice(0, 2).join(' '), manager = managementPublicKey.split(/\s+/).slice(0, 2).join(' ')
+  const agent = managedKey(agentsPublicKey), manager = managedKey(managementPublicKey)
   return `$ErrorActionPreference='Stop'
 $file=Join-Path $env:ProgramData 'ssh\\drover_agent_authorized_keys'
 $item=Get-Item -LiteralPath $file -Force
 if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Unsafe key file'}
 $agent=${ps(agent.split(' ')[1])};$manager=${ps(removeManagement || !remove ? manager.split(' ')[1] : '')}
-$lines=@([IO.File]::ReadAllLines($file)|Where-Object {-not $_.Contains($agent) -and (-not $manager -or -not $_.Contains($manager))})
-${remove ? '' : `$lines+=${ps(agent + ' drover-agents')};$lines+=${ps(manager + ' drover-management')}`}
-[IO.File]::WriteAllLines($file,$lines,[Text.UTF8Encoding]::new($false))
+$kept=''
+foreach($line in [regex]::Matches([IO.File]::ReadAllText($file), '[^\\n]*\\n|[^\\n]+$')) {
+ $value=$line.Value
+ $tokens=@([regex]::Matches($value.TrimStart(), '(?:[^\\s"\\\\]|\\\\.|"(?:[^"\\\\]|\\\\.)*")+')|ForEach-Object {$_.Value})
+ $index=if($tokens.Count -gt 0 -and $tokens[0] -ceq 'ssh-ed25519'){0}else{1}
+ if($value.TrimStart().StartsWith('#') -or -not ($tokens.Count -gt ($index+1) -and $tokens[$index] -ceq 'ssh-ed25519' -and ($tokens[$index+1] -ceq $agent -or ($manager -and $tokens[$index+1] -ceq $manager)))){$kept+=$value}
+}
+${remove ? '' : `if($kept -and -not $kept.EndsWith("\u0060n")){$kept+="\u0060n"}
+$kept+=${ps(agent + ' drover-agents')}+"\u0060n"+${ps(manager + ' drover-management')}+"\u0060n"`}
+[IO.File]::WriteAllText($file,$kept,[Text.UTF8Encoding]::new($false))
 `
 }

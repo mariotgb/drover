@@ -39,6 +39,31 @@ The VPS is a bridge; Drover and the agents still run on your Mac. No router port
 
 You do **not** need to buy a domain. [sslip.io](https://sslip.io/) resolves a hostname containing an IP to that IP. For a public IP `A.B.C.D`, use `https://A-B-C-D.sslip.io`. `203.0.113.5` / `203-0-113-5.sslip.io` below are documentation examples, not working server addresses. Replace them with your own values.
 
+## Connect a bridge set up earlier
+
+In Drover 0.8.1, **Settings → Machines** detects an existing bridge from this Mac's remote URL, `dev.drover.bridge` LaunchAgent and SSH host pins. Detection does not contact the VPS or read private key contents.
+
+Press **Connect this bridge** and confirm the SSH fingerprint through your provider's console. If no administrator key is configured, enter the administrator login and a one-time password in the Found bridge card. Drover installs its own administrator key after fingerprint confirmation, then verifies the existing accounts, loopback listener policy and Caddy phone route. The password is never saved. The existing tunnel, bridge users and phone website are retained.
+
+Alternatively, reuse an existing administrator key by configuring its login and path in `bridge-admin.json` inside Drover's user-data folder (normally `~/Library/Application Support/Drover`). For example:
+
+```json
+{
+  "host": "203.0.113.5",
+  "port": 22,
+  "user": "root",
+  "keyPath": "~/.ssh/vps_admin_ed25519"
+}
+```
+
+Use the same administrator account/key used to set up the VPS. The key must already exist on this Mac; this file contains only metadata. Keep it private (`chmod 600`), and use the actual SSH port. In an isolated development profile, put the file in that profile's `DROVER_USER_DATA` folder.
+
+With the existing-key option, press **Look again**, then **Connect this bridge** and confirm the SSH fingerprint. Adoption registers the VPS and shows any missing steps. It does not reinstall the bridge or change its LaunchAgent or Caddy settings.
+
+To use the same VPS for home machines, explicitly confirm the bridge upgrade. Drover installs its own administrator grants (using the configured key or a one-time password), adds `drover-jump` and separate `dt-*` tunnel accounts, and adds the one-time installer route to the existing HTTPS site. The existing phone tunnel, legacy accounts and phone authentication remain in place. An ambiguous/custom Caddy configuration requires manual integration; Drover reports that condition instead of replacing the site. Add each home machine in Machines and run its one-time installer to connect it through the bridge.
+
+Switching the active Machines bridge moves the managed home-machine tunnels; the Mac's existing phone tunnel continues to use its original VPS. Removing a repaired bridge revokes only Drover-managed grants. The manually configured phone bridge keeps running.
+
 ## 1. Get the scripts and create Mac keys
 
 Download this repository's **remote-web** branch with GitHub's **Code → Download ZIP**, unzip it, and keep the `remote/` directory in a permanent location, for example `~/drover-remote`. The scripts are also available in the [repository](https://github.com/mariotgb/drover/tree/remote-web/remote). The downloaded Drover app alone does not contain these scripts. You do not need Git, Node.js or Xcode.

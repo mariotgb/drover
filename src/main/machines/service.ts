@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, readFile, unlink } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, rm, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { HostKey, InstallCommand, Machine, MachineDraft, MachineOs, MachinePermissions, MachinesState, MachinesStatus, SessionCleanupReason, SessionCleanupReport, SessionCleanupResult } from '@shared/machines'
+import { tmpdir } from 'node:os'
+import type { BridgeAdoptOptions, BridgeProgress, BridgeRepairOptions, BridgeScratchOptions, BridgeSetupReport, BridgeStepId, ExistingBridge, HostKey, InstallCommand, Machine, MachineConfirmationOptions, MachineDraft, MachineOs, MachinePermissions, MachinesState, MachinesStatus, SessionCleanupReason, SessionCleanupReport, SessionCleanupResult } from '@shared/machines'
 import { MachinesStore, publicAddress, validHost, validPort, validateDraft, validatePermissions, type StoredMachines } from './store'
 import { fingerprint, MachinesFailure, privateDirectory, privateRead, privateWrite, quote, runCommand, sshError, tcpProbe, withAskpass, type CommandResult, type CommandRunner } from './ssh'
-import { keyInstallScript, removeKeyScript, windowsKeyScript } from './permissions'
+import { adminKeyInstallScript, keyInstallScript, removeKeyScript, windowsKeyScript } from './permissions'
 import { projectMachineInstructions, writeAwareness } from './awareness'
-import { createMachineProvisioner, type BridgeTarget, type InstallContext, type InstallerReport } from './provision'
+import { bridgeTunnelUser, createMachineProvisioner, macTunnelAsset, type BridgeOptions, type BridgeTarget, type ExistingBridgeReport, type InstallContext, type InstallerReport, type LegacyBridge } from './provision'
 import { BridgeCleanupQueue } from './cleanup'
 import { sessionCleanupScript } from './sessions'
+import { detectLocalBridge, keyExists, publicExistingBridge, type BridgeAdmin, type LocalBridge } from './existing-bridge'
 
 export interface MachineProvisioner {
   setupBridge(machine: Machine, targets: Machine[], agentsPublicKey: string, options: { caddy: boolean }, onStep: (step: string) => Promise<void>): Promise<void>
@@ -19,6 +21,9 @@ export interface MachineProvisioner {
   retireBridge?(bridge: Machine): Promise<void>
   revokeInstallers?(bridge: Machine | null): Promise<void>
   dispose?(): Promise<void>
+  verifyExistingBridge?(machine: Machine, legacy: LegacyBridge): Promise<ExistingBridgeReport>
+  setupScratchBridge?(machine: Machine, keys: { tunnel: string; agents: string; management: string }, options: BridgeOptions, onStep: (step: BridgeStepId, state: 'running' | 'done' | 'skipped') => Promise<void>): Promise<void>
+  repairBridge?(machine: Machine, targets: Machine[], agentsPublicKey: string, options: BridgeOptions, onStep: (step: string) => Promise<void>): Promise<void>
 }
 export interface MachinesOptions {
   userData: string
@@ -34,6 +39,10 @@ export interface MachinesOptions {
   assetsDir?: string
   /** Optional advertised LAN address for isolated tests or explicit routing. */
   lanHost?: string
+  remoteSettings?: () => { remotePublicUrl?: string; remotePort?: number }
+  bridgeAdmin?: () => BridgeAdmin | undefined
+  bridgeProgress?: (progress: BridgeProgress) => void
+  configurePhone?: (publicUrl: string) => void | Promise<void>
 }
 const METRICS = `set -eu
 printf 'os=%s\\n' "$(uname -s)"
@@ -86,13 +95,26 @@ export class MachinesService {
     this.provisioner = options.provisioner ?? {
       setupBridge: async (m, machines, key, settings, onStep) => provision.setupBridge(m, await targets(machines), key, settings, onStep),
       installCommand: async (context, os) => {
-        if (context.bridge) await provision.setupBridge(context.bridge, await targets(this.d.machines.filter(m => m.kind === 'bridged' && m.bridgeMachineId === context.bridge!.id)), context.agentsPublicKey, { caddy: context.bridge.bridgeSetup?.caddy ?? false })
+        if (context.bridge) {
+          const connection = this.d.bridgeConnections?.[context.bridge.id], assigned = await targets(this.d.machines.filter(m => m.kind === 'bridged' && m.bridgeMachineId === context.bridge!.id))
+          if (connection && !connection.managed) throw new MachinesFailure('bridge_repair_required', 'Confirm bridge repair to add the installer route and dedicated target grants.')
+          if (connection) await provision.repairBridge(context.bridge, assigned, context.agentsPublicKey, this.bridgeOptions(context.bridge))
+          else await provision.setupBridge(context.bridge, assigned, context.agentsPublicKey, { caddy: context.bridge.bridgeSetup?.caddy ?? false })
+        }
         return provision.installCommand({ ...context, ...(context.machine.permissions.mode === 'read-only' ? { permissionSetupScript: keyInstallScript(context.agentsPublicKey, context.managementPublicKey, context.machine.permissions) } : {}) }, os)
       },
-      switchBridge: async (previous, next, machines, key) => provision.switchBridge(previous, next, await targets(machines), key, { caddy: next.bridgeSetup?.caddy ?? false, bridgeHostKey: await bridgeKey(next) }),
-      revokeBridgeKey: async (b, old) => { await provision.revokeJumpKey(b, old); await provision.revokeInstallers(b); await provision.setupBridge(b, await targets(this.d.machines.filter(m => m.kind === 'bridged' && m.bridgeMachineId === b.id)), this.d.agentsKey!.publicKey, { caddy: b.bridgeSetup?.caddy ?? false }) },
+      switchBridge: async (previous, next, machines, key) => provision.switchBridge(previous, next, await targets(machines), key, { ...this.bridgeOptions(next), bridgeHostKey: await bridgeKey(next), additive: !!this.d.bridgeConnections?.[next.id] }),
+      revokeBridgeKey: async (b, old) => {
+        await provision.revokeJumpKey(b, old); await provision.revokeInstallers(b)
+        const assigned = await targets(this.d.machines.filter(m => m.kind === 'bridged' && m.bridgeMachineId === b.id))
+        if (this.d.bridgeConnections?.[b.id]) await provision.repairBridge(b, assigned, this.d.agentsKey!.publicKey, this.bridgeOptions(b))
+        else await provision.setupBridge(b, assigned, this.d.agentsKey!.publicKey, { caddy: b.bridgeSetup?.caddy ?? false })
+      },
       removeTargets: provision.removeTargets,
       retireBridge: provision.retireBridge,
+      verifyExistingBridge: provision.verifyExistingBridge,
+      setupScratchBridge: provision.setupScratchBridge,
+      repairBridge: async (m, machines, key, settings, onStep) => provision.repairBridge(m, await targets(machines), key, settings, onStep),
       revokeInstallers: provision.revokeInstallers,
       dispose: provision.dispose
     }
@@ -112,6 +134,9 @@ export class MachinesService {
   }
   private env(): NodeJS.ProcessEnv { return this.options.env?.() ?? process.env }
   private keyPath(name = 'agents_ed25519'): string { return join(this.root, 'keys', name) }
+  private requireConfirmation(options: MachineConfirmationOptions | undefined): void {
+    if (options?.confirmed !== true) throw new MachinesFailure('confirmation_required', 'Explicitly confirm this machine operation first.')
+  }
   private serial<T>(action: () => Promise<T>): Promise<T> {
     const result = this.tail.then(async () => { if (this.disposed) throw new MachinesFailure('closed', 'Machines service is closed.'); await this.load(); return action() })
     this.tail = result.catch(() => undefined)
@@ -148,6 +173,8 @@ export class MachinesService {
     const machines = structuredClone(this.d.machines)
     for (const machine of machines) {
       machine.sessionCleanup ??= { account: machine.kind === 'bridged' ? 'dedicated' : 'supplied' }
+      const connection = this.d.bridgeConnections?.[machine.id]
+      if (connection) machine.bridgeConnection = { source: connection.source, users: [connection.tunnelUser, connection.jumpUser], publicUrl: connection.publicUrl, macTunnel: connection.macTunnel, forwards: structuredClone(connection.forwards), managed: connection.managed }
       if (machine.bridgeSetup) {
         delete machine.bridgeSetup.cleanup
         const cleanup = this.bridgeCleanup.cleanupState(machine.id)
@@ -159,6 +186,221 @@ export class MachinesService {
   }
   private includeLine(): string { return `Include "${this.configPath}"` }
   async state(): Promise<MachinesState> { return this.serial(() => this.result()) }
+  private async localBridge(machines?: Machine[]): Promise<LocalBridge | null> {
+    return detectLocalBridge({ home: this.options.home, userData: this.options.userData, run: this.run, env: this.env(), remoteSettings: this.options.remoteSettings?.(), admin: this.options.bridgeAdmin?.(), machines })
+  }
+  async detectExistingBridge(): Promise<ExistingBridge | null> {
+    // Do not load/render/start polling or run the cleanup queue: detection is local only.
+    const local = await this.localBridge(this.data?.machines ?? (await this.store.load()).machines)
+    return local ? publicExistingBridge(local) : null
+  }
+  private bridgeSteps(): BridgeProgress[] { return (['connect', 'users', 'firewall', 'mac_tunnel', 'phone_site', 'check'] as BridgeStepId[]).map(step => ({ step, state: 'pending' })) }
+  private progress(steps: BridgeProgress[], step: BridgeStepId, state: BridgeProgress['state'], error?: BridgeProgress['error']): void {
+    const entry: BridgeProgress = { step, state, ...(error ? { error } : {}) }
+    steps[steps.findIndex(s => s.step === step)] = entry
+    this.options.bridgeProgress?.(structuredClone(entry))
+  }
+  private failedReport(machineId: string, steps: BridgeProgress[], error: unknown): BridgeSetupReport {
+    const reason = sshError(error), running = steps.find(s => s.state === 'running') ?? steps.find(s => s.state === 'pending') ?? steps.at(-1)!
+    this.progress(steps, running.step, 'failed', reason)
+    for (const step of steps.filter(s => s.state === 'pending')) this.progress(steps, step.step, 'skipped')
+    return { machineId, steps: structuredClone(steps), repairSteps: steps.filter(s => s.state === 'failed').map(s => ({ ...s, state: 'pending' })) }
+  }
+  private legacy(local: LocalBridge): LegacyBridge { return { users: local.users, tunnelUser: local.tunnelUser, forwards: local.forwards, ...(local.publicUrl ? { publicUrl: local.publicUrl } : {}) } }
+  private bridgeOptions(machine: Machine): BridgeOptions {
+    const connection = this.d.bridgeConnections?.[machine.id]
+    return { caddy: !!connection?.publicUrl || machine.bridgeSetup?.caddy === true, publicOrigin: connection?.installerOrigin ?? connection?.publicUrl, phonePort: connection?.forwards.find(f => f.listenPort !== 2222 && f.targetPort !== 22)?.listenPort ?? 8780 }
+  }
+  private async verifyBridge(machine: Machine, legacy: LegacyBridge): Promise<ExistingBridgeReport> {
+    if (!this.provisioner.verifyExistingBridge) throw new MachinesFailure('bridge_verification_failed', 'Bridge verification is unavailable.')
+    return this.provisioner.verifyExistingBridge(machine, legacy)
+  }
+  private mapVerification(steps: BridgeProgress[], report: ExistingBridgeReport, local: LocalBridge): void {
+    const missing = (step: BridgeStepId, code: string) => this.progress(steps, step, 'failed', { code })
+    if (!report.users.every(u => u.exists && u.authorizedKeyOptions)) missing('users', 'bridge_users_missing')
+    else if (!report.policy) missing('users', 'bridge_policy_missing')
+    else this.progress(steps, 'users', 'done')
+    if (!local.publicUrl) this.progress(steps, 'firewall', 'skipped')
+    else if (!report.firewall) missing('firewall', 'bridge_firewall_missing')
+    else this.progress(steps, 'firewall', 'done')
+    if (local.macTunnel === 'missing') missing('mac_tunnel', 'mac_tunnel_missing')
+    else if (!local.tunnelRunning || local.forwards.some(f => !report.listeners.includes(f.listenPort))) missing('mac_tunnel', 'mac_tunnel_stopped')
+    else this.progress(steps, 'mac_tunnel', 'done')
+    if (!local.publicUrl) this.progress(steps, 'phone_site', 'skipped')
+    else if (!report.caddy.configured || !report.caddy.active || report.missing.includes('phone_route_missing')) missing('phone_site', 'phone_route_missing')
+    else this.progress(steps, 'phone_site', 'done')
+    const failed = steps.some(s => s.state === 'failed') || report.missing.length > 0
+    this.progress(steps, 'check', failed ? 'failed' : 'done', failed ? { code: 'bridge_repair_required' } : undefined)
+  }
+  private availableName(): string {
+    let name = 'bridge', suffix = 2
+    while (this.d.machines.some(m => m.name === name)) name = `bridge-${suffix++}`
+    return name
+  }
+  async adoptExistingBridge(options?: BridgeAdoptOptions): Promise<BridgeSetupReport> {
+    return this.serial(async () => {
+      const steps = this.bridgeSteps(); let machineId = ''
+      try {
+        this.progress(steps, 'connect', 'running')
+        const local = await this.localBridge(this.d.machines)
+        if (!local) throw new MachinesFailure('existing_bridge_missing', 'No local bridge configuration was found.')
+        if (!options?.acceptedFingerprint) throw new MachinesFailure('host_key_unconfirmed', 'Probe and explicitly confirm the bridge SSH fingerprint first.')
+        if ((!local.admin || !local.adminKey) && options.password === undefined) throw new MachinesFailure('bridge_admin_key_missing', 'Enter the administrator login and a one-time password to connect this bridge.')
+        const adminUser = options.user ?? local.admin?.user ?? 'root'
+        if (!/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(adminUser)) throw new MachinesFailure('invalid_user', 'Enter a valid administrator SSH login.')
+        if (!publicAddress(local.host)) throw new MachinesFailure('no_public_ip', 'The detected bridge needs a public IP address.')
+        if (this.d.bridgeMachineId && this.d.bridgeMachineId !== local.machineId) throw new MachinesFailure('bridge_state_conflict', 'A different bridge is active. Switch it explicitly before adopting this server.')
+        const existing = local.machineId ? this.machine(local.machineId) : null
+        if (existing && existing.user !== adminUser) throw new MachinesFailure('bridge_state_conflict', 'The saved server login differs from the configured bridge administrator.')
+        const m = existing ?? this.machine((await this.addInternal({ kind: 'direct', name: this.availableName(), host: local.host, port: local.port, user: adminUser })).id)
+        machineId = m.id
+        await this.pin(m, options.acceptedFingerprint)
+        this.d.bridgeConnections ??= {}
+        const previous = this.d.bridgeConnections[m.id]
+        const adminKeyPath = local.admin?.keyPath
+        this.d.bridgeConnections[m.id] = { ...previous, source: previous?.source ?? 'existing', adminKeyPath, adminManaged: previous?.adminManaged, jumpUser: previous?.managed ? 'drover-jump' : 'jump', tunnelUser: local.tunnelUser, forwards: structuredClone(local.forwards), publicUrl: local.publicUrl, macTunnel: local.macTunnel, ...(previous?.jumpKeyPath ? { jumpKeyPath: previous.jumpKeyPath } : await keyExists(join(this.options.home, '.ssh/mac_jump_ed25519')) ? { jumpKeyPath: join(this.options.home, '.ssh/mac_jump_ed25519') } : {}) }
+        await this.changed()
+        if (options.password !== undefined) {
+          await this.installBridgeAdminKey(m, options.password)
+          await privateWrite(join(this.options.userData, 'bridge-admin.json'), JSON.stringify({ host: m.host, port: m.port, user: m.user, keyPath: this.keyPath('management_ed25519') }))
+        }
+        await this.render()
+        let report: ExistingBridgeReport
+        try { report = await this.verifyBridge(m, this.legacy(local)) }
+        catch (e) { await this.changed(); throw e }
+        this.progress(steps, 'connect', 'done')
+        if (!previous?.managed) this.d.bridgeConnections[m.id].jumpUser = report.jumpUser
+        m.bridgeSetup = { state: report.policy && report.users.some(u => u.name === local.tunnelUser && u.exists && u.authorizedKeyOptions) && report.users.some(u => u.name === report.jumpUser && u.exists && u.authorizedKeyOptions) ? 'ready' : 'failed', caddy: !!local.publicUrl && report.caddy.configured, checkedAt: Date.now() }
+        m.status = { state: 'online', checkedAt: Date.now(), checks: { tcp: true, auth: true } }
+        this.d.bridgeMachineId = m.id
+        this.mapVerification(steps, report, local)
+        await this.changed()
+        return { machineId: m.id, steps: structuredClone(steps), repairSteps: steps.filter(s => s.state === 'failed' && s.step !== 'check').map(s => ({ ...s, state: 'pending' })) }
+      } catch (error) { return this.failedReport(machineId, steps, error) }
+    })
+  }
+  private async setupMacTunnel(local: LocalBridge): Promise<void> {
+    const scratch = await mkdtemp(join(tmpdir(), 'drover-mac-bridge-'))
+    try {
+      const script = join(scratch, 'mac-tunnel.py'), manifest = join(scratch, 'manifest.json')
+      await privateWrite(script, await macTunnelAsset(this.options.assetsDir))
+      await privateWrite(manifest, JSON.stringify({ action: 'setup', home: this.options.home, host: local.host, port: local.port, user: local.tunnelUser, keyPath: local.keyPath, knownHostsPath: local.knownHostsPath ?? this.knownHosts, hostKeyAlias: local.hostKeyAlias ?? `[${local.host}]:${local.port}`, forwards: local.forwards, publicUrl: local.publicUrl, phone: !!local.publicUrl }))
+      const result = await this.run('python3', [script, manifest], { env: this.env(), timeoutMs: 30_000 })
+      if (result.code) throw new MachinesFailure('mac_tunnel_setup_failed', 'The Mac bridge LaunchAgent could not be configured.')
+      const line = result.stdout.split('\n').find(l => l.startsWith('DROVER_MAC_BRIDGE_REPORT '))
+      let report: { tunnelRunning: boolean; missing: string[] }
+      try { report = JSON.parse(line!.slice('DROVER_MAC_BRIDGE_REPORT '.length)); if (typeof report.tunnelRunning !== 'boolean' || !Array.isArray(report.missing)) throw Error() }
+      catch { throw new MachinesFailure('invalid_response', 'The Mac tunnel returned an invalid report.') }
+      if (!report.tunnelRunning || report.missing.length) throw new MachinesFailure('mac_tunnel_stopped', 'The Mac bridge LaunchAgent is not running. Check local SSH and Drover remote access.')
+      local.tunnelRunning = true; local.macTunnel = 'running'
+    } finally { await rm(scratch, { recursive: true, force: true }) }
+  }
+  async setupBridgeFromScratch(options: BridgeScratchOptions): Promise<BridgeSetupReport> {
+    return this.serial(async () => {
+      const steps = this.bridgeSteps(); let machineId = '', m: Machine | undefined
+      try {
+        this.progress(steps, 'connect', 'running')
+        const port = options?.port ?? 22
+        validateDraft({ kind: 'direct', name: 'bridge', host: options?.host, port, user: options?.user })
+        if (typeof options.caddy !== 'boolean') throw new MachinesFailure('invalid_bridge_options', 'Choose whether to set up phone access.')
+        if (!options.acceptedFingerprint) throw new MachinesFailure('host_key_unconfirmed', 'Probe and explicitly confirm the bridge SSH fingerprint first.')
+        if (!options.password) throw new MachinesFailure('invalid_password', 'Enter the one-time administrator password.')
+        if (!publicAddress(options.host)) throw new MachinesFailure('no_public_ip', 'A bridge needs a public IP address.')
+        if (await this.localBridge(this.d.machines) || this.d.bridgeMachineId || Object.keys(this.d.bridgeConnections ?? {}).length) throw new MachinesFailure('bridge_state_conflict', 'An existing bridge is configured. Adopt or repair it before creating another tunnel.')
+        const saved = this.d.machines.find(x => x.kind === 'direct' && x.host === options.host && x.port === port)
+        if (saved && saved.user !== options.user) throw new MachinesFailure('bridge_state_conflict', 'The saved administrator login differs.')
+        m = saved ?? this.machine((await this.addInternal({ kind: 'direct', name: this.availableName(), host: options.host, port, user: options.user })).id); machineId = m.id
+        await this.pin(m, options.acceptedFingerprint)
+        this.d.bridgeConnections ??= {}
+        this.d.bridgeConnections[m.id] = { source: 'scratch', adminKeyPath: this.keyPath('management_ed25519'), jumpUser: 'jump', tunnelUser: 'bridge-mac', forwards: [], macTunnel: 'missing' }
+        await this.changed()
+        await this.installBridgeAdminKey(m, options.password)
+        const checked = await this.checkInternal(m)
+        if (!checked.status.checks?.auth) throw new MachinesFailure(checked.status.error?.code ?? 'auth_failed', 'The new SSH key could not authenticate.')
+        if (checked.os !== 'linux') throw new MachinesFailure('unsupported_os', 'A bridge needs a supported Debian or Ubuntu server.')
+        if (options.caddy && options.host.includes(':')) throw new MachinesFailure('invalid_host', 'Automatic sslip.io phone setup currently needs an IPv4 bridge address.')
+        await privateWrite(join(this.options.userData, 'bridge-admin.json'), JSON.stringify({ host: m.host, port: m.port, user: m.user, keyPath: this.keyPath('management_ed25519') }))
+        this.progress(steps, 'connect', 'done')
+        const keys = await this.ensureKeys(), tunnel = await this.generateKey('mac-bridge-' + m.id), phoneJump = await this.generateKey('mac-phone-jump-' + m.id)
+        const publicUrl = options.caddy ? `https://${options.host.replace(/\./g, '-')}.sslip.io` : undefined
+        const local: LocalBridge = { host: options.host, port, users: ['bridge-mac', 'jump'], tunnelUser: 'bridge-mac', keyPath: this.keyPath('mac-bridge-' + m.id), forwards: [{ listenHost: '127.0.0.1', listenPort: 2222, targetHost: '127.0.0.1', targetPort: 22 }, ...(options.caddy ? [{ listenHost: '127.0.0.1', listenPort: 8780, targetHost: '127.0.0.1', targetPort: this.options.remoteSettings?.().remotePort ?? 7780 }] : [])], publicUrl, adminKey: true, tunnelRunning: false, macTunnel: 'missing' }
+        if (!this.provisioner.setupScratchBridge) throw new MachinesFailure('bridge_verification_failed', 'Bridge setup is unavailable.')
+        this.d.bridgeConnections ??= {}
+        this.d.bridgeConnections[m.id] = { ...this.d.bridgeConnections[m.id], source: 'scratch', jumpUser: 'jump', jumpKeyPath: this.keyPath('mac-phone-jump-' + m.id), tunnelUser: local.tunnelUser, forwards: local.forwards, publicUrl, macTunnel: local.macTunnel }
+        m.bridgeSetup = { state: 'running', caddy: options.caddy }; await this.changed()
+        await this.provisioner.setupScratchBridge(m, { tunnel, agents: phoneJump, management: keys.management }, { caddy: options.caddy, publicOrigin: publicUrl }, async (step, state) => this.progress(steps, step, state))
+        if (publicUrl) {
+          this.progress(steps, 'phone_site', 'running')
+          try { await this.options.configurePhone?.(publicUrl) } catch { throw new MachinesFailure('phone_route_missing', 'Drover remote access could not start on this Mac.') }
+          this.progress(steps, 'phone_site', 'done')
+        }
+        this.progress(steps, 'mac_tunnel', 'running'); await this.setupMacTunnel(local); this.d.bridgeConnections[m.id].macTunnel = local.macTunnel; this.progress(steps, 'mac_tunnel', 'done')
+        this.progress(steps, 'check', 'running')
+        const report = await this.verifyBridge(m, this.legacy(local))
+        this.mapVerification(steps, report, local)
+        this.d.bridgeConnections ??= {}
+        this.d.bridgeConnections[m.id] = { ...this.d.bridgeConnections[m.id], source: 'scratch', jumpUser: 'jump', jumpKeyPath: this.keyPath('mac-phone-jump-' + m.id), tunnelUser: local.tunnelUser, forwards: local.forwards, publicUrl, macTunnel: local.macTunnel }
+        m.bridgeSetup = { state: report.policy && report.users.every(u => u.exists && u.authorizedKeyOptions) ? 'ready' : 'failed', caddy: options.caddy, checkedAt: Date.now() }
+        this.d.bridgeMachineId = m.id; await this.changed()
+        if (steps.find(s => s.step === 'users')?.state === 'done') await this.repairInternal({ machineId, acceptedFingerprint: options.acceptedFingerprint, confirmed: true }, steps)
+        return { machineId, steps: structuredClone(steps), repairSteps: steps.filter(s => s.state === 'failed' && s.step !== 'check').map(s => ({ ...s, state: 'pending' })) }
+      } catch (error) {
+        if (m?.bridgeSetup) { m.bridgeSetup = { ...m.bridgeSetup, state: 'failed', error: sshError(error) }; await this.changed() }
+        return this.failedReport(machineId, steps, error)
+      }
+    })
+  }
+  async repairExistingBridge(options: BridgeRepairOptions): Promise<BridgeSetupReport> {
+    return this.serial(async () => {
+      const steps = this.bridgeSteps()
+      try { await this.repairInternal(options, steps); return { machineId: options.machineId, steps: structuredClone(steps), repairSteps: steps.filter(s => s.state === 'failed' && s.step !== 'check').map(s => ({ ...s, state: 'pending' })) } }
+      catch (error) { return this.failedReport(options?.machineId ?? '', steps, error) }
+    })
+  }
+  private async repairInternal(options: BridgeRepairOptions, steps: BridgeProgress[]): Promise<void> {
+    this.progress(steps, 'connect', 'running')
+    if (options?.confirmed !== true) throw new MachinesFailure('bridge_repair_confirmation_required', 'Confirm adding Drover grants and the installer route before repairing this bridge.')
+    const m = this.machine(options.machineId), connection = this.d.bridgeConnections?.[m.id]
+    if (!connection) throw new MachinesFailure('existing_bridge_missing', 'Adopt the existing bridge before repairing it.')
+    if (!this.provisioner.repairBridge) throw new MachinesFailure('bridge_verification_failed', 'Bridge repair is unavailable.')
+    await this.pin(m, options.acceptedFingerprint)
+    const before = await this.verifyBridge(m, { users: [connection.tunnelUser, 'jump'], tunnelUser: connection.tunnelUser, forwards: connection.forwards, publicUrl: connection.publicUrl })
+    if (!before.policy || !before.users.every(u => u.exists && u.authorizedKeyOptions)) throw new MachinesFailure('bridge_policy_missing', 'The existing tunnel policy needs repair before adding Drover grants.')
+    const keys = await this.ensureKeys()
+    await this.installBridgeAdminKey(m, options.password)
+    // Retire this installation's former unrestricted bridge agent credential.
+    this.requireSuccess(await this.execute(m, 'sh -s', removeKeyScript(keys.agents, keys.management)))
+    connection.installerOrigin ??= connection.publicUrl ?? `https://${m.host!.replace(/\./g, '-')}.sslip.io`
+    await privateWrite(join(this.options.userData, 'bridge-admin.json'), JSON.stringify({ host: m.host, port: m.port, user: m.user, keyPath: connection.adminKeyPath }))
+    await this.changed()
+    this.progress(steps, 'connect', 'done')
+    const managedTargets = this.d.machines.filter(t => t.kind === 'bridged' && (!t.bridgeMachineId || t.bridgeMachineId === m.id))
+    // Legacy ports are permanent reservations even when the old machine is offline.
+    const reserved = new Set([2222, 2223, 2224, 8780, 8791, ...connection.forwards.map(f => f.listenPort), ...before.listeners.filter(p => !this.d.machines.some(t => t.bridgeMachineId === m.id && t.bridgePort === p))])
+    let nextPort = 2225
+    for (const target of managedTargets) {
+      if (reserved.has(target.bridgePort!)) {
+        if (this.d.issuedInstallers.includes(target.id) || this.d.installed.includes(target.id)) throw new MachinesFailure('bridge_port_conflict', 'An existing machine uses a legacy bridge port. Repoint its tunnel explicitly before repair.')
+        while (reserved.has(nextPort) || this.d.machines.some(t => t.id !== target.id && t.bridgePort === nextPort)) nextPort++
+        target.bridgePort = nextPort++
+      }
+      reserved.add(target.bridgePort!)
+    }
+    this.progress(steps, 'users', 'running')
+    await this.provisioner.repairBridge(m, managedTargets, keys.agents, this.bridgeOptions(m), async () => undefined)
+    const local = await this.localBridge(this.d.machines)
+    const legacy: LegacyBridge = { users: [...new Set([connection.tunnelUser, 'jump', 'drover-jump', ...managedTargets.map(bridgeTunnelUser)])], tunnelUser: connection.tunnelUser, forwards: connection.forwards, publicUrl: connection.installerOrigin, phone: !!connection.publicUrl }
+    const verified = await this.verifyBridge(m, legacy)
+    if (!verified.policy || legacy.users!.some(name => !verified.users.some(u => u.name === name && u.exists && u.authorizedKeyOptions))) throw new MachinesFailure('bridge_policy_missing', 'Bridge repair did not verify all legacy and Drover SSH grants.')
+    if (!verified.caddy.installerRoute || !verified.caddy.active) throw new MachinesFailure('caddy_repair_requires_manual_integration', 'The installer route could not be verified at the selected bridge site.')
+    connection.managed = true; connection.jumpUser = 'drover-jump'; connection.jumpKeyPath = this.keyPath()
+    m.needsReinstall = false; m.bridgeSetup = { state: 'ready', caddy: !!connection.publicUrl, checkedAt: Date.now() }
+    for (const target of managedTargets) target.bridgeMachineId = m.id
+    if (!this.d.bridgeMachineId || this.d.bridgeMachineId === m.id) this.d.bridgeMachineId = m.id
+    const mapped: LocalBridge = local ?? { host: m.host!, port: m.port!, users: legacy.users!, tunnelUser: connection.tunnelUser, forwards: connection.forwards, publicUrl: connection.publicUrl, tunnelRunning: connection.macTunnel === 'running', macTunnel: connection.macTunnel, adminKey: true }
+    this.mapVerification(steps, verified, mapped)
+    await this.changed()
+  }
   async status(): Promise<MachinesStatus> { const s = await this.state(); return { machines: s.machines.map(m => ({ ...m, permissions: { mode: m.permissions.mode, projects: [] } })), bridgeMachineId: s.bridgeMachineId } }
   private async changed(): Promise<void> {
     await this.store.save(this.d)
@@ -166,6 +408,10 @@ export class MachinesService {
     this.options.changed?.(await this.result())
   }
   private pinName(m: Machine): string { return m.kind === 'direct' ? `[${m.host}]:${m.port}` : `drover-machine-${m.id}` }
+  private infrastructureBridge(m: Machine): boolean {
+    return m.kind === 'direct' && (m.id === this.d.bridgeMachineId || !!this.d.bridgeConnections?.[m.id] || !!m.bridgeSetup && m.bridgeSetup.state !== 'none')
+  }
+  private agentMachines(): Machine[] { return this.d.machines.filter(m => !this.infrastructureBridge(m)) }
   private sshBlock(alias: string, host: string, port: number, user: string, key: string, pin: string, jump?: string): string {
     return `Host ${alias}\n  HostName ${host}\n  Port ${port}\n  User ${user}\n  IdentityFile "${key}"\n  IdentitiesOnly yes\n  IdentityAgent none\n  UserKnownHostsFile "${this.knownHosts}"\n  GlobalKnownHostsFile /dev/null\n  HostKeyAlias ${pin}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n  ForwardAgent no\n  ForwardX11 no\n  ConnectTimeout 5\n  ServerAliveInterval 30\n  ServerAliveCountMax 2\n${jump ? `  ProxyJump ${jump}\n` : ''}\n`
   }
@@ -175,8 +421,9 @@ export class MachinesService {
     let text = '# Managed by Drover Machines. Do not put passwords here.\n\n'
     for (const m of this.d.machines) {
       if (m.kind === 'direct') {
-        if (!m.needsReinstall) text += this.sshBlock(m.alias, m.host!, m.port!, m.user, this.keyPath(), this.pinName(m))
-        text += this.sshBlock(`drover-management-${m.id}`, m.host!, m.port!, m.user, this.keyPath('management_ed25519'), this.pinName(m))
+        const adminKey = this.d.bridgeConnections?.[m.id]?.adminKeyPath
+        if (!m.needsReinstall && !this.infrastructureBridge(m)) text += this.sshBlock(m.alias, m.host!, m.port!, m.user, this.keyPath(), this.pinName(m))
+        text += this.sshBlock(`drover-management-${m.id}`, m.host!, m.port!, m.user, adminKey ?? this.keyPath('management_ed25519'), this.pinName(m))
       } else {
         const b = this.d.machines.find(b => b.id === m.bridgeMachineId)
         if (b) {
@@ -189,18 +436,19 @@ export class MachinesService {
       }
     }
     const b = this.bridge()
-    if (b) text += this.sshBlock(`drover-jump-${b.id}`, b.host!, b.port!, 'drover-jump', this.keyPath(), this.pinName(b))
+    if (b) { const connection = this.d.bridgeConnections?.[b.id]; text += this.sshBlock(`drover-jump-${b.id}`, b.host!, b.port!, connection?.jumpUser ?? 'drover-jump', connection?.jumpKeyPath ?? this.keyPath(), this.pinName(b)) }
     await privateWrite(this.controlConfig, text)
     const agentBlocks = text.split(/(?=^Host )/m).filter(block => {
       const alias = block.match(/^Host (\S+)/)?.[1]
       if (!alias) return true
       if (alias.startsWith('drover-management-')) return false
+      if (alias.startsWith('drover-jump-')) return !!b && alias === `drover-jump-${b.id}` && (!this.d.bridgeConnections?.[b.id] || this.d.bridgeConnections[b.id].managed === true)
       const m = this.d.machines.find(m => m.alias === alias)
       return !m || m.permissions.mode !== 'projects'
     }).join('')
     await privateWrite(this.configPath, agentBlocks)
     if (await privateRead(this.knownHosts) === null) await privateWrite(this.knownHosts, '')
-    await writeAwareness(this.options.home, this.root, this.d.machines)
+    await writeAwareness(this.options.home, this.root, this.agentMachines())
     for (const project of this.projects) await this.projectGuide(project)
   }
   private async generateKey(name: string): Promise<string> {
@@ -234,19 +482,20 @@ export class MachinesService {
     return { agents, management }
   }
   async add(draft: MachineDraft): Promise<Machine> {
-    return this.serial(async () => {
+    return this.serial(() => this.addInternal(draft))
+  }
+  private async addInternal(draft: MachineDraft): Promise<Machine> {
       validateDraft(draft)
       if (this.d.machines.some(m => m.name === draft.name)) throw new MachinesFailure('duplicate_name', 'A machine with this name already exists.')
       await this.ensureKeys()
       const b = this.bridge()
-      const taken = new Set(this.d.machines.map(m => m.bridgePort))
+      const taken = new Set([...this.d.machines.map(m => m.bridgePort), ...(b && this.d.bridgeConnections?.[b.id] ? [2222, 2223, 2224, 8780, 8791, ...this.d.bridgeConnections[b.id].forwards.map(f => f.listenPort)] : [])])
       let bridgePort = 2224; while (taken.has(bridgePort) || bridgePort === 8780) bridgePort++
       const m: Machine = { id: randomUUID(), name: draft.name, kind: draft.kind, alias: `drover-${draft.name}`, user: draft.kind === 'direct' ? draft.user : 'agent', publicIp: draft.kind === 'direct' && publicAddress(draft.host), permissions: { mode: 'full', projects: [] }, status: { state: draft.kind === 'direct' ? 'unknown' : 'waiting', error: { code: draft.kind === 'direct' ? 'key_not_installed' : b ? 'tunnel_down' : 'no_bridge' } }, ...(draft.kind === 'direct' ? { host: draft.host, port: draft.port } : { os: draft.os, bridgePort, ...(b ? { bridgeMachineId: b.id } : {}) }) }
       this.d.machines.push(m)
       try { await this.changed() } catch (e) { this.d.machines = this.d.machines.filter(x => x.id !== m.id); throw e }
       this.startPeriodic()
       return this.clone(m)
-    })
   }
   private async scan(host: string, port: number, machine?: Machine): Promise<string> {
     let result: CommandResult
@@ -284,7 +533,7 @@ export class MachinesService {
     await privateWrite(this.knownHosts, lines.join('\n') + '\n')
   }
   async execute(m: Machine, command: string, input?: string, management = true): Promise<CommandResult> {
-    return this.run('ssh', ['-F', this.controlConfig, management ? `drover-management-${m.id}` : m.alias, command], { input, env: this.env(), timeoutMs: 30_000 })
+    return this.run('ssh', ['-F', this.controlConfig, management ? `drover-management-${m.id}` : m.alias, command], { input, env: this.env(), timeoutMs: command.endsWith('/bin/bash -s') ? 300_000 : 30_000 })
   }
   private requireSuccess(result: CommandResult, password = false): void {
     if (result.code) { const reason = sshError(result.stderr, password); throw new MachinesFailure(reason.code, reason.detail!) }
@@ -342,7 +591,30 @@ export class MachinesService {
     return sessions
   }
   async installKey(id: string, options: { password?: string; acceptedFingerprint: string }): Promise<Machine> {
-    return this.serial(async () => {
+    return this.serial(() => { if (this.d.bridgeConnections?.[id]) throw new MachinesFailure('bridge_repair_required', 'Bridge credentials are preserved. Use bridge verification to reconnect.'); return this.installKeyInternal(id, options) })
+  }
+  private async installBridgeAdminKey(m: Machine, password?: string): Promise<void> {
+    const management = await this.generateKey('management_ed25519'), connection = this.d.bridgeConnections![m.id]
+    await this.render()
+    const script = adminKeyInstallScript(management)
+    const result = password !== undefined
+      ? await this.passwordKeyInstall(m, script, password)
+      : await this.execute(m, 'sh -s', script)
+    this.requireSuccess(result, password !== undefined)
+    const oldAdmin = connection.adminKeyPath
+    connection.adminManaged = true
+    if (!this.d.installed.includes(m.id)) this.d.installed.push(m.id)
+    connection.adminKeyPath = this.keyPath('management_ed25519')
+    await this.changed()
+    try { this.requireSuccess(await this.execute(m, 'true')) }
+    catch (error) { connection.adminKeyPath = oldAdmin; await this.changed(); throw error }
+    m.needsReinstall = false
+    await this.changed()
+  }
+  private async passwordKeyInstall(m: Machine, script: string, password: string): Promise<CommandResult> {
+    return withAskpass(password, this.root, this.options.runtime ?? process.execPath, env => this.run('ssh', ['-F', this.controlConfig, '-o', 'BatchMode=no', '-o', 'NumberOfPasswordPrompts=1', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=yes', '-o', 'KbdInteractiveAuthentication=yes', `drover-management-${m.id}`, 'sh -s'], { input: script, env: { ...this.env(), ...env }, timeoutMs: 30_000 }))
+  }
+  private async installKeyInternal(id: string, options: { password?: string; acceptedFingerprint: string }): Promise<Machine> {
       const m = this.machine(id), keys = await this.ensureKeys()
       await this.pin(m, options?.acceptedFingerprint)
       await this.render()
@@ -352,7 +624,7 @@ export class MachinesService {
         const script = keyInstallScript(keys.agents, keys.management, m.permissions)
         let result: CommandResult
         if (options.password !== undefined) {
-          result = await withAskpass(options.password, this.root, this.options.runtime ?? process.execPath, env => this.run('ssh', ['-F', this.controlConfig, '-o', 'BatchMode=no', '-o', 'NumberOfPasswordPrompts=1', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=yes', '-o', 'KbdInteractiveAuthentication=yes', `drover-management-${m.id}`, 'sh -s'], { input: script, env: { ...this.env(), ...env }, timeoutMs: 30_000 }))
+          result = await this.passwordKeyInstall(m, script, options.password)
           this.requireSuccess(result, true)
         } else {
           // The supplied SSH user may already accept a dedicated management key.
@@ -367,7 +639,6 @@ export class MachinesService {
       const checked = await this.checkInternal(m)
       if (m.kind === 'bridged' && checked.status.checks?.auth) { if (!this.d.installed.includes(m.id)) this.d.installed.push(m.id); m.needsReinstall = false; await this.changed() }
       return this.clone(m)
-    })
   }
   async check(id: string): Promise<Machine> { return this.serial(async () => { await this.bridgeCleanup.runOnce(); return this.checkInternal(this.machine(id)) }) }
   private async checkInternal(m: Machine): Promise<Machine> {
@@ -396,12 +667,12 @@ export class MachinesService {
       if (this.d.credentialRemovals[m.id]) await this.finishCredentialRemoval(m)
       else if (pending.length) {
         const keys = await this.ensureKeys()
-        for (const key of pending) { await this.updateRemoteKey(m, key, keys.management, { remove: true, sessionReason: 'revoke' }); if (m.bridgeSetup?.state === 'ready') await this.provisioner.revokeBridgeKey?.(m, key) }
+        for (const key of pending) { await this.updateRemoteKey(m, key, keys.management, { remove: true, sessionReason: 'revoke' }); if (m.bridgeSetup?.state === 'ready' && (!this.d.bridgeConnections?.[m.id] || this.d.bridgeConnections[m.id].managed)) await this.provisioner.revokeBridgeKey?.(m, key) }
         delete this.d.revocations[m.id]
         await this.changed()
       }
       if (m.needsReinstall) throw new MachinesFailure('needs_reinstall', 'Install the updated key or tunnel before reconnecting.')
-      const result = await this.execute(m, m.os === 'windows' ? `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(WINDOWS_METRICS, 'utf16le').toString('base64')}` : `sh -c ${quote(METRICS)}`, undefined, false)
+      const result = await this.execute(m, m.os === 'windows' ? `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(WINDOWS_METRICS, 'utf16le').toString('base64')}` : `sh -c ${quote(METRICS)}`, undefined, this.infrastructureBridge(m))
       this.requireSuccess(result)
       auth = true
       const values = Object.fromEntries(result.stdout.trim().split('\n').map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1).trim()] }))
@@ -417,6 +688,7 @@ export class MachinesService {
     return this.serial(async () => {
       validatePermissions(permissions)
       const m = this.machine(id), old = structuredClone(m.permissions)
+      if (this.d.bridgeConnections?.[id]) throw new MachinesFailure('bridge_repair_required', 'Existing bridge credentials are preserved. Permission changes need a dedicated bridge repair.')
       await this.finishCredentialRemoval(m)
       if (permissions.mode === 'read-only' && m.os && m.os !== 'linux') throw new MachinesFailure('permission_unavailable', 'Read-only access requires Linux with a working bubblewrap sandbox.')
       if (m.kind === 'bridged' && this.d.issuedInstallers.includes(id)) {
@@ -432,9 +704,36 @@ export class MachinesService {
       try { await this.changed() } catch (error) { m.permissions = old; throw error }
     })
   }
-  async remove(id: string): Promise<SessionCleanupResult> {
+  async remove(id: string, options: MachineConfirmationOptions): Promise<SessionCleanupResult> {
+    this.requireConfirmation(options)
     return this.serial(async () => {
       const m = this.machine(id)
+      if (this.d.bridgeConnections?.[id]) {
+        // Managed retirement removes only Drover grants; the legacy phone tunnel stays live.
+        const connection = this.d.bridgeConnections[id]
+        const targets = this.d.machines.filter(x => x.bridgeMachineId === id)
+        if (connection.managed) {
+          await this.provisioner.revokeInstallers?.(m)
+          for (const target of targets) { await this.stageCredentialRemoval(target); try { await this.finishCredentialRemoval(target) } catch { target.needsReinstall = true } }
+          if (!this.provisioner.retireBridge) throw new MachinesFailure('cleanup_unavailable', 'Managed bridge credential retirement is unavailable.')
+          await this.provisioner.retireBridge(m)
+          await this.bridgeCleanup.cancel(id)
+        } else if (targets.length) throw new MachinesFailure('bridge_repair_required', 'Detach dependent machines before forgetting this existing bridge.')
+        if (connection.managed || connection.adminManaged) {
+          const keys = await this.ensureKeys()
+          await this.updateRemoteKey(m, keys.agents, keys.management, { remove: true, removeManagement: true })
+        }
+        for (const target of targets) { delete target.bridgeMachineId; target.needsReinstall = true; target.status = { state: 'waiting', error: { code: 'no_bridge' } } }
+        this.d.machines = this.d.machines.filter(x => x.id !== id)
+        this.d.installed = this.d.installed.filter(x => x !== id)
+        this.d.issuedInstallers = this.d.issuedInstallers.filter(x => x !== id)
+        delete this.d.revocations[id]
+        delete this.d.credentialRemovals[id]
+        delete this.d.bridgeConnections[id]
+        if (this.d.bridgeMachineId === id) this.d.bridgeMachineId = null
+        await this.changed()
+        return { terminated: 0, incomplete: true }
+      }
       this.installerAttempts.delete(id)
       if (m.kind === 'bridged' && this.d.issuedInstallers.includes(id)) {
         if (!this.provisioner.revokeInstallers) throw new MachinesFailure('cleanup_unavailable', 'Installer revocation is unavailable. Keep this machine until its install links can be revoked.')
@@ -480,6 +779,7 @@ export class MachinesService {
       this.d.issuedInstallers = this.d.issuedInstallers.filter(x => x !== id)
       delete this.d.revocations[id]
       delete this.d.credentialRemovals[id]
+      delete this.d.bridgeConnections?.[id]
       if (this.d.bridgeMachineId === id) this.d.bridgeMachineId = null
       for (const target of targets) {
         delete target.bridgeMachineId
@@ -490,13 +790,16 @@ export class MachinesService {
       return { terminated: sessions.terminated, incomplete: sessions.incomplete, ...(sessions.error ? { error: sessions.error } : {}) }
     })
   }
-  async setBridge(id: string): Promise<void> {
+  async setBridge(id: string, options: MachineConfirmationOptions): Promise<void> {
+    this.requireConfirmation(options)
     return this.serial(async () => {
       const next = this.machine(id), previous = this.bridge()
+      if (this.d.bridgeConnections?.[id] && !this.d.bridgeConnections[id].managed || previous && this.d.bridgeConnections?.[previous.id] && !this.d.bridgeConnections[previous.id].managed) throw new MachinesFailure('bridge_repair_required', 'Confirm bridge repair before switching home machines.')
       if (next.kind !== 'direct' || !next.publicIp) throw new MachinesFailure('no_public_ip', 'A bridge needs a public IP. Private-address machines are LAN-only.')
       if (next.bridgeSetup?.state !== 'ready') throw new MachinesFailure('bridge_not_ready', 'Set up this server as a bridge before selecting it.')
       if (previous?.id === next.id) return
       const targets = this.d.machines.filter(m => m.kind === 'bridged')
+      if (this.d.bridgeConnections?.[id] && targets.some(t => [2222, 2223, 2224, 8780, 8791, ...this.d.bridgeConnections![id].forwards.map(f => f.listenPort)].includes(t.bridgePort!))) throw new MachinesFailure('bridge_port_conflict', 'A machine uses a reserved legacy port. Reinstall it on a separate port before switching to this bridge.')
       this.installerAttempts.clear()
       // Write ahead: a crash during remote repointing must not lose the old
       // bridge cleanup job. Its active-ID guard blocks it until selection saves.
@@ -510,8 +813,10 @@ export class MachinesService {
       this.options.changed?.(await this.result())
     })
   }
-  async setupBridge(id: string, options: { caddy: boolean }): Promise<void> {
+  async setupBridge(id: string, options: MachineConfirmationOptions & { caddy: boolean }): Promise<void> {
+    this.requireConfirmation(options)
     return this.serial(async () => {
+      if (this.d.bridgeConnections?.[id]) throw new MachinesFailure('bridge_repair_required', 'Verify this existing Mac bridge and apply only the reported repair steps.')
       const m = this.machine(id)
       if (m.kind !== 'direct' || !m.publicIp) throw new MachinesFailure('no_public_ip', 'A bridge needs a public IP. Without one, access is LAN-only.')
       if (!options || typeof options.caddy !== 'boolean') throw new MachinesFailure('invalid_options', 'Choose whether to configure the phone website.')
@@ -605,7 +910,8 @@ export class MachinesService {
       this.installerAttempts.delete(id)
     })
   }
-  async revokeAgentsKey(): Promise<SessionCleanupReport[]> {
+  async revokeAgentsKey(options: MachineConfirmationOptions): Promise<SessionCleanupReport[]> {
+    this.requireConfirmation(options)
     return this.serial(async () => {
       if (!this.d.agentsKey) return []
       const old = this.d.agentsKey.publicKey
@@ -629,7 +935,8 @@ export class MachinesService {
           try {
             const management = await this.generateKey('management_ed25519')
             await this.updateRemoteKey(m, key, management, { remove: true, sessionReason: 'revoke' })
-            if (m.bridgeSetup?.state === 'ready') await this.provisioner.revokeBridgeKey?.(m, key)
+            if (m.bridgeSetup?.state === 'ready' && (!this.d.bridgeConnections?.[m.id] || this.d.bridgeConnections[m.id].managed)) await this.provisioner.revokeBridgeKey?.(m, key)
+            if (this.d.bridgeConnections?.[m.id]) { m.needsReinstall = false; m.status = { state: 'online', checkedAt: Date.now(), checks: { tcp: true, auth: true } } }
             this.d.revocations[m.id] = this.d.revocations[m.id].filter(x => x !== key)
           } catch { m.status.error = { code: 'revocation_pending', detail: 'The local key was regenerated. This offline machine still needs old-key removal; keep its record and reconnect to finish revocation.' }; this.recordSessions(m, 'revoke', { terminated: 0, incomplete: true, error: { code: 'session_cleanup_pending', detail: 'This offline machine still needs old-key removal and session termination.' } }) }
         }
@@ -666,7 +973,7 @@ export class MachinesService {
     })
   }
   private async projectGuide(cwd: string): Promise<string> {
-      return projectMachineInstructions(this.root, this.d.machines, cwd, async visible => {
+      return projectMachineInstructions(this.root, this.agentMachines(), cwd, async visible => {
         let text = await privateRead(this.configPath) ?? ''
         for (const m of visible.filter(m => m.permissions.mode === 'projects' && !m.needsReinstall)) {
           const b = this.d.machines.find(b => b.id === m.bridgeMachineId)

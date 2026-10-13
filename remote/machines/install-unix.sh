@@ -87,8 +87,21 @@ if [ -s "$work/policy.sh" ]; then
 else
   if grep -q 'command=' "$work/authorized_key"; then echo 'Missing server-enforced key policy.' >&2; exit 1; fi
   tmp=$(mktemp "$account_home/.ssh/.drover-auth.XXXXXX")
-  if [ -f "$account_home/.ssh/authorized_keys" ]; then grep -vE ' drover-(agents|management)$' "$account_home/.ssh/authorized_keys" > "$tmp" || true; fi
-  cat "$work/authorized_key" >> "$tmp"; awk '{print $1,$2,"drover-management"}' "$work/management.pub" >> "$tmp"
+  python3 - "$work" "$account_home/.ssh/authorized_keys" "$tmp" <<'DROVER_INSTALL_KEYS'
+import pathlib,shlex,sys
+work,auth,dest=map(pathlib.Path,sys.argv[1:])
+def identity(line):
+ try:
+  fields=shlex.split(line.decode('utf-8'),comments=True)
+ except (ValueError,UnicodeDecodeError):return None
+ index=0 if fields and fields[0]=='ssh-ed25519' else 1
+ return tuple(fields[index:index+2]) if len(fields)>index+1 and fields[index]=='ssh-ed25519' else None
+owned={identity((work/name).read_bytes()) for name in ('agents.pub','management.pub')}
+owned.discard(None)
+kept=b''.join(line for line in (auth.read_bytes().splitlines(keepends=True) if auth.exists() else []) if identity(line) not in owned)
+if kept and not kept.endswith(b'\n'):kept+=b'\n'
+dest.write_bytes(kept+(work/'authorized_key').read_bytes()+b' '.join((work/'management.pub').read_bytes().split()[:2])+b' drover-management\n')
+DROVER_INSTALL_KEYS
   chown "agent:$group" "$tmp"; chmod 600 "$tmp"; mv -f "$tmp" "$account_home/.ssh/authorized_keys"
 fi
 printf 'agent ALL=(ALL) NOPASSWD: ALL\n' > "$work/sudoers"

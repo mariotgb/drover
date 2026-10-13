@@ -105,7 +105,7 @@ test('bridged flow supports LAN, confirms target through bridge and switches tun
   assert.equal(context.bridge, null)
   assert.equal(typeof context.onReport, 'function')
   const b = await f.direct('bridge'); await f.connect(b)
-  await f.service.setupBridge(b.id, { caddy: false }); await f.service.setBridge(b.id)
+  await f.service.setupBridge(b.id, { caddy: false, confirmed: true }); await f.service.setBridge(b.id, { confirmed: true })
   const cmd = await f.service.installCommand(target.id, 'linux')
   assert.equal(cmd.command, 'fake install command')
   const checked = await f.service.check(target.id)
@@ -115,7 +115,7 @@ test('bridged flow supports LAN, confirms target through bridge and switches tun
   const connected = await f.service.installKey(target.id, { acceptedFingerprint: probe.fingerprint })
   assert.equal(connected.status.checks.auth, true)
   assert.match(readFileSync(f.service.configPath, 'utf8'), /ProxyJump drover-jump-/)
-  const next = await f.direct('next'); await f.connect(next); await f.service.setupBridge(next.id, { caddy: false }); await f.service.setBridge(next.id)
+  const next = await f.direct('next'); await f.connect(next); await f.service.setupBridge(next.id, { caddy: false, confirmed: true }); await f.service.setBridge(next.id, { confirmed: true })
   const state = await f.service.state(), updated = state.machines.find(m => m.id === target.id)
   assert.equal(state.bridgeMachineId, next.id)
   assert.equal(updated.bridgeMachineId, next.id)
@@ -151,7 +151,7 @@ test('target removal revokes live LAN capabilities before credentials and fails 
   const { command } = await f.service.installCommand(target.id, 'linux')
   const url = command.match(/'(http:\/\/[^']+)\/script'/)[1]
   assert.equal((await fetch(url + '/script')).status, 200)
-  await f.service.remove(target.id)
+  await f.service.remove(target.id, { confirmed: true })
   assert.equal((await fetch(url + '/key')).status, 410)
   assert.equal((await fetch(url + '/script')).status, 410)
   assert.deepEqual((await f.service.state()).machines, [])
@@ -159,7 +159,7 @@ test('target removal revokes live LAN capabilities before credentials and fails 
   const other = await rejected.service.add({ kind: 'bridged', name: 'retain', os: 'linux' })
   await rejected.service.installCommand(other.id, 'linux')
   const before = rejected.calls.length
-  await assert.rejects(rejected.service.remove(other.id), /Capability service offline/)
+  await assert.rejects(rejected.service.remove(other.id, { confirmed: true }), /Capability service offline/)
   assert.equal(rejected.calls.slice(before).some(c => c.file === 'ssh'), false)
   assert.equal((await rejected.service.state()).machines.length, 1)
   assert.ok(JSON.parse(readFileSync(join(rejected.userData, 'machines.json'))).issuedInstallers.includes(other.id))
@@ -167,14 +167,14 @@ test('target removal revokes live LAN capabilities before credentials and fails 
 
 test('active bridge removal revokes reachable target credentials before retirement and keeps offline cleanup across restart', async t => {
   const f = fixture(t), bridge = await f.direct('retire'); await f.connect(bridge)
-  await f.service.setupBridge(bridge.id, { caddy: false }); await f.service.setBridge(bridge.id)
+  await f.service.setupBridge(bridge.id, { caddy: false, confirmed: true }); await f.service.setBridge(bridge.id, { confirmed: true })
   const online = await f.service.add({ kind: 'bridged', name: 'reachable', os: 'linux' })
   const offline = await f.service.add({ kind: 'bridged', name: 'offline', os: 'linux' })
   await f.service.installCommand(online.id, 'linux'); await f.service.installCommand(offline.id, 'linux')
   const fallback = f.service.run
   f.service.run = (file, args, options) => file === 'ssh' && args.includes(`drover-management-${offline.id}`) ? Promise.resolve({ code: 255, stdout: '', stderr: 'Connection timed out' }) : fallback(file, args, options)
   const before = f.calls.length
-  await f.service.remove(bridge.id)
+  await f.service.remove(bridge.id, { confirmed: true })
   const calls = f.calls.slice(before), retireIndex = calls.findIndex(c => c.retireBridge)
   const revokeIndex = calls.findIndex(c => c.args?.includes(`drover-management-${online.id}`) && c.input?.includes('manager='))
   assert.ok(revokeIndex >= 0 && revokeIndex < retireIndex)
@@ -199,7 +199,7 @@ test('active bridge removal revokes reachable target credentials before retireme
 test('offline issued target recovers after active bridge removal through LAN or a replacement bridge without its old route', async t => {
   for (const replacement of [false, true]) await t.test(replacement ? 'replacement bridge' : 'LAN', async t => {
     const f = fixture(t, { lanHost: '127.0.0.1' }), bridge = await f.direct('retired')
-    await f.connect(bridge); await f.service.setupBridge(bridge.id, { caddy: false }); await f.service.setBridge(bridge.id)
+    await f.connect(bridge); await f.service.setupBridge(bridge.id, { caddy: false, confirmed: true }); await f.service.setBridge(bridge.id, { confirmed: true })
     const target = await f.service.add({ kind: 'bridged', name: 'recover', os: 'linux' })
     await f.service.installCommand(target.id, 'linux')
     const issued = f.calls.filter(c => c.context).at(-1).context
@@ -212,7 +212,7 @@ test('offline issued target recovers after active bridge removal through LAN or 
       }
       return fallback(file, args, options)
     }
-    await f.service.remove(bridge.id)
+    await f.service.remove(bridge.id, { confirmed: true })
     assert.equal(targetManagementCalls, 1)
     const persisted = () => JSON.parse(readFileSync(join(f.userData, 'machines.json')))
     assert.equal(persisted().machines[0].host, undefined)
@@ -220,7 +220,7 @@ test('offline issued target recovers after active bridge removal through LAN or 
     assert.equal(persisted().credentialRemovals[target.id].bridgeMachineId, bridge.id)
     if (replacement) {
       const next = await f.direct('replacement'); await f.connect(next)
-      await f.service.setupBridge(next.id, { caddy: false }); await f.service.setBridge(next.id)
+      await f.service.setupBridge(next.id, { caddy: false, confirmed: true }); await f.service.setBridge(next.id, { confirmed: true })
     }
     const oldRouteCalls = targetManagementCalls
     const publish = f.service.provisioner.installCommand
@@ -262,7 +262,7 @@ test('offline issued target recovers after active bridge removal through LAN or 
 
 test('published recovery remains durable across restart and can be regenerated without target SSH', async t => {
   const f = fixture(t), bridge = await f.direct('before-restart'); await f.connect(bridge)
-  await f.service.setupBridge(bridge.id, { caddy: false }); await f.service.setBridge(bridge.id)
+  await f.service.setupBridge(bridge.id, { caddy: false, confirmed: true }); await f.service.setBridge(bridge.id, { confirmed: true })
   const target = await f.service.add({ kind: 'bridged', name: 'restart-recover', os: 'linux' })
   await f.service.installCommand(target.id, 'linux')
   const run = f.service.run
@@ -270,7 +270,7 @@ test('published recovery remains durable across restart and can be regenerated w
     if (file === 'ssh' && args.includes(`drover-management-${target.id}`)) return { code: 255, stdout: '', stderr: 'Connection timed out' }
     return run(file, args, options)
   }
-  await f.service.remove(bridge.id)
+  await f.service.remove(bridge.id, { confirmed: true })
   await f.service.installCommand(target.id, 'linux')
   const previousId = f.calls.filter(c => c.context).at(-1).context.recoveryCleanup.id
   f.service.dispose()
@@ -289,12 +289,12 @@ test('published recovery remains durable across restart and can be regenerated w
 
 test('live LAN recovery capability binds cleanup receipt to the durable removal and keeps host trust separate', async t => {
   const f = fixture(t), bridge = await f.direct('lan-recovery-source'); await f.connect(bridge)
-  await f.service.setupBridge(bridge.id, { caddy: false }); await f.service.setBridge(bridge.id)
+  await f.service.setupBridge(bridge.id, { caddy: false, confirmed: true }); await f.service.setBridge(bridge.id, { confirmed: true })
   const target = await f.service.add({ kind: 'bridged', name: 'live-recovery', os: 'linux' })
   await f.service.installCommand(target.id, 'linux')
   const run = f.service.run
   f.service.run = (file, args, options) => file === 'ssh' && args.includes(`drover-management-${target.id}`) ? Promise.resolve({ code: 255, stdout: '', stderr: 'Connection timed out' }) : run(file, args, options)
-  await f.service.remove(bridge.id)
+  await f.service.remove(bridge.id, { confirmed: true })
   f.service.dispose()
   const service = new m.MachinesService({ home: f.home, userData: f.userData, lanHost: '127.0.0.1', run: async () => { throw Error('Recovery must not use the old SSH route') }, tcp: async () => 9 })
   t.after(() => service.dispose())
@@ -322,14 +322,14 @@ test('live LAN recovery capability binds cleanup receipt to the durable removal 
 test('failed bridge retirement retains bridge and queue; a retry cancels only after successful retirement', async t => {
   let fails = true
   const f = fixture(t, { provisioner: { retireBridge: async () => { if (fails) throw new m.MachinesFailure('offline', 'Retirement failed.') } } })
-  const b = await f.direct('keep'); await f.connect(b); await f.service.setupBridge(b.id, { caddy: false }); await f.service.setBridge(b.id)
+  const b = await f.direct('keep'); await f.connect(b); await f.service.setupBridge(b.id, { caddy: false, confirmed: true }); await f.service.setBridge(b.id, { confirmed: true })
   await f.service.bridgeCleanup.enqueue(b.id, [], (await f.service.state()).agentsKey.publicKey)
-  await assert.rejects(f.service.remove(b.id), /Retirement failed/)
+  await assert.rejects(f.service.remove(b.id, { confirmed: true }), /Retirement failed/)
   assert.equal((await f.service.state()).bridgeMachineId, b.id)
   assert.equal((await f.service.state()).machines[0].bridgeSetup.cleanup.state, 'blocked')
   await f.service.check(b.id)
   assert.ok(JSON.parse(readFileSync(join(f.userData, 'machines.json'))).credentialRemovals[b.id])
-  fails = false; await f.service.remove(b.id)
+  fails = false; await f.service.remove(b.id, { confirmed: true })
   assert.deepEqual(JSON.parse(readFileSync(join(f.userData, 'bridge-cleanup.json'))).jobs, [])
   assert.equal((await f.service.state()).machines.length, 0)
 })
@@ -344,9 +344,9 @@ test('bridge switch writes cleanup ahead, projects pending state, and retries on
     removeTargets: async b => { actions.push(['remove', b.id]); if (fail) throw Error('offline') },
     revokeInstallers: async b => { actions.push(['revoke', b?.id]) }
   } })
-  const b = await f.direct('old'); await f.connect(b); await f.service.setupBridge(b.id, { caddy: false }); await f.service.setBridge(b.id)
+  const b = await f.direct('old'); await f.connect(b); await f.service.setupBridge(b.id, { caddy: false, confirmed: true }); await f.service.setBridge(b.id, { confirmed: true })
   oldId = b.id
-  const next = await f.direct('new'); await f.connect(next); await f.service.setupBridge(next.id, { caddy: false }); await f.service.setBridge(next.id)
+  const next = await f.direct('new'); await f.connect(next); await f.service.setupBridge(next.id, { caddy: false, confirmed: true }); await f.service.setBridge(next.id, { confirmed: true })
   const state = await f.service.state()
   assert.equal(state.machines.find(m => m.id === b.id).bridgeSetup.cleanup.state, 'pending')
   assert.ok(actions.every(a => a[1] === b.id))
@@ -368,15 +368,15 @@ test('permission change/revoke/remove report dedicated session termination and w
   await f.service.setPermissions(target.id, { mode: 'read-only', projects: [] })
   assert.deepEqual((await f.service.state()).machines[0].sessionCleanup.last.reason, 'permissions')
   assert.equal((await f.service.state()).machines[0].sessionCleanup.last.terminated, 2)
-  const reports = await f.service.revokeAgentsKey()
+  const reports = await f.service.revokeAgentsKey({ confirmed: true })
   assert.equal(reports[0].terminated, 2); assert.equal(reports[0].incomplete, false)
-  const removed = await f.service.remove(target.id)
+  const removed = await f.service.remove(target.id, { confirmed: true })
   assert.equal(removed.terminated, 2); assert.equal(removed.incomplete, false)
   const supplied = await f.direct('supplied'); await f.connect(supplied)
   await f.service.setPermissions(supplied.id, { mode: 'read-only', projects: [] })
   const warning = (await f.service.state()).machines[0].sessionCleanup
   assert.equal(warning.account, 'supplied'); assert.equal(warning.last.incomplete, true)
-  assert.equal((await f.service.remove(supplied.id)).incomplete, true)
+  assert.equal((await f.service.remove(supplied.id, { confirmed: true })).incomplete, true)
   assert.equal(f.calls.filter(c => c.args?.includes(`drover-management-${supplied.id}`)).some(c => c.input?.includes('DROVER_SESSION_CLEANUP')), false)
 })
 
@@ -399,13 +399,13 @@ test('key revocation regenerates, cleans reachable machines and retains pending 
   const f = fixture(t), machine = await f.direct('vps'); await f.connect(machine)
   const old = (await f.service.state()).agentsKey
   f.managementFailure = true
-  await f.service.revokeAgentsKey()
+  await f.service.revokeAgentsKey({ confirmed: true })
   const state = await f.service.state()
   assert.notEqual(state.agentsKey.fingerprint, old.fingerprint)
   assert.equal(state.machines[0].status.error.code, 'revocation_pending')
   assert.equal(state.machines[0].needsReinstall, true)
   assert.doesNotMatch(readFileSync(f.service.configPath, 'utf8'), /Host drover-vps\n/)
-  await assert.rejects(f.service.remove(machine.id), /did not answer/)
+  await assert.rejects(f.service.remove(machine.id, { confirmed: true }), /did not answer/)
   assert.equal((await f.service.state()).machines.length, 1)
   f.managementFailure = false
   await f.service.check(machine.id)
@@ -462,6 +462,73 @@ test('read-only key sandbox fails closed before authorization; existing keys pre
   assert.match(readFileSync(auth, 'utf8'), /drover-management/)
 })
 
+test('key bootstrap, replacement and removal preserve other installations with identical comments byte-for-byte', t => {
+  const f = fixture(t), authHome = join(f.dir, 'remote-home'), auth = join(authHome, '.ssh/authorized_keys')
+  mkdirSync(join(authHome, '.ssh'), { recursive: true })
+  const foreign = [
+    `  ${publicKey(3).replace('drover-test', 'drover-management')}\r\n`,
+    `restrict,command="printf foreign key" ${publicKey(4).replace('drover-test', 'drover-agents')}\n`,
+    `# ssh-ed25519 ${blob(20)} drover-agents\n`,
+    `ssh-ed25519\n`,
+    `${publicKey(5)} mentions owned blob ${blob(20)} and ${blob(21)} drover-management\n`
+  ].join('')
+  writeFileSync(auth, foreign)
+  const run = input => execFileSync('/bin/sh', ['-s'], { input, env: { PATH: '/usr/bin:/bin', HOME: authHome } })
+  run(m.adminKeyInstallScript(publicKey(21)))
+  assert.equal(readFileSync(auth, 'utf8'), foreign + `ssh-ed25519 ${blob(21)} drover-management\n`)
+  writeFileSync(auth, foreign + `restrict,command="printf old agent" ssh-ed25519 ${blob(19)}\r\n` + `ssh-ed25519 ${blob(21)}\r\n`)
+  const install = m.keyInstallScript(publicKey(20), publicKey(21), { mode: 'full', projects: [] }, publicKey(19))
+  run(install); run(install)
+  assert.equal(readFileSync(auth, 'utf8'), foreign + `ssh-ed25519 ${blob(20)} drover-agents\nssh-ed25519 ${blob(21)} drover-management\n`)
+  run(m.removeKeyScript(publicKey(20), publicKey(21)))
+  assert.equal(readFileSync(auth, 'utf8'), foreign + `ssh-ed25519 ${blob(21)} drover-management\n`)
+  run(m.removeKeyScript(publicKey(20), publicKey(21), true))
+  assert.deepEqual(readFileSync(auth), Buffer.from(foreign))
+  assert.throws(() => m.removeKeyScript('', publicKey(21)), /Invalid managed public key/)
+})
+
+test('destructive IPC rejects non-boolean confirmation before loading, persistence, queue execution or key rotation', async t => {
+  const f = fixture(t), old = await f.direct('old'), next = await f.direct('next')
+  await f.connect(old); await f.connect(next)
+  await f.service.setupBridge(old.id, { caddy: false, confirmed: true })
+  await f.service.setupBridge(next.id, { caddy: false, confirmed: true })
+  await f.service.setBridge(old.id, { confirmed: true })
+  const cleanup = join(f.userData, 'bridge-cleanup.json')
+  writeFileSync(cleanup, JSON.stringify({ version: 1, jobs: [{ bridgeId: next.id, targetIds: [], agentsPublicKey: publicKey(20).split(' ').slice(0, 2).join(' '), targetsRemoved: false, attempts: 0, nextAttemptAt: 0 }] }))
+  const snapshot = path => {
+    const files = {}
+    const visit = dir => { for (const name of readdirSync(dir)) { const file = join(dir, name), stat = statSync(file); if (stat.isDirectory()) visit(file); else files[file] = { data: readFileSync(file).toString('base64'), mtime: stat.mtimeMs } } }
+    visit(path); return files
+  }
+  const saved = snapshot(f.dir), calls = f.calls.length
+  let effects = 0
+  const service = new m.MachinesService({ home: f.home, userData: f.userData, run: async () => { effects++; throw Error('Unexpected command') }, tcp: async () => { effects++; return 1 }, changed: () => { effects++ }, provisioner: { setupBridge: async () => { effects++ }, removeTargets: async () => { effects++ }, revokeInstallers: async () => { effects++ }, switchBridge: async () => { effects++ }, retireBridge: async () => { effects++ } } })
+  t.after(() => service.dispose())
+  const handlers = new Map()
+  m.registerMachinesIpc({ handle(channel, fn) { handlers.set(channel, fn) } }, service, () => true)
+  const attempts = [
+    ['machines:remove', old.id],
+    ['machines:set-bridge', next.id],
+    ['machines:revoke-key'],
+    ['machines:setup-bridge', next.id]
+  ]
+  for (const [channel, machineId] of attempts) {
+    for (const options of [undefined, null, {}, { confirmed: false }, { confirmed: 'true' }, { confirmed: 1 }]) {
+      const args = machineId ? [machineId, options] : [options]
+      if (channel === 'machines:setup-bridge' && options) args[1] = { ...options, caddy: false }
+      await assert.rejects(handlers.get(channel)({}, ...args), /Explicitly confirm/)
+      assert.deepEqual(snapshot(f.dir), saved)
+      assert.equal(effects, 0)
+    }
+  }
+  assert.equal(f.calls.length, calls)
+  const empty = fixture(t)
+  for (const action of [() => empty.service.remove(old.id), () => empty.service.setBridge(next.id, { confirmed: 'true' }), () => empty.service.revokeAgentsKey({ confirmed: 1 }), () => empty.service.setupBridge(next.id, { caddy: true, confirmed: false })]) await assert.rejects(action(), { code: 'confirmation_required' })
+  assert.equal(existsSync(join(empty.home, '.drover')), false)
+  assert.deepEqual(readdirSync(empty.userData), [])
+  assert.equal(empty.calls.length, 0); assert.equal(empty.events.length, 0)
+})
+
 test('launch pointers preserve native user arguments and IPC denies non-desktop callers', async () => {
   const args = ['--append-system-prompt', 'user instructions', '--model', 'opus']
   assert.deepEqual(m.machineLaunchArgs('claude', args, 'machine pointer'), ['--append-system-prompt', 'user instructions\n\nmachine pointer', '--model', 'opus'])
@@ -474,6 +541,22 @@ test('launch pointers preserve native user arguments and IPC denies non-desktop 
   assert.equal(calls, 1)
 })
 
+test('confirmation options survive preload and desktop IPC forwarding', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'drover-preload-test-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  await build({ entryPoints: ['src/preload/index.ts'], outfile: join(dir, 'preload.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron'], alias: { '@shared': resolve('src/shared') }, logLevel: 'silent' })
+  mkdirSync(join(dir, 'node_modules/electron'), { recursive: true })
+  writeFileSync(join(dir, 'node_modules/electron/index.js'), `module.exports={contextBridge:{exposeInMainWorld(name,api){globalThis.__droverPreloadTest=api}},ipcRenderer:{invoke(...args){globalThis.__droverPreloadCalls.push(args);return Promise.resolve()},on(){},removeListener(){}},webUtils:{}}`)
+  globalThis.__droverPreloadCalls = []
+  t.after(() => { delete globalThis.__droverPreloadTest; delete globalThis.__droverPreloadCalls })
+  createRequire(import.meta.url)(join(dir, 'preload.cjs'))
+  const api = globalThis.__droverPreloadTest.machines, confirmed = { confirmed: true }, setup = { caddy: false, confirmed: true }
+  await api.remove('machine', confirmed); await api.setBridge('machine', confirmed); await api.revokeAgentsKey(confirmed); await api.setupBridge('machine', setup)
+  assert.deepEqual(globalThis.__droverPreloadCalls, [['machines:remove', 'machine', confirmed], ['machines:set-bridge', 'machine', confirmed], ['machines:revoke-key', confirmed], ['machines:setup-bridge', 'machine', setup]])
+  const calls = [], handlers = new Map(), service = Object.fromEntries(['remove', 'setBridge', 'revokeAgentsKey', 'setupBridge'].map(method => [method, (...args) => calls.push([method, ...args])]))
+  m.registerMachinesIpc({ handle(channel, fn) { handlers.set(channel, fn) } }, service, () => true)
+  for (const [channel, ...args] of globalThis.__droverPreloadCalls) await handlers.get(channel)({}, ...args)
+  assert.deepEqual(calls, [['remove', 'machine', confirmed], ['setBridge', 'machine', confirmed], ['revokeAgentsKey', confirmed], ['setupBridge', 'machine', setup]])
+})
 test('subprocess fake ssh enforces private config arguments and redacts failed password output', async t => {
   const f = fixture(t)
   const fake = join(f.dir, 'ssh')
@@ -493,11 +576,11 @@ if(args.includes('BatchMode=no')) {
 })
 
 test('issued installer is tracked before target trust and key revoke keeps unconfirmed cleanup pending', async t => {
-  const f = fixture(t), b = await f.direct('bridge'); await f.connect(b); await f.service.setupBridge(b.id, { caddy: false }); await f.service.setBridge(b.id)
+  const f = fixture(t), b = await f.direct('bridge'); await f.connect(b); await f.service.setupBridge(b.id, { caddy: false, confirmed: true }); await f.service.setBridge(b.id, { confirmed: true })
   const target = await f.service.add({ kind: 'bridged', name: 'home', os: 'linux' })
   await f.service.installCommand(target.id, 'linux')
   assert.ok(JSON.parse(readFileSync(join(f.userData, 'machines.json'))).issuedInstallers.includes(target.id))
   f.managementFailure = true
-  await f.service.revokeAgentsKey()
+  await f.service.revokeAgentsKey({ confirmed: true })
   assert.equal((await f.service.state()).machines.find(m => m.id === target.id).status.error.code, 'revocation_pending')
 })

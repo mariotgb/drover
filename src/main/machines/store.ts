@@ -1,6 +1,6 @@
 import { isAbsolute, join } from 'node:path'
 import { isIP } from 'node:net'
-import type { Machine, MachineDraft, MachinePermissions, MachinesState } from '@shared/machines'
+import type { BridgeForward, Machine, MachineDraft, MachinePermissions, MachinesState } from '@shared/machines'
 import { MachinesFailure, privateRead, privateWrite } from './ssh'
 
 export interface StoredMachines {
@@ -15,6 +15,8 @@ export interface StoredMachines {
   revocations: Record<string, string[]>
   /** Full credential removal survives bridge retirement and desktop restart. */
   credentialRemovals: Record<string, { agentsPublicKeys: string[]; managementPublicKey: string; bridgeMachineId?: string; recoveryId?: string }>
+  /** Local-only credential references. Never included in MachinesStatus. */
+  bridgeConnections?: Record<string, { source: 'existing' | 'scratch'; adminKeyPath?: string; adminManaged?: boolean; jumpKeyPath?: string; jumpUser: string; tunnelUser: string; forwards: BridgeForward[]; publicUrl?: string; macTunnel: 'running' | 'stopped' | 'missing'; managed?: boolean; installerOrigin?: string }>
 }
 export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,30}$/
 export function validHost(host: unknown): asserts host is string {
@@ -53,6 +55,8 @@ export class MachinesStore {
       const data: StoredMachines = JSON.parse(raw)
       data.issuedInstallers ??= []
       data.credentialRemovals ??= {}
+      data.bridgeConnections ??= {}
+      if (typeof data.bridgeConnections !== 'object' || Array.isArray(data.bridgeConnections)) throw new Error('Invalid bridge connections')
       if (data.version !== 1 || !Array.isArray(data.machines) || data.machines.length > 1000 || !Array.isArray(data.installed) || !data.revocations || typeof data.revocations !== 'object') throw new Error('Invalid machines store')
       const ids = new Set<string>(), names = new Set<string>()
       for (const machine of data.machines) {
@@ -74,6 +78,14 @@ export class MachinesStore {
       if (data.bridgeMachineId !== null && !data.machines.some(m => m.id === data.bridgeMachineId && m.kind === 'direct' && m.publicIp)) throw new Error('Invalid bridge')
       if (data.machines.some(m => m.bridgeMachineId && !ids.has(m.bridgeMachineId))) throw new Error('Missing machine bridge')
       if (data.installed.some(id => !ids.has(id))) throw new Error('Invalid installation')
+      for (const [id, connection] of Object.entries(data.bridgeConnections)) {
+        if (!data.machines.some(m => m.id === id && m.kind === 'direct') || !connection || !['existing', 'scratch'].includes(connection.source) || !['running', 'stopped', 'missing'].includes(connection.macTunnel) || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(connection.jumpUser) || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(connection.tunnelUser) || [connection.adminKeyPath, connection.jumpKeyPath].some(p => p !== undefined && (!isAbsolute(p) || /[\r\n\0"]/.test(p))) || !Array.isArray(connection.forwards)) throw new Error('Invalid bridge connection')
+        for (const forward of connection.forwards) { if (forward.listenHost !== '127.0.0.1' || forward.targetHost !== '127.0.0.1') throw new Error('Invalid bridge forward'); validPort(forward.listenPort); validPort(forward.targetPort) }
+        if (connection.publicUrl !== undefined) { const url = new URL(connection.publicUrl); if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('Invalid bridge URL') }
+        if (connection.managed !== undefined && typeof connection.managed !== 'boolean') throw new Error('Invalid bridge management state')
+        if (connection.adminManaged !== undefined && typeof connection.adminManaged !== 'boolean') throw new Error('Invalid administrator ownership')
+        if (connection.installerOrigin !== undefined) { const url = new URL(connection.installerOrigin); if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('Invalid installer URL') }
+      }
       if (!Array.isArray(data.issuedInstallers) || data.issuedInstallers.some(id => !ids.has(id))) throw new Error('Invalid installer')
       for (const [id, keys] of Object.entries(data.revocations)) if (!ids.has(id) || !Array.isArray(keys) || keys.some(key => typeof key !== 'string' || !/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}/.test(key))) throw new Error('Invalid revocation')
       if (typeof data.credentialRemovals !== 'object' || Array.isArray(data.credentialRemovals)) throw new Error('Invalid credential removal')

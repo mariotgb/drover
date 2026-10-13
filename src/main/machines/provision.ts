@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { networkInterfaces } from 'node:os'
 import { isIPv4 } from 'node:net'
 import { gzipSync } from 'node:zlib'
-import type { InstallCommand, Machine, MachineOs } from '@shared/machines'
+import type { BridgeForward, BridgeStepId, InstallCommand, Machine, MachineOs } from '@shared/machines'
 import bridgeLib from '../../../remote/bridge/lib.sh?raw'
 import hubConfig from '../../../remote/bridge/hub-config.py?raw'
 import bridgeScript from '../../../remote/machines/bridge.sh?raw'
@@ -15,6 +15,10 @@ import unixInstaller from '../../../remote/machines/install-unix.sh?raw'
 import windowsInstaller from '../../../remote/machines/install-windows.ps1?raw'
 import repointScript from '../../../remote/machines/repoint.sh?raw'
 import recoveryUnix from '../../../remote/machines/recovery-unix.py?raw'
+import bridgeAdopt from '../../../remote/machines/bridge-adopt.py?raw'
+import macTunnel from '../../../remote/machines/mac-tunnel.py?raw'
+import vpsSetup from '../../../remote/bridge/vps-setup.sh?raw'
+import vpsWeb from '../../../remote/bridge/vps-web.sh?raw'
 
 export interface ProvisionResult { code: number; stdout: string; stderr: string }
 export type ProvisionRun = (machine: Machine, command: string, input?: string) => Promise<ProvisionResult>
@@ -47,7 +51,14 @@ export interface InstallContext {
   lanHost?: string
   onReport?: (report: InstallerReport) => void | Promise<void>
 }
-export interface BridgeOptions { caddy: boolean; publicOrigin?: string; phonePort?: number }
+export interface BridgeOptions { caddy: boolean; publicOrigin?: string; phonePort?: number; additive?: boolean }
+export interface LegacyBridge { users?: string[]; tunnelUser?: string; forwards?: BridgeForward[]; publicUrl?: string; phone?: boolean }
+export interface ExistingBridgeReport {
+  users: { name: string; exists: boolean; permitListen: string[]; authorizedKeyOptions: boolean }[]
+  jumpUser: string; policy: boolean; firewall: boolean
+  caddy: { configured: boolean; active: boolean; publicUrl?: string; upstream?: string; installerRoute?: boolean }
+  listeners: number[]; missing: string[]
+}
 export interface ProvisionOptions {
   run: ProvisionRun
   onStep?: (step: string) => void | Promise<void>
@@ -76,7 +87,21 @@ const BUNDLED_ASSETS: Record<string, string> = {
   'machines/bridge.sh': bridgeScript, 'machines/bridge-data.py': bridgeData,
   'machines/capability-server.py': capabilityServer, 'machines/install-unix.sh': unixInstaller,
   'machines/install-windows.ps1': windowsInstaller, 'machines/repoint.sh': repointScript,
-  'machines/recovery-unix.py': recoveryUnix
+  'machines/recovery-unix.py': recoveryUnix, 'machines/bridge-adopt.py': bridgeAdopt,
+  'machines/mac-tunnel.py': macTunnel, 'bridge/vps-setup.sh': vpsSetup, 'bridge/vps-web.sh': vpsWeb
+}
+export async function macTunnelAsset(assetsDir?: string): Promise<string> {
+  return assetsDir ? readFile(join(assetsDir, 'machines/mac-tunnel.py'), 'utf8') : macTunnel
+}
+export function parseExistingBridgeReport(stdout: string): ExistingBridgeReport {
+  try {
+    const line = stdout.split('\n').find(s => s.startsWith('DROVER_BRIDGE_REPORT '))
+    const r: ExistingBridgeReport = JSON.parse(line!.slice('DROVER_BRIDGE_REPORT '.length))
+    if (!Array.isArray(r.users) || !r.users.length || r.users.some(u => !/^(bridge-(mac|pc|home)|jump|drover-jump|dt-[0-9a-f]{16})$/.test(u.name) || typeof u.exists !== 'boolean' || typeof u.authorizedKeyOptions !== 'boolean' || !Array.isArray(u.permitListen) || u.permitListen.some(p => p !== 'none' && !/^127\.0\.0\.1:\d{1,5}$/.test(p))) || typeof r.policy !== 'boolean' || typeof r.firewall !== 'boolean' || !r.caddy || typeof r.caddy.configured !== 'boolean' || typeof r.caddy.active !== 'boolean' || !Array.isArray(r.listeners) || r.listeners.some(p => !Number.isInteger(p) || p < 1 || p > 65535) || !Array.isArray(r.missing) || r.missing.some(s => typeof s !== 'string' || !/^[a-z_]+$/.test(s)) || !['jump', 'drover-jump'].includes(r.jumpUser)) throw Error()
+    // Explicit projection prevents remote stdout from smuggling keys/config into state.
+    if (r.caddy.installerRoute !== undefined && typeof r.caddy.installerRoute !== 'boolean') throw Error()
+    return { users: r.users.map(u => ({ name: u.name, exists: u.exists, permitListen: [...u.permitListen], authorizedKeyOptions: u.authorizedKeyOptions })), jumpUser: r.jumpUser, policy: r.policy, firewall: r.firewall, caddy: { configured: r.caddy.configured, active: r.caddy.active, ...(r.caddy.installerRoute !== undefined ? { installerRoute: r.caddy.installerRoute } : {}) }, listeners: [...r.listeners], missing: [...r.missing] }
+  } catch { throw new ProvisionFailure('invalid_response', 'The bridge returned an invalid verification report.') }
 }
 
 function publicKey(s: string): string {
@@ -132,15 +157,54 @@ export function createMachineProvisioner(options: ProvisionOptions) {
   async function assets(files: string[]): Promise<Record<string, string>> {
     return Object.fromEntries(await Promise.all(files.map(async name => [name, await asset(name)])))
   }
-  async function execute(machine: Machine, script: string): Promise<ProvisionResult> {
-    const result = await options.run(machine, machine.user === 'root' ? '/bin/bash -s' : 'sudo -n /bin/bash -s', script)
-    if (result.code !== 0) throw new ProvisionFailure('provision_failed', 'Remote provisioning failed. Check administrator sudo rights, the supported OS and the SSH policy.')
+  async function execute(machine: Machine, script: string, preserveConnection = false): Promise<ProvisionResult> {
+    const result = await options.run(machine, machine.user === 'root' ? '/bin/bash -s' : `sudo -n ${preserveConnection ? '--preserve-env=SSH_CONNECTION ' : ''}/bin/bash -s`, script)
+    if (result.code !== 0) {
+      // Accept fixed protocol codes only, never arbitrary remote diagnostics.
+      try {
+        const line = (result.stdout + '\n' + result.stderr).split('\n').find(s => s.startsWith('DROVER_BRIDGE_ERROR '))
+        const error = JSON.parse(line!.slice('DROVER_BRIDGE_ERROR '.length))
+        if (['caddy_repair_requires_manual_integration', 'bridge_port_conflict', 'bridge_credential_conflict', 'bridge_policy_missing', 'permission_denied', 'unsupported_os'].includes(error.code)) throw new ProvisionFailure(error.code, 'Bridge repair needs manual integration or corrected server permissions.')
+      } catch (error) { if (error instanceof ProvisionFailure) throw error }
+      throw new ProvisionFailure('provision_failed', 'Remote provisioning failed. Check administrator sudo rights, the supported OS and the SSH policy.')
+    }
     return result
   }
   async function bridgeAction(machine: Machine, data: object): Promise<ProvisionResult> {
-    const files = await assets(['bridge/lib.sh', 'bridge/hub-config.py', 'machines/bridge.sh', 'machines/bridge-data.py', 'machines/capability-server.py'])
+    const files = await assets(['bridge/lib.sh', 'bridge/hub-config.py', 'machines/bridge.sh', 'machines/bridge-data.py', 'machines/capability-server.py', 'machines/bridge-adopt.py'])
     const bundle = gzipSync(Buffer.from(JSON.stringify(files))).toString('base64')
     return execute(machine, `set -euo pipefail\ncommand -v python3 >/dev/null || { echo 'Python 3 required' >&2; exit 1; }\nwork=$(mktemp -d)\ntrap 'rm -rf "$work"' EXIT\npython3 - "$work" <<'DROVER_ASSETS'\nimport base64,gzip,json,pathlib,sys\nr=pathlib.Path(sys.argv[1])\nfor name,text in json.loads(gzip.decompress(base64.b64decode('${bundle}'))).items():\n p=r/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)\nDROVER_ASSETS\nprintf '%s' ${sh(b64(JSON.stringify(data)))} | base64 -d > "$work/manifest.json"\nbash "$work/machines/bridge.sh" "$work/manifest.json"\n`)
+  }
+  async function verifyExistingBridge(machine: Machine, legacy: LegacyBridge): Promise<ExistingBridgeReport> {
+    return parseExistingBridgeReport((await bridgeAction(machine, { action: 'verify', legacy })).stdout)
+  }
+  async function repairBridge(machine: Machine, targets: BridgeTarget[], agentsPublicKey: string, settings: BridgeOptions, onStep?: (step: string) => Promise<void>): Promise<void> {
+    assertBridge(machine)
+    await onStep?.('bridge-policy')
+    const result = await bridgeAction(machine, { action: 'repair', targets: assigned(targets), agentsPublicKey: publicKey(agentsPublicKey), origin: origin(settings.publicOrigin, machine), phone: settings.caddy, phonePort: settings.phonePort ?? 8780 })
+    if (!result.stdout.split('\n').includes('DROVER_BRIDGE_READY')) throw new ProvisionFailure('bridge_verification_failed', 'Bridge repair did not confirm the installer route and grants.')
+    await onStep?.('bridge-ready')
+  }
+  async function scratchAction(machine: Machine, command: string, keys: Record<string, string> = {}): Promise<void> {
+    const files = await assets(['bridge/lib.sh', 'bridge/hub-config.py', 'bridge/vps-setup.sh', 'bridge/vps-web.sh'])
+    for (const [name, key] of Object.entries(keys)) files[name] = publicKey(key) + '\n'
+    const bundle = gzipSync(Buffer.from(JSON.stringify(files))).toString('base64')
+    await execute(machine, `set -euo pipefail\nwork=$(mktemp -d)\ntrap 'rm -rf "$work"' EXIT\npython3 - "$work" <<'DROVER_ASSETS'\nimport base64,gzip,json,pathlib,sys\nr=pathlib.Path(sys.argv[1])\nfor name,text in json.loads(gzip.decompress(base64.b64decode('${bundle}'))).items():\n p=r/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)\nDROVER_ASSETS\n${command}\n`, true)
+  }
+  async function setupScratchBridge(machine: Machine, keys: { tunnel: string; agents: string; management: string }, settings: BridgeOptions, onStep: (step: BridgeStepId, state: 'running' | 'done' | 'skipped') => Promise<void>): Promise<void> {
+    assertBridge(machine)
+    await onStep('users', 'running')
+    await scratchAction(machine, 'bash "$work/bridge/vps-setup.sh" --mac-key "$work/mac.pub" --jump-mac-key "$work/jump.pub" --jump-iphone-key "$work/phone.pub" --yes', { 'mac.pub': keys.tunnel, 'jump.pub': keys.management, 'phone.pub': keys.agents })
+    await onStep('users', 'done')
+    await onStep('firewall', 'running')
+    // Preserve existing firewall state; never run the reset/rollback-timer installer.
+    await execute(machine, `set -euo pipefail\nif command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ${settings.caddy ? "ufw allow 80/tcp comment 'Drover Caddy ACME'; ufw allow 443/tcp comment 'Drover Caddy HTTPS'" : ':'}; fi\n`)
+    await onStep('firewall', 'done')
+    if (settings.caddy) {
+      await onStep('phone_site', 'running')
+      await scratchAction(machine, `bash "$work/bridge/vps-web.sh" --ip ${sh(host(machine.host))} --yes`)
+      await onStep('phone_site', 'done')
+    } else await onStep('phone_site', 'skipped')
   }
   async function setupBridge(machine: Machine, targets: BridgeTarget[], agentsPublicKey: string, settings: BridgeOptions, onStep = options.onStep): Promise<void> {
     assertBridge(machine)
@@ -268,7 +332,8 @@ export function createMachineProvisioner(options: ProvisionOptions) {
     await bridgeAction(bridge, { action: 'retire' })
   }
   async function switchBridge(previous: Machine | null, next: Machine, targets: BridgeTarget[], agentsPublicKey: string, settings: BridgeOptions & { bridgeHostKey: string }): Promise<{ updated: string[]; needsReinstall: string[]; pendingOldCleanup: string[] }> {
-    await setupBridge(next, targets, agentsPublicKey, settings)
+    if (settings.additive) await repairBridge(next, targets, agentsPublicKey, settings)
+    else await setupBridge(next, targets, agentsPublicKey, settings)
     const updated: string[] = [], needsReinstall: string[] = []
     const script = await asset('machines/repoint.sh')
     for (const target of targets) {
@@ -285,7 +350,7 @@ export function createMachineProvisioner(options: ProvisionOptions) {
     }
     return { updated, needsReinstall, pendingOldCleanup }
   }
-  return { setupBridge, installCommand, switchBridge, removeTargets, revokeJumpKey, retireBridge, revokeInstallers, dispose }
+  return { setupBridge, verifyExistingBridge, setupScratchBridge, repairBridge, installCommand, switchBridge, removeTargets, revokeJumpKey, retireBridge, revokeInstallers, dispose }
 }
 
 /** Convenience for adapters retaining the shared InstallCommand response. */

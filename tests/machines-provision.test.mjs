@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -45,6 +45,20 @@ test('bridge setup is self-contained, awaits progress and assigns only dedicated
   await p.setupBridge({ ...bridge, user: 'admin' }, [], key, { caddy: false })
   assert.equal(calls[1][1], 'sudo -n /bin/bash -s')
   await p.dispose()
+})
+
+test('Unix installer fallback replaces only supplied identities and retains foreign same-comment keys exactly', t => {
+  const scratch = mkdtempSync(join(tmpdir(), 'drover-installer-keys-')); t.after(() => rmSync(scratch, { recursive: true, force: true }))
+  const work = join(scratch, 'work'), auth = join(scratch, 'authorized_keys'), result = join(scratch, 'result')
+  mkdirSync(work)
+  const algorithm = Buffer.from('ssh-ed25519'), length = Buffer.alloc(4); length.writeUInt32BE(algorithm.length)
+  const other = seed => 'ssh-ed25519 ' + Buffer.concat([length, algorithm, Buffer.from([0,0,0,32]), Buffer.alloc(32, seed)]).toString('base64')
+  const foreign = Buffer.from(`  ${other(3)} drover-management\r\nrestrict,command="printf foreign key" ${other(4)} drover-agents\n# ${key} drover-agents\n${other(5)} comment mentions ${key} drover-management\n`)
+  writeFileSync(auth, Buffer.concat([foreign, Buffer.from(`restrict,command="printf old owned" ${key} drover-agents\n`)]))
+  writeFileSync(join(work, 'agents.pub'), key + '\n'); writeFileSync(join(work, 'management.pub'), key + '\n'); writeFileSync(join(work, 'authorized_key'), key + ' drover-agents\n')
+  const script = readFileSync('remote/machines/install-unix.sh', 'utf8').match(/<<'DROVER_INSTALL_KEYS'\n([\s\S]*?)\nDROVER_INSTALL_KEYS/)[1]
+  execFileSync('python3', ['-c', script, work, auth, result])
+  assert.deepEqual(readFileSync(result), Buffer.concat([foreign, Buffer.from(`${key} drover-agents\n${key} drover-management\n`)]))
 })
 
 test('no generated clipboard command contains key material; only the single-use download holds the tunnel key', async () => {

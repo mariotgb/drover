@@ -19,7 +19,7 @@ def tokens(line):
     return shlex.split(line, comments=True)
 
 
-def prepare(root, old, policy, work):
+def prepare(root, old, policy, work, additive=False):
     root, old, policy, work = map(Path, (root, old, policy, work))
     work.mkdir(mode=0o700, parents=True, exist_ok=True)
     originals, edited, candidates = {}, {}, {}
@@ -54,6 +54,16 @@ def prepare(root, old, policy, work):
                     # OpenSSH resolves relative Includes against /etc/ssh.
                     pattern = pattern if os.path.isabs(pattern) else '/etc/ssh/' + pattern
                     paths.extend(sorted(glob.glob(pattern)))
+                # The old bridge policy begins directly with Match blocks.
+                # Insert in its parent instead of editing that working file.
+                if additive and anchor is None:
+                    for child in paths:
+                        child_path = Path(child)
+                        if child_path != old and child_path != policy and not child_path.is_symlink() and child_path.is_file() and child_path.read_text().startswith('# Managed by vps-setup.sh'):
+                            anchor = path
+                            source.append(policy_line)
+                            staged.append(f'Include {work / "policy"}\n')
+                            break
                 children = [visit(p, depth + 1) for p in paths]
                 children = [p for p in children if p is not None]
                 source.append(line)
@@ -117,8 +127,8 @@ def apply(work, restore=False):
 
 if __name__ == '__main__':
     try:
-        if sys.argv[1] == 'prepare':
-            prepare(*sys.argv[2:])
+        if sys.argv[1] in ('prepare', 'prepare-additive'):
+            prepare(*sys.argv[2:], additive=sys.argv[1] == 'prepare-additive')
         elif sys.argv[1] in ('commit', 'restore'):
             apply(sys.argv[2], sys.argv[1] == 'restore')
         else:

@@ -127,6 +127,13 @@ const machines: MachinesService = new MachinesService({
   env: () => service.env.PATH ? service.env : process.env,
   runtime: process.execPath,
   changed: state => { if (win && !win.isDestroyed()) win.webContents.send('machines:changed', state) },
+  bridgeProgress: progress => { if (win && !win.isDestroyed()) win.webContents.send('machines:bridge-progress', progress) },
+  remoteSettings: () => settings.get(),
+  configurePhone: async publicUrl => {
+    if (!remote) throw new Error('Remote access is unavailable.')
+    const status = await remote.configure({ remoteEnabled: true, remotePublicUrl: publicUrl, remoteBehindProxy: true })
+    if (status.error) throw new Error('Remote access could not start.')
+  },
   confirmInclude: async () => {
     if (!win || win.isDestroyed()) return false
     const response = await dialog.showMessageBox(win, {

@@ -4,7 +4,7 @@
 import { api } from './api'
 import { t, tp } from './i18n'
 
-import type { Machine, MachineError, MachineOs, MachinesApi } from '@shared/machines'
+import type { BridgeProgress, BridgeStepId, Machine, MachineError, MachineOs, MachinesApi } from '@shared/machines'
 export type { SessionCleanupReport, SessionCleanupResult } from '@shared/machines'
 export type { HostKey, InstallCommand, Machine, MachineAccess, MachineDraft, MachineError, MachineKind, MachineOs, MachinesApi, MachinesState } from '@shared/machines'
 
@@ -33,13 +33,35 @@ export function machineErrorText(error: MachineError | undefined, machine?: Pick
     case 'no_bridge': return withDetail(t('Home machines need a bridge: a server with a public IP. Add one and set it up as the bridge.'), error.detail)
     case 'bridge_down': return t('The bridge {bridge} is not reachable, so home machines cannot connect.', { bridge: bridge ?? t('server') })
     case 'tunnel_down': return t('{name} has not connected to the bridge. Check that it is on and online.', { name })
-    case 'host_key_unconfirmed': return machine?.kind === 'bridged' && !machine.bridgeMachineId
+    case 'host_key_unconfirmed': return !machine ? t('Confirm the server’s key to continue.') : machine.kind === 'bridged' && !machine.bridgeMachineId
       ? t('{name} answers on your home network: its SSH port is reachable. Confirm its key to finish.', { name })
       : t('{name} reached the bridge. Confirm its key to finish.', { name })
     case 'revocation_pending': return withDetail(t('The new agents key is in use, but the old one is still on {name} because it is offline. Drover removes it when {name} is back.', { name }), error.detail)
     case 'key_not_installed': return t('The agents key is not on this machine yet.')
     case 'permission_denied': return t('This user lacks the rights needed. Use an administrator account.')
     case 'unsupported_os': return t('This operating system is not supported for a bridge. Use Debian 12+ or Ubuntu 22.04+.')
+    case 'existing_bridge_invalid': return withDetail(t('A bridge was set up earlier on this Mac, but its settings could not be read.'), error.detail)
+    case 'mac_tunnel_setup_failed': return t('Drover could not set up the Mac tunnel to the bridge.')
+    case 'bridge_repair_required': return t('Some parts of the bridge are missing (marked above).')
+    case 'invalid_bridge_options': return t('Choose whether to set up the phone site.')
+    case 'invalid_password': return t('Enter the one-time administrator password.')
+    case 'no_public_ip': return t('A bridge needs a public IP address. Addresses like 192.168.x.x work only at home.')
+    case 'invalid_response': return withDetail(t('The server gave an unexpected answer.'), error.detail)
+    case 'bridge_repair_confirmation_required': return t('Confirm the upgrade to continue.')
+    case 'caddy_repair_requires_manual_integration': return t('The phone site on this server was set up by hand in a way Drover cannot change safely, so the upgrade stopped. The phone site keeps working; it needs a manual fix first.')
+    case 'bridge_port_conflict': return withDetail(t('A port the bridge needs is already used by something else on the server.'), error.detail)
+    case 'bridge_credential_conflict': return withDetail(t('The bridge accounts on the server do not match the keys on this Mac.'), error.detail)
+    case 'invalid_user': return t('Enter the administrator login, for example root.')
+    case 'existing_bridge_missing': return t('Drover no longer finds the bridge set up earlier on this Mac.')
+    case 'bridge_admin_key_missing': return t('Drover has no admin key for this server. Enter the administrator login and a one-time password, then try again.')
+    case 'bridge_state_conflict': return withDetail(t('The bridge server was changed by hand and does not match what Drover expects.'), error.detail)
+    case 'bridge_verification_failed': return withDetail(t('The bridge is set up, but the final check failed.'), error.detail)
+    case 'mac_tunnel_missing': return t('The Mac tunnel to the bridge is not set up.')
+    case 'mac_tunnel_stopped': return t('The Mac tunnel to the bridge is stopped.')
+    case 'phone_route_missing': return t('The phone site is not set up on the bridge.')
+    case 'bridge_users_missing': return t('The bridge users are missing on the server.')
+    case 'bridge_policy_missing': return t('The bridge access rules are missing on the server.')
+    case 'bridge_firewall_missing': return t('The bridge firewall is not set up.')
     default: return error.detail || t('Something went wrong. Try again.')
   }
 }
@@ -95,4 +117,39 @@ export function cleanupNote(result: { terminated: number; incomplete: boolean; e
   if (result.incomplete) return { tone: 'warn', text: t('Drover could not end every agent session on {name}. Sessions already open may keep their access until they end.', { name }) }
   if (!result.terminated) return { tone: 'ok', text: t('No agent sessions were open on {name}.', { name }) }
   return { tone: 'ok', text: tp({ one: 'Ended {n} agent session on {name}.', other: 'Ended {n} agent sessions on {name}.' }, result.terminated, { name }) }
+}
+
+// 0.8.1 bridge detect/adopt/setup. The bridge methods count as optional here so a test page or an
+// older preload without them degrades to "no bridge found" instead of crashing.
+export type { BridgeProgress, BridgeRepairOptions, BridgeScratchOptions, BridgeSetupReport, BridgeStepId, ExistingBridge } from '@shared/machines'
+type BridgeOps = Pick<MachinesApi, 'detectExistingBridge' | 'adoptExistingBridge' | 'setupBridgeFromScratch' | 'repairExistingBridge' | 'onBridgeProgress'>
+export type BridgeApi = Omit<MachinesApi, keyof BridgeOps> & Partial<BridgeOps>
+
+/** A bridge connected from the phone setup that Drover has not upgraded yet: it serves the phone only. */
+export function phoneOnlyBridge(m: Machine | null | undefined): boolean {
+  return !!m?.bridgeConnection && !m.bridgeConnection.managed
+}
+
+export const ADOPT_STEPS: BridgeStepId[] = ['connect', 'users', 'mac_tunnel', 'phone_site', 'check']
+export const SETUP_STEPS: BridgeStepId[] = ['connect', 'users', 'firewall', 'mac_tunnel', 'phone_site', 'check']
+export const REPAIR_STEPS: BridgeStepId[] = ['connect', 'users', 'firewall', 'check']
+
+export function bridgeStepLabel(step: BridgeStepId): string {
+  switch (step) {
+    case 'connect': return t('Sign in to the server')
+    case 'users': return t('Bridge users')
+    case 'firewall': return t('Firewall')
+    case 'mac_tunnel': return t('Mac tunnel')
+    case 'phone_site': return t('Phone site (HTTPS)')
+    case 'check': return t('Check that it works')
+  }
+}
+
+/** Merge one progress event into the step list; the first step runs until the backend says otherwise. */
+export function applyProgress(steps: BridgeProgress[], p: BridgeProgress): BridgeProgress[] {
+  return steps.some((s) => s.step === p.step) ? steps.map((s) => (s.step === p.step ? p : s)) : [...steps, p]
+}
+
+export function initialSteps(ids: BridgeStepId[], caddy = true): BridgeProgress[] {
+  return ids.map((step, i) => ({ step, state: !caddy && step === 'phone_site' ? 'skipped' : i === 0 ? 'running' : 'pending' }))
 }

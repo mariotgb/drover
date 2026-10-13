@@ -5,6 +5,12 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/../bridge/lib.sh"
 require_root; require_debian_like
 manifest="${1:?manifest required}"
+# Legacy adoption is metadata only. Dispatch before creating state, capabilities
+# or a lock, so even an incomplete manual installation stays untouched.
+action=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["action"])' "$manifest")
+case "$action" in
+  verify|adopt) exec python3 "$here/bridge-adopt.py" "$manifest";;
+esac
 STATE="${DROVER_BRIDGE_STATE:-/var/lib/drover-machines}"
 POLICY="${DROVER_BRIDGE_POLICY:-/etc/ssh/drover-machines-policy.conf}"
 export DROVER_POLICY_MARK='# drover-machines-policy (managed)'
@@ -13,27 +19,24 @@ for path in "$STATE/capabilities" "$STATE/lock" "$STATE/state.json"; do [ ! -L "
 install -d -m 700 "$STATE" "$STATE/capabilities"
 command -v flock >/dev/null || die 'flock required'
 exec 9>"$STATE/lock"; flock -x 9
-action=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["action"])' "$manifest")
 case "$action" in
   retire)
     # Inventory only our recorded targets and jump account; never inspect/stop
     # unrelated SSH users. No account/config recreation on retirement.
-    users=$(python3 - "$STATE/state.json" <<'DROVER_RETIRE'
-import json,pathlib,re,sys
-p=pathlib.Path(sys.argv[1]);names=['drover-jump']
-if p.exists():
- for t in json.loads(p.read_text()).get('targets',[]):
-  if not re.fullmatch('dt-[0-9a-f]{16}',t['user']):raise ValueError('foreign account')
-  names.append(t['user'])
-print('\n'.join(names))
-DROVER_RETIRE
-)
+    users=$(python3 "$here/bridge-data.py" cleanup-users "$STATE/state.json")
+    # Validate every account/key record before the first credential is removed.
     while IFS= read -r u; do
       if getent passwd "$u" >/dev/null; then
         check_hub_user "$u"
         account_home=$(getent passwd "$u" | cut -d: -f6)
-        [ ! -L "$account_home/.ssh/authorized_keys" ] || die 'unsafe retired key path'
-        [ ! -e "$account_home/.ssh/authorized_keys" ] || { : > "$account_home/.ssh/authorized_keys"; chmod 600 "$account_home/.ssh/authorized_keys"; }
+        python3 "$here/bridge-data.py" cleanup-key "$STATE/state.json" "$u" "$account_home/.ssh/authorized_keys" check
+      fi
+    done <<< "$users"
+    while IFS= read -r u; do
+      if getent passwd "$u" >/dev/null; then
+        check_hub_user "$u"
+        account_home=$(getent passwd "$u" | cut -d: -f6)
+        python3 "$here/bridge-data.py" cleanup-key "$STATE/state.json" "$u" "$account_home/.ssh/authorized_keys" apply
         pkill -u "$(id -u "$u")" || [ "$?" = 1 ]
       fi
     done <<< "$users"
@@ -83,14 +86,58 @@ for old in root.glob('*.json'):
  if json.loads(old.read_text())['expiresAt']<=time.time()*1000:old.unlink()
 DROVER_CAPABILITY
     exit 0;;
-  setup|remove) ;;
+  setup|repair|remove) ;;
   *) die 'unknown bridge operation';;
 esac
 command -v ssh-keygen >/dev/null && command -v python3 >/dev/null || die 'OpenSSH and Python 3 required'
-if [ "$action" = setup ]; then python3 "$here/bridge-data.py" caddy-safe /etc/caddy/Caddyfile; fi
+cfg="${CADDYFILE:-/etc/caddy/Caddyfile}"
+if [ "$action" = setup ]; then python3 "$here/bridge-data.py" caddy-safe "$cfg"; fi
 work=$(mktemp -d); chmod 700 "$work"
 trap 'rm -rf "$work"' EXIT
+cat > "$work/installer.service" <<'DROVER_UNIT'
+[Unit]
+Description=Drover one-time machine installers (loopback behind Caddy)
+After=network.target
+[Service]
+ExecStart=/usr/bin/python3 /var/lib/drover-machines/capability-server.py
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/drover-machines/capabilities
+PrivateTmp=yes
+[Install]
+WantedBy=multi-user.target
+DROVER_UNIT
+# Reject ambiguous Caddy composition before changing accounts, keys or SSH.
+if [ "$action" = repair ]; then
+  if ! python3 "$here/bridge-data.py" caddy-repair "$manifest" "$cfg" > "$work/Caddyfile"; then
+    printf 'DROVER_BRIDGE_ERROR {"code":"caddy_repair_requires_manual_integration"}\n'; exit 1
+  fi
+  command -v caddy >/dev/null && caddy validate --config "$work/Caddyfile" --adapter caddyfile >/dev/null 2>&1 || {
+    printf 'DROVER_BRIDGE_ERROR {"code":"caddy_repair_requires_manual_integration"}\n'; exit 1;
+  }
+fi
 python3 "$here/bridge-data.py" plan "$manifest" "$STATE/state.json" "$work"
+# Removed accounts are preflighted before the SSH/key transaction. Ownership
+# comes from saved public credentials, never from the generic account comment.
+while IFS= read -r u; do
+  [ -n "$u" ] || continue
+  check_hub_user "$u"
+  if getent passwd "$u" >/dev/null; then
+    account_home=$(getent passwd "$u" | cut -d: -f6)
+    python3 "$here/bridge-data.py" cleanup-key "$STATE/state.json" "$u" "$account_home/.ssh/authorized_keys" check
+  fi
+done < "$work/removed"
+if [ "$action" = repair ]; then
+  python3 "$here/bridge-data.py" ports-safe "$manifest" "$STATE/state.json"
+  unit=/etc/systemd/system/drover-machine-installers.service
+  [ ! -L "$unit" ] && [ ! -L "$STATE/capability-server.py" ] || die 'unsafe installer service path'
+  if [ -f "$unit" ] && ! cmp -s "$work/installer.service" "$unit"; then
+    printf 'DROVER_BRIDGE_ERROR {"code":"permission_denied"}\n'; die 'foreign installer service'
+  fi
+fi
 verify_machines() {
   local cfg="$1" u mode open listen out addr laddr=127.0.0.1 lport=22
   if [ -n "${SSH_CONNECTION:-}" ]; then read -r addr _ laddr lport <<< "$SSH_CONNECTION"; else addr=127.0.0.1; fi
@@ -115,9 +162,18 @@ verify_machines() {
   done < "$work/checks"
   [ "$VERIFY_FAIL" = 0 ]
 }
-candidate=$(python3 "$here/../bridge/hub-config.py" prepare "$SSHD_CONFIG" "$DROPIN_DIR/060-drover-machines-old.conf" "$POLICY" "$work")
+prepare=prepare
+if [ "$action" = repair ] || { [ -f "$STATE/state.json" ] && python3 - "$STATE/state.json" <<'DROVER_ADDITIVE'
+import json,sys
+sys.exit(0 if json.load(open(sys.argv[1])).get('additive') else 1)
+DROVER_ADDITIVE
+}; then prepare=prepare-additive; fi
+candidate=$(python3 "$here/../bridge/hub-config.py" "$prepare" "$SSHD_CONFIG" "$DROPIN_DIR/060-drover-machines-old.conf" "$POLICY" "$work")
 VERIFY_FAIL=0
-"$SSHD_BIN" -t -f "$candidate" && verify_machines "$candidate" || { rm -rf "$work"; die 'candidate SSH policy rejected; nothing changed'; }
+"$SSHD_BIN" -t -f "$candidate" && verify_machines "$candidate" || {
+  [ "$action" != repair ] || printf 'DROVER_BRIDGE_ERROR {"code":"bridge_policy_missing"}\n'
+  rm -rf "$work"; die 'candidate SSH policy rejected; nothing changed';
+}
 : > "$work/keys"; : > "$work/users"
 rotate_jump=0
 if [ -f "$STATE/state.json" ]; then
@@ -142,9 +198,10 @@ rollback() {
 trap rollback EXIT
 idx=0
 while IFS='|' read -r u opts pub; do
-  # Cleanup changes tunnel grants/policy only. Keep jump authorized_keys intact:
-  # rewriting it could resurrect a key revoked after this job was queued.
-  if [ "$action" = remove ] && [ "$u" = drover-jump ]; then continue; fi
+  # Removal changes policy and affected credentials only. Every survivor's
+  # authorized_keys stays byte-for-byte, including unowned keys and comments.
+  # Keeping jump keys also avoids reviving a key revoked after a queued job.
+  if [ "$action" = remove ]; then continue; fi
   check_hub_user "$u"
   if getent passwd "$u" >/dev/null; then
     account_home=$(getent passwd "$u" | cut -d: -f6)
@@ -154,10 +211,15 @@ while IFS='|' read -r u opts pub; do
     else printf '%s|\n' "$account_home/.ssh/authorized_keys" >> "$work/keys"; fi
   else printf '%s\n' "$u" >> "$work/users"; fi
   ensure_hub_user "$u"
-  # Dedicated account: replace the entire file so revoked keys cannot survive.
+  # Repair adds grants; normal setup retains its existing dedicated-key policy.
   account_home=$(getent passwd "$u" | cut -d: -f6)
   install -d -m 700 -o "$u" -g "$(id -gn "$u")" "$account_home/.ssh"
-  printf '%s %s drover-machines\n' "$opts" "$pub" > "$account_home/.ssh/authorized_keys"
+  if [ "$action" = repair ]; then
+    python3 "$here/bridge-data.py" additive-key "$account_home/.ssh/authorized_keys" "$opts" "$pub" "$work/key-new-$idx"
+    if ! cmp -s "$work/key-new-$idx" "$account_home/.ssh/authorized_keys"; then
+      install -m 600 "$work/key-new-$idx" "$account_home/.ssh/authorized_keys"
+    fi
+  else printf '%s %s drover-machines\n' "$opts" "$pub" > "$account_home/.ssh/authorized_keys"; fi
   chown "$u:$(id -gn "$u")" "$account_home/.ssh/authorized_keys"; chmod 600 "$account_home/.ssh/authorized_keys"
   idx=$((idx+1))
 done < "$work/keys-plan"
@@ -169,45 +231,60 @@ if [ "$action" = setup ] && [ "$rotate_jump" = 1 ]; then pkill -u "$(id -u drove
 while IFS= read -r u; do
   [ -n "$u" ] || continue
   check_hub_user "$u"
-  if getent passwd "$u" >/dev/null; then pkill -u "$(id -u "$u")" || [ "$?" = 1 ]; account_home=$(getent passwd "$u" | cut -d: -f6); : > "$account_home/.ssh/authorized_keys"; fi
+  if getent passwd "$u" >/dev/null; then
+    account_home=$(getent passwd "$u" | cut -d: -f6)
+    python3 "$here/bridge-data.py" cleanup-key "$STATE/state.json" "$u" "$account_home/.ssh/authorized_keys" apply
+    pkill -u "$(id -u "$u")" || [ "$?" = 1 ]
+  fi
 done < "$work/removed"
 install -m 600 "$work/state" "$STATE/state.json"
 trap 'rm -rf "$work"' EXIT
-if [ "$action" = setup ]; then
+if [ "$action" = setup ] || [ "$action" = repair ]; then
   [ ! -L "$STATE/capability-server.py" ] && [ ! -L /etc/systemd/system/drover-machine-installers.service ] || die 'unsafe installer service path'
-  install -m 700 "$here/capability-server.py" "$STATE/capability-server.py"
-  cat > /etc/systemd/system/drover-machine-installers.service <<'DROVER_UNIT'
-[Unit]
-Description=Drover one-time machine installers (loopback behind Caddy)
-After=network.target
-[Service]
-ExecStart=/usr/bin/python3 /var/lib/drover-machines/capability-server.py
-Restart=on-failure
-UMask=0077
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/var/lib/drover-machines/capabilities
-PrivateTmp=yes
-[Install]
-WantedBy=multi-user.target
-DROVER_UNIT
-  systemctl daemon-reload; systemctl enable drover-machine-installers.service; systemctl restart drover-machine-installers.service
+  if [ "$action" != repair ] || [ ! -f "$STATE/capability-server.py" ]; then install -m 700 "$here/capability-server.py" "$STATE/capability-server.py"; fi
+  unit=/etc/systemd/system/drover-machine-installers.service
+  if [ "$action" = repair ] && [ -f "$unit" ] && ! cmp -s "$work/installer.service" "$unit"; then
+    printf 'DROVER_BRIDGE_ERROR {"code":"permission_denied"}\n'; die 'foreign installer service'
+  fi
+  if ! cmp -s "$work/installer.service" "$unit"; then install -m 644 "$work/installer.service" "$unit"; systemctl daemon-reload; fi
+  systemctl enable drover-machine-installers.service
+  if [ "$action" = repair ]; then
+    systemctl is-active --quiet drover-machine-installers.service || systemctl start drover-machine-installers.service
+  else systemctl restart drover-machine-installers.service; fi
   command -v caddy >/dev/null || { apt-get update -qq; apt-get install -y caddy; }
   # Keep an existing Caddy deployment intact unless it is our own/legacy Drover file.
-  cfg=/etc/caddy/Caddyfile
   [ ! -L "$cfg" ] || die 'Caddyfile is a symlink'
-  python3 "$here/bridge-data.py" caddy-safe "$cfg"
-  python3 "$here/bridge-data.py" caddy "$manifest" > "$work/Caddyfile"
+  if [ "$action" = setup ]; then
+    python3 "$here/bridge-data.py" caddy-safe "$cfg"
+    python3 "$here/bridge-data.py" caddy "$manifest" > "$work/Caddyfile"
+  fi
   caddy validate --config "$work/Caddyfile" --adapter caddyfile
   [ ! -f "$cfg" ] || cp -p "$cfg" "$work/caddy-backup"
-  install -m 644 "$work/Caddyfile" "$cfg"
-  if ! systemctl enable --now caddy || ! systemctl reload caddy; then
+  caddy_changed=0
+  if ! cmp -s "$work/Caddyfile" "$cfg"; then
+    # Existing Basic authentication can make the file group-readable only.
+    if [ -f "$cfg" ]; then cat "$work/Caddyfile" > "$cfg"; else install -m 644 "$work/Caddyfile" "$cfg"; fi
+    caddy_changed=1
+  fi
+  if ! systemctl enable --now caddy || { [ "$caddy_changed" = 1 ] && ! systemctl reload caddy; }; then
     if [ -f "$work/caddy-backup" ]; then cp -p "$work/caddy-backup" "$cfg"; systemctl reload caddy || true; else rm -f "$cfg"; fi
     die 'Caddy failed; its previous configuration was restored'
   fi
   # Additive firewall rules only; never reset/enable the user's firewall or open reverse ports.
   if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow 80/tcp comment 'Drover Caddy ACME'; ufw allow 443/tcp comment 'Drover Caddy HTTPS'; fi
+  systemctl is-active --quiet drover-machine-installers.service && systemctl is-active --quiet caddy || die 'installer services inactive'
+  if [ "$action" = repair ]; then
+    python3 - "$here" "$manifest" <<'DROVER_REPAIR_ROUTE'
+import json,sys
+sys.path.insert(0,sys.argv[1])
+from importlib.machinery import SourceFileLoader
+module=SourceFileLoader('bridge_adopt',sys.argv[1]+'/bridge-adopt.py').load_module()
+data=json.load(open(sys.argv[2]))
+if not module.caddy_report(data['origin'],data['phonePort'])['installerRoute']:
+ print('DROVER_BRIDGE_ERROR {"code":"caddy_repair_requires_manual_integration"}')
+ sys.exit(1)
+DROVER_REPAIR_ROUTE
+  fi
 fi
 rm -rf "$work"
 printf 'DROVER_BRIDGE_READY\n'

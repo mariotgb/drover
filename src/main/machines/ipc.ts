@@ -12,12 +12,16 @@ export function registerMachinesIpc(ipc: Pick<IpcMain, 'handle'>, service: Machi
     'machines:add': draft => service.add(draft),
     'machines:install-key': (id, options) => service.installKey(id, options),
     'machines:check': id => service.check(id),
-    'machines:remove': id => service.remove(id),
+    'machines:remove': (id, options) => service.remove(id, options),
     'machines:permissions': (id, permissions) => service.setPermissions(id, permissions),
-    'machines:set-bridge': id => service.setBridge(id),
+    'machines:set-bridge': (id, options) => service.setBridge(id, options),
     'machines:setup-bridge': (id, options) => service.setupBridge(id, options),
+    'machines:detect-existing-bridge': () => service.detectExistingBridge(),
+    'machines:adopt-existing-bridge': options => service.adoptExistingBridge(options),
+    'machines:setup-bridge-from-scratch': options => service.setupBridgeFromScratch(options),
+    'machines:repair-existing-bridge': options => service.repairExistingBridge(options),
     'machines:install-command': (id, os) => service.installCommand(id, os),
-    'machines:revoke-key': () => service.revokeAgentsKey(),
+    'machines:revoke-key': options => service.revokeAgentsKey(options),
     'machines:add-ssh-include': () => service.addSshInclude()
   }
   for (const [channel, handler] of Object.entries(handlers)) ipc.handle(channel, async (event, ...args) => {

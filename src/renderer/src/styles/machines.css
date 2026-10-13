@@ -29,6 +29,47 @@
 .bridge-pick .input.select { width: auto; max-width: 240px; height: 28px; font-size: 12.5px; }
 .bridge-pick .check { font-size: 12px; }
 
+.bridge-card.found { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.bridge-text > p.setting-hint { margin: 3px 0 0; max-width: 560px; line-height: 1.5; }
+.bridge-actions { margin-top: 11px; }
+.bridge-actions .link-btn { font-size: 12px; color: var(--text-2); }
+.bridge-text .hostkey { margin-top: 10px; }
+.bridge-facts { display: flex; flex-direction: column; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
+.bridge-facts li { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.bridge-facts li > span:first-of-type { flex: none; width: 92px; color: var(--text-2); }
+.bridge-facts li svg { flex: none; }
+.bridge-facts li.ok svg { color: var(--done); }
+.bridge-facts li.warn svg { color: var(--blocked); }
+.bridge-facts li.off svg { color: var(--text-4); }
+.bridge-facts code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; color: var(--text); }
+.bridge-facts .dim { color: var(--text-3); }
+
+/* Live step checklist (adopt and setup). */
+.bridge-steps { align-self: stretch; box-sizing: border-box; display: flex; flex-direction: column; gap: 7px; margin: 12px 0 0; padding: 10px 12px; list-style: none; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); max-width: 520px; }
+.bridge-steps li { display: flex; align-items: flex-start; gap: 9px; font-size: 12.5px; color: var(--text); }
+.bridge-step-mark { flex: none; display: grid; place-items: center; width: 17px; height: 17px; margin-top: 0; border-radius: 50%; border: 1px solid var(--border-strong); color: var(--text-3); }
+.bridge-steps li.is-pending { color: var(--text-3); }
+.bridge-steps li.is-running { font-weight: 550; }
+.bridge-steps li.is-running .bridge-step-mark { border-color: transparent; }
+.bridge-steps li.is-done .bridge-step-mark { border-color: var(--done); background: var(--done); color: #fff; }
+.bridge-steps li.is-failed .bridge-step-mark { border-color: var(--danger); background: var(--danger); color: #fff; }
+.bridge-steps li.is-failed { color: var(--danger); font-weight: 550; }
+.bridge-steps li.is-skipped { color: var(--text-3); }
+.bridge-steps li.is-skipped .bridge-step-mark { border-style: dashed; }
+.bridge-step-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 17px; }
+.bridge-step-error { font-weight: 400; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.bridge-result { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.bridge-result .link-btn { font-size: 12px; color: var(--text-2); }
+
+/* Set up bridge wizard */
+.bridge-wizard .bridge-toggle { display: flex; align-items: flex-start; gap: 9px; max-width: 460px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 10px; cursor: pointer; }
+.bridge-wizard .bridge-toggle input { margin-top: 3px; }
+.bridge-wizard .bridge-toggle > span { display: flex; flex-direction: column; gap: 2px; }
+.bridge-wizard .bridge-toggle strong { font-size: 12.5px; font-weight: 600; }
+.bridge-run { display: flex; flex-direction: column; gap: 8px; }
+.bridge-wizard .hostkey, .bridge-run .bridge-steps { max-width: 460px; }
+.bridge-run .bridge-steps { margin-top: 6px; }
+
 /* List */
 .machine-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .machine + .machine { border-top: 1px solid var(--border); }
@@ -180,3 +221,18 @@
 .cleanup-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
 .cleanup-notes .machine-note { align-items: flex-start; }
 .cleanup-notes .machine-note svg { margin-top: 2px; }
+.kind-card:disabled { opacity: 0.6; cursor: not-allowed; }
+.kind-card:disabled:hover { background: var(--bg); }
+.bridge-text > .machine-note { margin-top: 8px; }
+.bridge-upgrade { margin-top: 10px; max-width: 560px; }
+.bridge-upgrade > strong { font-size: 13px; font-weight: 600; }
+.bridge-upgrade-list { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; line-height: 1.45; color: var(--text); }
+.bridge-upgrade-list li { display: flex; align-items: flex-start; gap: 7px; }
+.bridge-upgrade-list svg { flex: none; margin-top: 3px; color: var(--done); }
+.bridge-upgrade .hostkey { max-width: none; background: var(--bg-elev); }
+.bridge-upgrade .field { max-width: 420px; }
+.bridge-upgrade .bridge-steps { margin-top: 0; }
+.bridge-signin { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-width: 520px; }
+.bridge-signin .setting-hint { margin: 0; }
+.bridge-signin .field-row { display: flex; gap: 10px; }
+.bridge-signin-user { width: 150px; flex: none; }
