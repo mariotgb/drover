@@ -52,7 +52,8 @@ export interface MachinesState {
 }
 /** Safe read-only projection; no key, Include action or install commands. */
 export type MachinesStatus = Pick<MachinesState, 'machines' | 'bridgeMachineId'>
-export interface HostKey { algorithm: string; fingerprint: string; known: boolean }
+export interface HostKey { algorithm: string; fingerprint: string; known: boolean; passwordAllowed?: boolean }
+export interface BridgeKeyCandidate { path: string; name: string; fingerprint: string; algorithm: string; comment: string }
 export type BridgeStepId = 'connect' | 'users' | 'firewall' | 'mac_tunnel' | 'phone_site' | 'check'
 export interface BridgeProgress { step: BridgeStepId; state: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; error?: MachineError }
 export interface BridgeForward { listenHost: string; listenPort: number; targetHost: string; targetPort: number }
@@ -67,6 +68,7 @@ export interface ExistingBridge {
   macTunnel: 'running' | 'stopped' | 'missing'
   adminKey: boolean
   adminKeyPath?: string
+  adminKeyCandidates?: BridgeKeyCandidate[]
   machineId?: string
   hostKey?: HostKey
 }
@@ -79,8 +81,10 @@ export interface BridgeRepairOptions {
 }
 export interface BridgeAdoptOptions {
   acceptedFingerprint: string
-  /** Administrator login for password bootstrap; defaults to root. */
+  /** Administrator login for an existing key or password bootstrap; defaults to root. */
   user?: string
+  /** Existing administrator private key. Mutually exclusive with password. */
+  keyPath?: string
   /** One-time bootstrap only. Never persisted or logged. */
   password?: string
 }
@@ -93,7 +97,8 @@ export interface MachineConfirmationOptions { confirmed: true }
 export interface MachinesApi {
   state(): Promise<MachinesState>
   onChange(cb: (state: MachinesState) => void): () => void
-  probeHostKey(host: string, port: number): Promise<HostKey>
+  /** Authentication methods can vary by login; omitted login uses the saved account or root. */
+  probeHostKey(host: string, port: number, user?: string): Promise<HostKey>
   add(draft: MachineDraft): Promise<Machine>
   /** One-time password for bootstrap only; never persisted or logged. */
   installKey(id: string, options: { password?: string; acceptedFingerprint: string }): Promise<Machine>
@@ -103,6 +108,8 @@ export interface MachinesApi {
   setBridge(id: string, options: MachineConfirmationOptions): Promise<void>
   setupBridge(id: string, options: MachineConfirmationOptions & { caddy: boolean }): Promise<void>
   detectExistingBridge(): Promise<ExistingBridge | null>
+  /** Native desktop picker; returns only the selected path, never file contents. */
+  chooseBridgeKeyFile(): Promise<string | null>
   /** A fresh host-key probe and explicit desktop confirmation are required. */
   adoptExistingBridge(options?: BridgeAdoptOptions): Promise<BridgeSetupReport>
   setupBridgeFromScratch(options: BridgeScratchOptions): Promise<BridgeSetupReport>

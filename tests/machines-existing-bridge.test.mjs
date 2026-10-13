@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash, createHmac } from 'node:crypto'
@@ -83,6 +83,216 @@ test('phone settings alone discover sslip host without an SSH scan; unsafe forwa
   assert.throws(() => m.parseBridgeArguments(['/usr/bin/ssh', '-R', '0.0.0.0:8780:localhost:7780', 'bridge-mac@' + host], f.home), /loopback/)
   const g = fixture(t); writeFileSync(join(g.userData, 'settings.json'), JSON.stringify({ remotePublicUrl: 'https://192-0-2-21.sslip.io' }))
   await assert.rejects(g.service.detectExistingBridge(), { code: 'bridge_state_conflict' })
+})
+
+test('Found suggests ranked SSH key pairs using public metadata only, excluding transport keys and unsafe files', async t => {
+  const f = fixture(t), ssh = join(f.home, '.ssh')
+  rmSync(join(f.userData, 'bridge-admin.json'))
+  const pair = (name, publicKey = key(9) + ' administrator@fixture') => {
+    // Even an unreadable private file can be suggested: detection never opens it.
+    writeFileSync(join(ssh, name), 'DO NOT READ PRIVATE CANDIDATE', { mode: 0o000 })
+    writeFileSync(join(ssh, name + '.pub'), publicKey + '\n')
+  }
+  for (const name of ['id_ed25519', 'admin_ed25519', 'vps_ed25519', 'drover_admin_ed25519', host + '_admin_ed25519', host.replace(/\./g, '-') + '_root', 'config', 'known_hosts.old']) pair(name)
+  for (const name of ['agents_ed25519', 'mac_bridge_ed25519', 'mac_jump_ed25519', 'drover-tunnel-old']) pair(name, key(10) + ' drover-agents')
+  pair('orphan'); rmSync(join(ssh, 'orphan'))
+  pair('private-only'); rmSync(join(ssh, 'private-only.pub'))
+  pair('invalid', 'invalid public metadata')
+  pair('public-link'); rmSync(join(ssh, 'public-link.pub')); symlinkSync(join(ssh, 'id_ed25519.pub'), join(ssh, 'public-link.pub'))
+  pair('private-link'); rmSync(join(ssh, 'private-link')); symlinkSync(join(ssh, 'id_ed25519'), join(ssh, 'private-link'))
+  pair('folder'); rmSync(join(ssh, 'folder')); mkdirSync(join(ssh, 'folder'))
+  pair('renamed-transport', key(10) + ' drover-tunnel-fixture')
+  const found = await f.service.detectExistingBridge()
+  assert.equal(found.adminKey, false)
+  const names = found.adminKeyCandidates.map(k => k.name)
+  assert.deepEqual(new Set(names.slice(0, 2)), new Set([host + '_admin_ed25519', host.replace(/\./g, '-') + '_root']))
+  assert.deepEqual(names.slice(2), ['drover_admin_ed25519', 'vps_ed25519', 'admin_ed25519', 'id_ed25519'])
+  assert.deepEqual(found.adminKeyCandidates.find(k => k.name === 'id_ed25519'), { path: join(ssh, 'id_ed25519'), name: 'id_ed25519', algorithm: 'ssh-ed25519', fingerprint: m.fingerprint(key(9)), comment: 'administrator@fixture' })
+  assert.ok(f.calls.every(c => ['plutil', 'launchctl'].includes(c.file)))
+  assert.equal(existsSync(join(f.home, '.drover')), false)
+  assert.doesNotMatch(JSON.stringify(found), /DO NOT READ|PRIVATE CANDIDATE/)
+})
+
+test('admin candidates exclude Linux transport and renamed copies by public identity, keeping genuine Drover admin names', async t => {
+  const f = fixture(t), ssh = join(f.home, '.ssh')
+  const pair = (name, seed, comment = 'administrator@fixture') => {
+    writeFileSync(join(ssh, name), 'DO NOT OPEN PRIVATE FILE', { mode: 0o000 })
+    writeFileSync(join(ssh, name + '.pub'), key(seed) + ' ' + comment + '\n')
+  }
+  pair('drover_bridge_ed25519', 11, 'drover-bridge')
+  pair('drover_jump_ed25519', 12, 'drover-bridge')
+  pair('renamed-linux-bridge', 11, 'changed comment')
+  pair('renamed-linux-jump', 12, 'changed comment')
+  pair('transport-custom-name', 13, 'drover-bridge')
+  pair('renamed-comment-transport', 13, 'changed comment')
+  pair('drover_admin_ed25519', 14, 'administrator@fixture')
+  pair('management-copy', 15, 'changed comment')
+  const managed = join(f.home, '.drover/machines/keys')
+  mkdirSync(managed, { recursive: true })
+  // A recorded .pub is enough to exclude copies: the private file need not be read or present.
+  writeFileSync(join(managed, 'management_ed25519.pub'), key(15) + ' drover-management_ed25519')
+  const config = join(f.home, 'custom-config')
+  mkdirSync(join(config, 'drover'), { recursive: true })
+  const transport = join(f.home, 'custom-transport')
+  writeFileSync(transport + '.pub', key(16) + ' renamed metadata')
+  writeFileSync(join(config, 'drover/bridge.json'), JSON.stringify({ version: 1, service: 'dev.drover.bridge.service', identityFile: transport }))
+  pair('metadata-copy', 16, 'changed comment')
+  const found = await m.detectLocalBridge({ home: f.home, userData: f.userData, env: { XDG_CONFIG_HOME: config }, run: async file => file === 'plutil' ? ok(JSON.stringify({ Label: 'dev.drover.bridge', ProgramArguments: f.args })) : ok('') })
+  assert.deepEqual(found.adminKeyCandidates.map(k => k.name), ['drover_admin_ed25519'])
+  assert.doesNotMatch(JSON.stringify(found), /DO NOT OPEN PRIVATE/)
+})
+
+test('saved generated public identities and transport references exclude renamed keys after restarting detection', async t => {
+  const f = fixture(t), savedMachine = await f.service.add({ kind: 'direct', name: 'old', host, port, user: 'root' })
+  const stateFile = join(f.userData, 'machines.json'), saved = JSON.parse(readFileSync(stateFile, 'utf8'))
+  const pair = (name, publicKey) => {
+    writeFileSync(join(f.home, '.ssh', name), 'DO NOT OPEN PRIVATE', { mode: 0o000 })
+    writeFileSync(join(f.home, '.ssh', name + '.pub'), publicKey.split(' ').slice(0, 2).join(' ') + ' changed-comment')
+  }
+  pair('generated-agents-copy', saved.agentsKey.publicKey)
+  saved.revocations[savedMachine.id] = [key(41) + ' old-key']
+  pair('revoked-copy', key(41))
+  saved.credentialRemovals[savedMachine.id] = { agentsPublicKeys: [key(42)], managementPublicKey: key(43) }
+  pair('removal-agents-copy', key(42)); pair('removal-management-copy', key(43))
+  const jump = join(f.home, 'recorded-jump')
+  writeFileSync(jump + '.pub', key(44)); pair('jump-copy', key(44))
+  saved.bridgeConnections = { [savedMachine.id]: { source: 'existing', jumpKeyPath: jump, jumpUser: 'jump', tunnelUser: 'bridge-mac', forwards: [], macTunnel: 'missing' } }
+  pair('drover_admin_ed25519', key(45))
+  writeFileSync(stateFile, JSON.stringify(saved))
+  rmSync(join(f.home, '.drover/machines/keys'), { recursive: true })
+  const restarted = new m.MachinesService({ home: f.home, userData: f.userData, run: async file => file === 'plutil' ? ok(JSON.stringify({ Label: 'dev.drover.bridge', ProgramArguments: f.args })) : file === 'launchctl' ? ok('') : assert.fail('Detection must not contact SSH or generate keys'), tcp: async () => assert.fail('No TCP') })
+  t.after(() => restarted.dispose())
+  const found = await restarted.detectExistingBridge()
+  assert.deepEqual(found.adminKeyCandidates.map(k => k.name), ['drover_admin_ed25519'])
+  assert.equal(existsSync(join(f.home, '.drover/machines/keys')), false)
+})
+
+test('existing admin key mode pins before key-only authentication, persists a private reference, and adopts without installing keys', async t => {
+  const f = fixture(t)
+  rmSync(join(f.userData, 'bridge-admin.json'))
+  const options = { acceptedFingerprint: m.fingerprint(hostKey), user: 'root', keyPath: f.adminPath }
+  let adopted = await f.service.adoptExistingBridge({ ...options, acceptedFingerprint: m.fingerprint(`[${host}]:${port} ${key(8)}`) })
+  assert.equal(adopted.steps[0].error.code, 'host_key_changed'); assert.equal(f.calls.some(c => c.file === 'ssh'), false)
+  adopted = await f.service.adoptExistingBridge(options)
+  assert.ok(adopted.steps.every(s => s.state === 'done'), JSON.stringify(adopted))
+  const commands = f.calls.filter(c => c.file === 'ssh'), auth = commands[0]
+  assert.equal(commands.length, 2)
+  assert.deepEqual(auth.args.slice(0, 2), ['-F', '/dev/null'])
+  for (const option of ['BatchMode=yes', 'IdentitiesOnly=yes', 'StrictHostKeyChecking=yes', 'PreferredAuthentications=publickey', 'PasswordAuthentication=no', 'KbdInteractiveAuthentication=no']) assert.ok(auth.args.includes(option), option)
+  assert.equal(auth.args[auth.args.indexOf('-i') + 1], f.adminPath)
+  assert.equal(auth.args[auth.args.indexOf('-l') + 1], 'root')
+  assert.deepEqual(auth.args.slice(-2), [host, 'true'])
+  assert.equal(auth.input, undefined); assert.equal(auth.env.SSH_ASKPASS, undefined)
+  const pinPath = auth.args.find(a => a.startsWith('UserKnownHostsFile=')).slice('UserKnownHostsFile='.length)
+  assert.equal(m.fingerprint(readFileSync(pinPath, 'utf8')), options.acceptedFingerprint)
+  const metadata = join(f.userData, 'bridge-admin.json')
+  assert.deepEqual(JSON.parse(readFileSync(metadata, 'utf8')), { host, port, user: 'root', keyPath: f.adminPath })
+  assert.equal(statSync(metadata).mode & 0o777, 0o600)
+  assert.equal((await f.service.detectExistingBridge()).adminKey, true)
+  assert.equal((await f.service.state()).bridgeMachineId, adopted.machineId)
+  assert.ok(!f.calls.some(c => c.args.includes('BatchMode=no') || c.input?.includes('authorized_keys')))
+  assert.doesNotMatch(readFileSync(f.service.configPath, 'utf8'), /admin_ed25519|User root/)
+  const control = readFileSync(join(f.home, '.drover/machines/ssh_control_config'), 'utf8')
+  assert.match(control, /admin_ed25519/); assert.match(control, /IdentitiesOnly yes/); assert.doesNotMatch(control.split(/(?=^Host )/m).find(b => b.startsWith(`Host drover-management-${adopted.machineId}\n`)), /IdentityAgent none/)
+  await f.service.remove(adopted.machineId, { confirmed: true })
+  assert.equal(f.calls.filter(c => c.file === 'ssh').length, 2)
+})
+
+test('selected administrator keys fail clearly without saving a rejected or unreadable key reference', async t => {
+  for (const [stderr, code] of [
+    ['Permission denied (publickey). confidential failure', 'bridge_admin_key_rejected'],
+    ['Load key "secret-path": incorrect passphrase supplied to decrypt private key', 'bridge_admin_key_unreadable'],
+    ['sign_and_send_pubkey: signing failed for ED25519 from agent: agent refused operation', 'bridge_admin_key_unreadable'],
+    ['debug1: Server accepts key: secret-path\nPermission denied (publickey).', 'bridge_admin_key_unreadable'],
+    ['Load key "secret-path": invalid format', 'bridge_admin_key_unreadable']
+  ]) {
+    const f = fixture(t, { overrideRun: (file, args) => file === 'ssh' && args.includes('-i') ? { code: 255, stdout: '', stderr } : undefined })
+    rmSync(join(f.userData, 'bridge-admin.json'))
+    const result = await f.service.adoptExistingBridge({ acceptedFingerprint: m.fingerprint(hostKey), user: 'root', keyPath: f.adminPath })
+    assert.equal(result.steps[0].error.code, code)
+    if (code === 'bridge_admin_key_unreadable') assert.match(result.steps[0].error.detail, /passphrase.*ssh-agent.*BatchMode/)
+    assert.doesNotMatch(JSON.stringify(result), /secret-path|confidential failure/)
+    assert.equal(existsSync(join(f.userData, 'bridge-admin.json')), false)
+    const state = await f.service.state()
+    assert.equal(state.bridgeMachineId, null); assert.equal(state.machines.length, 0)
+    assert.equal(f.calls.filter(c => c.file === 'ssh').length, 1)
+  }
+  for (const keyPath of ['~/missing-key', 'relative-key', 'bad\nkey']) {
+    const f = fixture(t); rmSync(join(f.userData, 'bridge-admin.json'))
+    const result = await f.service.adoptExistingBridge({ acceptedFingerprint: m.fingerprint(hostKey), user: 'root', keyPath })
+    assert.equal(result.steps[0].error.code, 'bridge_admin_key_unreadable')
+    assert.equal(f.calls.some(c => c.file === 'ssh'), false)
+  }
+  const f = fixture(t)
+  const result = await f.service.adoptExistingBridge({ acceptedFingerprint: m.fingerprint(hostKey), user: 'root', keyPath: f.adminPath, password: 'do-not-use' })
+  assert.equal(result.steps[0].error.code, 'invalid_bridge_auth'); assert.equal(f.calls.some(c => c.file === 'ssh' || c.file === 'ssh-keyscan'), false)
+})
+
+test('rejected key login can be corrected on the next attempt without a stale saved administrator', async t => {
+  const f = fixture(t, { overrideRun: (file, args) => file === 'ssh' && args.includes('-i') && args[args.indexOf('-l') + 1] !== 'root' ? { code: 255, stdout: '', stderr: 'Permission denied (publickey).' } : undefined })
+  rmSync(join(f.userData, 'bridge-admin.json'))
+  const options = { acceptedFingerprint: m.fingerprint(hostKey), keyPath: f.adminPath }
+  const rejected = await f.service.adoptExistingBridge({ ...options, user: 'wrong' })
+  assert.equal(rejected.steps[0].error.code, 'bridge_admin_key_rejected')
+  assert.deepEqual((await f.service.state()).machines, [])
+  const adopted = await f.service.adoptExistingBridge({ ...options, user: 'root' })
+  assert.ok(adopted.steps.every(s => s.state === 'done'), JSON.stringify(adopted))
+  assert.equal((await f.service.state()).machines[0].user, 'root')
+})
+
+test('host-key probe discovers server password policy without offering any credentials or altering trust', async t => {
+  for (const [stderr, expected] of [['root@fixture: Permission denied (publickey).', false], ['Permission denied (publickey,password,keyboard-interactive).', true], ['Permission denied (keyboard-interactive).', false], ['Connection closed by fixture', undefined]]) {
+    const f = fixture(t, { overrideRun: (file, args) => {
+      if (file !== 'ssh' || !args.includes('PreferredAuthentications=none')) return
+      const pins = args.find(a => a.startsWith('UserKnownHostsFile=')).slice('UserKnownHostsFile='.length)
+      assert.equal(m.fingerprint(readFileSync(pins, 'utf8')), m.fingerprint(hostKey))
+      return { code: 255, stdout: '', stderr }
+    } })
+    const probe = await f.service.probeHostKey(host, port)
+    assert.equal(probe.passwordAllowed, expected); assert.equal(probe.known, false)
+    const auth = f.calls.find(c => c.file === 'ssh')
+    for (const option of ['PreferredAuthentications=none', 'PubkeyAuthentication=no', 'IdentityAgent=none', 'IdentityFile=none', 'BatchMode=yes', 'StrictHostKeyChecking=yes']) assert.ok(auth.args.includes(option), option)
+    assert.ok(!auth.args.includes('-i')); assert.ok(!auth.env.SSH_ASKPASS)
+    assert.equal(existsSync(auth.args.find(a => a.startsWith('UserKnownHostsFile=')).slice('UserKnownHostsFile='.length)), false)
+    assert.equal(existsSync(f.service.knownHosts), false)
+  }
+  const f = fixture(t, { overrideRun: file => file === 'ssh' ? { code: 255, stdout: '', stderr: 'Host key verification failed.' } : undefined })
+  await assert.rejects(f.service.probeHostKey(host, port), { code: 'host_key_changed' })
+})
+
+test('password probe follows the supplied login and rejects malformed users before any SSH or persistence', async t => {
+  const f = fixture(t, { overrideRun: (file, args) => {
+    if (file !== 'ssh' || !args.includes('PreferredAuthentications=none')) return
+    const login = args[args.indexOf('-l') + 1]
+    return { code: 255, stdout: '', stderr: `Permission denied (${login === 'admin' ? 'publickey,password' : 'publickey'}).` }
+  } })
+  assert.equal((await f.service.probeHostKey(host, port, 'root')).passwordAllowed, false)
+  assert.equal((await f.service.probeHostKey(host, port, 'admin')).passwordAllowed, true)
+  assert.deepEqual(f.calls.filter(c => c.file === 'ssh').map(c => c.args[c.args.indexOf('-l') + 1]), ['root', 'admin'])
+  for (const command of f.calls.filter(c => c.file === 'ssh')) {
+    for (const option of ['PreferredAuthentications=none', 'PubkeyAuthentication=no', 'IdentityAgent=none', 'IdentityFile=none', 'PasswordAuthentication=no', 'KbdInteractiveAuthentication=no']) assert.ok(command.args.includes(option))
+    assert.equal(command.input, undefined)
+  }
+  const g = fixture(t, { existing: false })
+  for (const user of ['', 'has space', '-oProxyCommand=bad', 'root\nHost evil', null, 1]) await assert.rejects(g.service.probeHostKey(host, port, user), { code: 'invalid_user' })
+  assert.equal(g.calls.length, 0); assert.equal(existsSync(join(g.home, '.drover')), false)
+  assert.equal(existsSync(join(g.userData, 'machines.json')), false)
+  await f.service.add({ kind: 'direct', name: 'saved', host, port, user: 'admin' })
+  assert.equal((await f.service.probeHostKey(host, port)).passwordAllowed, true)
+  assert.equal((await f.service.probeHostKey(host, port, 'root')).passwordAllowed, false)
+})
+
+test('host-key scan retries a transient broken pipe up to three attempts with backoff and a useful final error', async t => {
+  let attempts = 0
+  const f = fixture(t, { overrideRun: file => file === 'ssh-keyscan' && ++attempts < 3 ? { code: 1, stdout: '', stderr: 'write (fixture): Broken pipe' } : undefined })
+  const start = performance.now(), probe = await f.service.probeHostKey(host, port)
+  assert.equal(attempts, 3); assert.equal(probe.fingerprint, m.fingerprint(hostKey)); assert.ok(performance.now() - start >= 700)
+  let failures = 0
+  const g = fixture(t, { overrideRun: file => {
+    if (file === 'ssh-keyscan') { failures++; throw new m.MachinesFailure('timeout', 'fake timeout') }
+  } })
+  await assert.rejects(g.service.probeHostKey(host, port), error => error.code === 'host_unreachable' && error.message.includes('The server may be briefly busy; try again in a minute.'))
+  assert.equal(failures, 3); assert.equal(g.calls.some(c => c.file === 'ssh'), false)
 })
 
 test('adoption refuses unconfirmed or changed host key before authentication and reports sanitized errors', async t => {

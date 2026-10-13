@@ -4,7 +4,7 @@ import { Bot, Crown, FolderPlus, Globe, Megaphone, PanelBottomOpen, PanelLeft, S
 import { isRemote } from '../api'
 import { newTerminalTab, openNewAgent, openSettings, restartAgent, restartLabel } from '../actions'
 import { supportsBypass } from '@shared/models'
-import { t } from '../i18n'
+import { t, keys } from '../i18n'
 import { fuzzyScore, statusLabel } from '../model'
 import { getModel, nextAttention, select, selectedThread, toggleDrawer, togglePreview, useStore } from '../store'
 import { AgentAvatar, StatusDot } from './primitives'
@@ -57,20 +57,20 @@ export function CommandPalette() {
         { id: 'cmd:boss', title: t('Main boss'), icon: <Crown size={16} />, run: () => useStore.setState({ sidebarHidden: false, dialog: { type: 'boss' } }) },
         { id: 'cmd:boss-broadcast', title: t('Assignment to all project leads'), icon: <Megaphone size={16} />, run: () => useStore.setState({ sidebarHidden: false, dialog: { type: 'boss-broadcast' } }) }
       ] : []),
-      { id: 'cmd:new-agent', title: t('New agent…'), icon: <Bot size={16} />, right: <span className="kbd">⌘N</span>, run: () => openNewAgent({}) },
-      { id: 'cmd:new-project', title: t('New project from folder…'), icon: <FolderPlus size={16} />, right: <span className="kbd">⌘⇧N</span>, run: () => openNewAgent({ workspaceId: null, pickFolder: true }) },
+      { id: 'cmd:new-agent', title: t('New agent…'), icon: <Bot size={16} />, right: <span className="kbd">{keys('⌘N')}</span>, run: () => openNewAgent({}) },
+      { id: 'cmd:new-project', title: t('New project from folder…'), icon: <FolderPlus size={16} />, right: <span className="kbd">{keys('⌘⇧N')}</span>, run: () => openNewAgent({ workspaceId: null, pickFolder: true }) },
       { id: 'cmd:new-terminal', title: t('New terminal tab'), icon: <SquareTerminal size={16} />, run: () => void newTerminalTab(cur?.workspaceId ?? null, cur?.cwd) },
       ...(cur
         ? [
             { id: 'cmd:team', title: t('Start team in {project}…', { project: cur.workspace.label }), icon: <Users size={16} />, run: () => useStore.setState({ dialog: { type: 'team', workspaceId: cur.workspaceId } }) },
             { id: 'cmd:broadcast', title: t('Message several agents in {project}…', { project: cur.workspace.label }), icon: <Megaphone size={16} />, run: () => useStore.setState({ dialog: { type: 'broadcast', workspaceId: cur.workspaceId } }) },
-            { id: 'cmd:preview', title: t('Toggle preview'), icon: <Globe size={16} />, right: <span className="kbd">⌘⇧P</span>, run: () => togglePreview(cur.workspaceId) }
+            { id: 'cmd:preview', title: t('Toggle preview'), icon: <Globe size={16} />, right: <span className="kbd">{keys('⌘⇧P')}</span>, run: () => togglePreview(cur.workspaceId) }
           ]
         : []),
-      { id: 'cmd:attention', title: t('Go to next agent needing attention'), icon: <Zap size={16} />, right: <span className="kbd">⌘⇧]</span>, run: () => nextAttention() },
-      ...(cur ? [{ id: 'cmd:drawer', title: t('Toggle terminal panel'), icon: <PanelBottomOpen size={16} />, right: <span className="kbd">⌘J</span>, run: () => toggleDrawer(cur.paneId) }] : []),
-      { id: 'cmd:sidebar', title: t('Toggle sidebar'), icon: <PanelLeft size={16} />, right: <span className="kbd">⌘B</span>, run: () => useStore.setState((s) => ({ sidebarHidden: !s.sidebarHidden })) },
-      { id: 'cmd:settings', title: t('Settings'), icon: <Settings size={16} />, right: <span className="kbd">⌘,</span>, run: () => openSettings() }
+      { id: 'cmd:attention', title: t('Go to next agent needing attention'), icon: <Zap size={16} />, right: <span className="kbd">{keys('⌘⇧]')}</span>, run: () => nextAttention() },
+      ...(cur ? [{ id: 'cmd:drawer', title: t('Toggle terminal panel'), icon: <PanelBottomOpen size={16} />, right: <span className="kbd">{keys('⌘J')}</span>, run: () => toggleDrawer(cur.paneId) }] : []),
+      { id: 'cmd:sidebar', title: t('Toggle sidebar'), icon: <PanelLeft size={16} />, right: <span className="kbd">{keys('⌘B')}</span>, run: () => useStore.setState((s) => ({ sidebarHidden: !s.sidebarHidden })) },
+      { id: 'cmd:settings', title: t('Settings'), icon: <Settings size={16} />, right: <span className="kbd">{keys('⌘,')}</span>, run: () => openSettings() }
     ]
     for (const c of cmds) {
       const score = fuzzyScore(q, c.title)

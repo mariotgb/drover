@@ -239,7 +239,7 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
     if (name === 'pathForFile') return () => ''
     if (name === 'then') return undefined
     return async (...args: unknown[]) => {
-      if (!(name in REMOTE_METHOD_CHANNELS)) throw new RemoteCallError('not_available_remotely', t('This action is available on your Mac.'))
+      if (!(name in REMOTE_METHOD_CHANNELS)) throw new RemoteCallError('not_available_remotely', t('This action is available on your computer.'))
       if (name === 'init' && socket?.readyState !== WebSocket.OPEN) {
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(() => { off(); reject(new RemoteCallError('disconnected', t('No connection'))) }, 60_000)

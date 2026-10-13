@@ -68,7 +68,7 @@ test('pins only confirmed host key, re-scans to catch a change, and gathers key-
   assert.equal(probe.known, false)
   f.scan = `example.invalid ssh-ed25519 ${blob(8)}`
   await assert.rejects(f.connect(machine), /key changed/)
-  assert.equal(f.calls.some(c => c.file === 'ssh'), false)
+  assert.equal(f.calls.some(c => c.file === 'ssh' && !c.args.includes('PreferredAuthentications=none')), false)
   f.scan = hostKey
   const checked = await f.connect(machine)
   assert.equal(checked.status.state, 'online')
@@ -541,6 +541,29 @@ test('launch pointers preserve native user arguments and IPC denies non-desktop 
   assert.equal(calls, 1)
 })
 
+test('administrator key picker is desktop-only, opens hidden SSH files and returns only one path', async () => {
+  const handlers = new Map(), calls = [], path = '/home/fixture/.ssh/admin_ed25519'
+  let result = { canceled: false, filePaths: [path, '/home/fixture/unused'] }
+  m.registerMachinesIpc({ handle(channel, fn) { handlers.set(channel, fn) } }, {}, event => event.desktop, { home: '/home/fixture', open: async options => { calls.push(options); return result } })
+  const choose = handlers.get('machines:choose-bridge-key-file')
+  await assert.rejects(choose({ desktop: false }), /local desktop/)
+  assert.equal(calls.length, 0)
+  assert.equal(await choose({ desktop: true }), path)
+  assert.equal(calls[0].defaultPath, '/home/fixture/.ssh')
+  assert.deepEqual(calls[0].properties, ['openFile', 'showHiddenFiles'])
+  result = { canceled: true, filePaths: [path] }; assert.equal(await choose({ desktop: true }), null)
+  result = { canceled: false, filePaths: [] }; assert.equal(await choose({ desktop: true }), null)
+})
+
+test('desktop IPC preserves safe machine error codes and hides unexpected exception details', async () => {
+  const handlers = new Map()
+  let error = new m.MachinesFailure('bridge_admin_key_rejected', 'The server rejected the administrator key.')
+  m.registerMachinesIpc({ handle(channel, fn) { handlers.set(channel, fn) } }, { state() { throw error } }, () => true)
+  await assert.rejects(handlers.get('machines:state')({}), { message: '[bridge_admin_key_rejected] The server rejected the administrator key.' })
+  error = new Error('private unexpected exception')
+  await assert.rejects(handlers.get('machines:state')({}), { message: 'The machine operation could not be completed.' })
+})
+
 test('confirmation options survive preload and desktop IPC forwarding', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'drover-preload-test-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
   await build({ entryPoints: ['src/preload/index.ts'], outfile: join(dir, 'preload.cjs'), bundle: true, platform: 'node', format: 'cjs', external: ['electron'], alias: { '@shared': resolve('src/shared') }, logLevel: 'silent' })
@@ -556,6 +579,18 @@ test('confirmation options survive preload and desktop IPC forwarding', async t 
   m.registerMachinesIpc({ handle(channel, fn) { handlers.set(channel, fn) } }, service, () => true)
   for (const [channel, ...args] of globalThis.__droverPreloadCalls) await handlers.get(channel)({}, ...args)
   assert.deepEqual(calls, [['remove', 'machine', confirmed], ['setBridge', 'machine', confirmed], ['revokeAgentsKey', confirmed], ['setupBridge', 'machine', setup]])
+  await api.chooseBridgeKeyFile()
+  assert.deepEqual(globalThis.__droverPreloadCalls.at(-1), ['machines:choose-bridge-key-file'])
+  const adopt = { acceptedFingerprint: 'fingerprint', user: 'root', keyPath: '/home/fixture/.ssh/admin_ed25519' }
+  await api.adoptExistingBridge(adopt)
+  assert.deepEqual(globalThis.__droverPreloadCalls.at(-1), ['machines:adopt-existing-bridge', adopt])
+  await api.probeHostKey('example.invalid', 22, 'admin')
+  const probe = globalThis.__droverPreloadCalls.at(-1)
+  assert.deepEqual(probe, ['machines:probe-host-key', 'example.invalid', 22, 'admin'])
+  const probes = [], probeHandlers = new Map()
+  m.registerMachinesIpc({ handle(channel, fn) { probeHandlers.set(channel, fn) } }, { probeHostKey: (...args) => probes.push(args) }, () => true)
+  await probeHandlers.get(probe[0])({}, ...probe.slice(1))
+  assert.deepEqual(probes, [['example.invalid', 22, 'admin']])
 })
 test('subprocess fake ssh enforces private config arguments and redacts failed password output', async t => {
   const f = fixture(t)

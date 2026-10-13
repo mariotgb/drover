@@ -1,81 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join, basename } from 'node:path'
-import { bypassArgs, modelArgs, supportsModels, type ModelChoice } from '@shared/models'
+import { supportsModels, type ModelChoice } from '@shared/models'
 import { HerdrApiError, type AgentInfo, type HerdrSnapshot, type NewAgentRequest, type TranscriptMeta } from '@shared/types'
 import type { AgentLaunch, RestartCandidate, RestartPlan, RestartResult, RestartSelection } from '@shared/agentRestart'
 import type { HerdrService } from './herdr/service'
 import { waitUntilInteractive } from './actions'
-import { writeBossJson } from './boss/store'
+import { bypassFlags, launchChoice, restartArgs, sanitizeAgentLaunch, sanitizeLaunchArgs, safeLaunchChoice } from './agentLaunchArgs'
+import { AgentRestore, writeRestoreJson } from './agentRestore'
+export { launchChoice, restartArgs, resumeArgs } from './agentLaunchArgs'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-const bypassFlags = new Set(['--dangerously-skip-permissions', '--dangerously-bypass-approvals-and-sandbox', '--yolo'])
-const permissionFlags = new Set([...bypassFlags, '--full-auto', '--approve-for-me'])
-type Kind = 'claude' | 'codex'
-type Arity = 0 | 1 | 'optional' | 'many'
-const flags = (groups: [Arity, string][]): Map<string, Arity> => new Map(groups.flatMap(([arity, names]) => names.split(' ').map(name => [name, arity] as const)))
-const CLAUDE_FLAGS = flags([
-  [0, '-c --continue -p --print --fork-session --dangerously-skip-permissions --allow-dangerously-skip-permissions --bare --brief --chrome --no-chrome --ide --disable-slash-commands --strict-mcp-config --safe-mode --restricted --no-session-persistence --verbose --ax-screen-reader'],
-  [1, '--model --effort --permission-mode --session-id --settings --setting-sources --append-system-prompt --append-system-prompt-file --system-prompt --system-prompt-file --agent --agents --fallback-model --plugin-dir --plugin-url -n --name --debug-file --output-format --input-format --json-schema --max-budget-usd --permission-prompts --permission-prompt-tool --autocompact'],
-  ['optional', '-r --resume -d --debug --from-pr --prompt-suggestions --remote-control'],
-  ['many', '--add-dir --mcp-config --allowedTools --allowed-tools --disallowedTools --disallowed-tools --tools --betas --file']
-])
-const CODEX_FLAGS = flags([
-  [0, '--last --all --full-auto --yolo --dangerously-bypass-approvals-and-sandbox --approve-for-me --dangerously-bypass-hook-trust --oss --search --no-alt-screen --no-daemon --strict-config --include-non-interactive --worktree'],
-  [1, '-c --config -m --model -s --sandbox -a --ask-for-approval --approval-policy -p --profile -C --cd --add-dir --enable --disable --local-provider --remote --remote-auth-token-env'],
-  ['many', '-i --image']
-])
-interface LaunchOption { flag: string; tokens: string[]; value?: string }
-/** Native argv has different meanings for -c/-p; never consume a following flag as a value. */
-function launchOptions(kind: Kind, args: string[]): LaunchOption[] {
-  const table = kind === 'claude' ? CLAUDE_FLAGS : CODEX_FLAGS, out: LaunchOption[] = []
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]
-    if (arg === '--') break
-    if (kind === 'codex' && ['resume', 'fork'].includes(arg)) { if (args[i + 1] && !args[i + 1].startsWith('-')) i++; continue }
-    if (!arg.startsWith('-')) continue // Launch/session prompts are never replayed.
-    const equals = arg.indexOf('='), flag = equals < 0 ? arg : arg.slice(0, equals)
-    const arity = table.get(flag), tokens = [arg]
-    let value = equals < 0 ? undefined : arg.slice(equals + 1)
-    if (equals < 0 && arity !== 0 && arity !== undefined && args[i + 1] && !args[i + 1].startsWith('-')) {
-      value = args[++i]; tokens.push(value)
-      if (arity === 'many') while (args[i + 1] && !args[i + 1].startsWith('-')) tokens.push(args[++i])
-    }
-    if (arity === 1 && value === undefined) continue // Do not preserve dangling options.
-    out.push({ flag, tokens, value })
-  }
-  return out
-}
-
-/** Keep launch options, replacing conversation, model and permission settings. Never append a prompt. */
-export function restartArgs(kind: 'claude' | 'codex', original: string[], sessionId: string | null, choice: ModelChoice, bypass: boolean): string[] {
-  const rest: string[] = []
-  const replace = kind === 'claude'
-    ? new Set(['-c', '--continue', '-r', '--resume', '--session-id', '--model', '--effort', '--permission-mode', '--fork-session', '--from-pr', '-p', '--print', '--output-format', '--input-format', '--allow-dangerously-skip-permissions'])
-    : new Set(['--last', '--all', '-m', '--model', '-a', '--ask-for-approval', '--approval-policy', '-s', '--sandbox', '-i', '--image', '--worktree'])
-  for (const option of launchOptions(kind, original)) {
-    if (permissionFlags.has(option.flag) || replace.has(option.flag)) continue
-    if (kind === 'codex' && ['-c', '--config'].includes(option.flag) && /^(model|model_reasoning_effort|approval_policy|sandbox_mode)\s*=/.test(option.value ?? '')) continue
-    rest.push(...option.tokens)
-  }
-  const effectiveChoice = { ...launchChoice(kind, original), ...Object.fromEntries(Object.entries(choice).filter(([, v]) => v)) }
-  const permissions = bypass ? bypassArgs(kind, true) : kind === 'claude' ? ['--permission-mode', 'manual'] : ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write']
-  return [...(sessionId ? kind === 'claude' ? ['--resume', sessionId] : ['resume', sessionId] : []), ...rest, ...modelArgs(kind, effectiveChoice), ...permissions]
-}
-
-export function launchChoice(kind: Kind, args: string[]): ModelChoice {
-  const choice: ModelChoice = {}
-  for (const { flag, value } of launchOptions(kind, args)) {
-    if (flag === '--model' || kind === 'codex' && flag === '-m') choice.model = value
-    else if (kind === 'claude' && flag === '--effort') choice.effort = value
-    else if (kind === 'codex' && (flag === '-c' || flag === '--config')) {
-      const m = value?.match(/^(model|model_reasoning_effort)\s*=\s*["']?([^"']+)["']?$/)
-      if (m) choice[m[1] === 'model' ? 'model' : 'effort'] = m[2]
-    }
-  }
-  return choice
-}
-
 interface ProcessInfo {
   shell_pid?: number | null
   foreground_processes?: { pid: number; name: string; argv?: string[] | null; argv0?: string | null }[]
@@ -91,16 +26,57 @@ export class AgentRestartService {
   private busy = new Set<string>()
   private save = Promise.resolve()
   private file: string
+  private restoreService: AgentRestore
+  private observing: Promise<void> = Promise.resolve()
   constructor(private service: HerdrService, userData: string, private transcript: (paneId: string) => Promise<TranscriptMeta | null>,
-    private onRestart?: (paneId: string, launch: AgentLaunch) => Promise<void>) {
+    private onRestart?: (paneId: string, launch: AgentLaunch) => Promise<void>, enabled: () => boolean = () => true) {
     this.file = join(userData, 'agent-launches.json')
+    let scrub = false
     try {
       const data = JSON.parse(readFileSync(this.file, 'utf8'))
       for (const [key, v] of Object.entries(data)) {
         const a = v as AgentLaunch
-        if (a && supportsModels(a.kind) && typeof a.terminalId === 'string' && typeof a.bypass === 'boolean' && Array.isArray(a.args) && a.args.every(s => typeof s === 'string')) this.launches[key] = a
+        if (a && supportsModels(a.kind) && typeof a.terminalId === 'string' && typeof a.bypass === 'boolean' && Array.isArray(a.args) && a.args.every(s => typeof s === 'string')) {
+          this.launches[key] = sanitizeAgentLaunch(a)
+          if (JSON.stringify(a) !== JSON.stringify(this.launches[key])) scrub = true
+        } else scrub = true
       }
     } catch { /* first run or corrupt cache */ }
+    if (scrub) void this.persist().catch(() => console.warn('[agent-restore] cache scrub failed: error'))
+    this.restoreService = new AgentRestore({ get: (paneId, session) => this.launches[`${session ?? this.service.sessionName}:${paneId}`],
+      record: (agent, args) => this.remember(agent, args) }, userData)
+    service.agentRestore = {
+      prepare: async (session, dir, version, guard) => {
+        if (!enabled()) return
+        const context = this.context()
+        await this.observing
+        const noDaemon = await service.codexLaunch.supportsNoDaemon()
+        if (!this.currentContext(context)) return
+        await this.restoreService.prepare(session, dir, version, noDaemon, () => this.currentContext(context), guard)
+      },
+      restore: async (client, current) => {
+        if (!enabled()) return
+        await this.restoreService.restore(service.sessionName, client, current, async entry => {
+          if (!current()) return
+          await service.request('agent.start', { pane_id: entry.paneId, kind: entry.ref.agent,
+            name: entry.name || `drover-resume-${randomUUID().slice(0, 8)}`, args: entry.args, timeout_ms: 120000 }, 130000)
+          const state = await waitUntilInteractive(this.boundService(this.context()), entry.paneId, 120000)
+          if (state !== 'ready') throw new HerdrApiError('agent_not_ready', 'The resumed agent did not become interactive')
+        })
+      },
+      sessionDir: dir => this.restoreService.setSessionDir(dir),
+      observe: snapshot => {
+        if (!enabled()) return
+        const ctx = this.context()
+        this.observing = this.observing.catch(() => {}).then(async () => {
+          if (this.currentContext(ctx)) await this.observe(snapshot, ctx)
+        }).catch(error => console.warn('[agent-restore] capture failed:', error instanceof HerdrApiError ? error.code : 'error'))
+      },
+      launched: async (params) => {
+        if (!enabled() || !supportsModels(String(params.kind))) return
+        await this.recordLaunch({ kind: params.kind as 'claude' | 'codex', args: params.args as string[] } as NewAgentRequest, String(params.pane_id))
+      }
+    }
   }
   private key(paneId: string) { return `${this.service.sessionName}:${paneId}` }
   private context(): Context { return { session: this.service.sessionName, generation: this.service.connectionGeneration, client: this.service.client } }
@@ -123,25 +99,63 @@ export class AgentRestartService {
     return saved?.terminalId === a.terminal_id && saved.kind === a.agent && (!saved.sessionId || !a.agent_session?.value || saved.sessionId === a.agent_session.value) ? saved : undefined
   }
   private persist() {
+    this.launches = Object.fromEntries(Object.entries(this.launches).map(([key, launch]) => [key, sanitizeAgentLaunch(launch)]))
     const data = structuredClone(this.launches)
-    const save = this.save.catch(() => {}).then(() => writeBossJson(this.file, data))
+    const save = this.save.catch(() => {}).then(() => writeRestoreJson(this.file, data))
     this.save = save
     return save
   }
   async recordLaunch(req: NewAgentRequest, paneId: string) {
     if (!supportsModels(req.kind)) return
-    const context = this.context(), key = `${context.session}:${paneId}`
+    const context = this.context()
     let agent: AgentInfo
     try { ({ agent } = await this.boundService(context).request<{ agent: AgentInfo }>('agent.get', { target: paneId })) }
     catch (error) { if (!this.currentContext(context)) return; throw error }
     if (agent.agent !== req.kind) return
-    this.launches[key] = { kind: req.kind, terminalId: agent.terminal_id, sessionId: agent.agent_session?.kind === 'id' ? agent.agent_session.value : null, args: [...req.args], bypass: req.args.some(a => bypassFlags.has(a)), ...launchChoice(req.kind, req.args) }
-    await this.persist()
+    await this.remember(agent, req.args, undefined, true)
+    if (!this.currentContext(context)) return
     this.service.scheduleRefresh()
   }
   async recordChoice(paneId: string, choice: ModelChoice) {
     const saved = this.launches[this.key(paneId)]
-    if (saved) { Object.assign(saved, Object.fromEntries(Object.entries(choice).filter(([, v]) => v))); await this.persist() }
+    if (saved) { const patch = safeLaunchChoice(choice); Object.assign(saved, patch); saved.choice = { ...saved.choice, ...patch }; await this.persist(); this.service.scheduleRefresh() }
+  }
+  private async remember(agent: AgentInfo, args: string[], processId?: number, fresh = false) {
+    if (!supportsModels(agent.agent)) return
+    const cached = this.launches[this.key(agent.pane_id)]
+    const saved = !fresh && cached?.kind === agent.agent && cached.terminalId === agent.terminal_id && (!processId || !cached.processId || processId === cached.processId) ? cached : undefined
+    this.launches[this.key(agent.pane_id)] = sanitizeAgentLaunch({ kind: agent.agent, terminalId: agent.terminal_id,
+      sessionId: agent.agent_session?.kind === 'id' ? agent.agent_session.value : saved?.sessionId ?? null,
+      name: agent.name ?? null, cwd: agent.cwd, processId, args: [...args],
+      bypass: args.some(a => bypassFlags.has(a) || a === '--permission-mode=bypassPermissions') ||
+        args.some((a, i) => a === '--permission-mode' && args[i + 1] === 'bypassPermissions'),
+      ...launchChoice(agent.agent, args), ...(saved?.choice ? { choice: saved.choice, ...saved.choice } : {}),
+      ...(saved?.restoreUnavailable ? { restoreUnavailable: true } : {}) })
+    await this.persist()
+  }
+  private async observe(snapshot: HerdrSnapshot, ctx: Context) {
+    const service = this.boundService(ctx)
+    await this.restoreService.invalidate(snapshot, ctx.session)
+    for (const candidate of snapshot.agents) {
+      if (!supportsModels(candidate.agent) || candidate.launch_pending) continue
+      const cached = this.launches[this.key(candidate.pane_id)]
+      const saved = cached?.kind === candidate.agent && cached.terminalId === candidate.terminal_id ? cached : undefined
+      const { process_info } = await service.request<{ process_info: ProcessInfo }>('pane.process_info', { pane_id: candidate.pane_id })
+      const process = nativeProcess(candidate.agent, process_info)
+      const sameProcess = !process || !saved?.processId || process.pid === saved.processId
+      const args = sameProcess && saved ? saved.args : process?.args
+      const processId = process?.pid ?? saved?.processId
+      // Sequence precedes identity observation; a newer official hook wins a race.
+      const observedSeq = (Date.now() - 1) * 1_000_000
+      const { agent } = await service.request<{ agent: AgentInfo }>('agent.get', { target: candidate.pane_id })
+      if (agent.agent !== candidate.agent || agent.terminal_id !== candidate.terminal_id || !args) continue
+      // A /clear changes the native session but keeps the process's launch policy.
+      if (!saved || JSON.stringify([saved.args, saved.sessionId, saved.name, saved.cwd, saved.processId]) !==
+        JSON.stringify([args, agent.agent_session?.value ?? saved.sessionId, agent.name ?? null, agent.cwd, processId])) await this.remember(agent, args, processId)
+      const launch = this.launches[this.key(agent.pane_id)]
+      if (ctx.client && !launch.restoreUnavailable) await this.restoreService.report(agent, args, launch.choice, this.service.connection.version, ctx.client, observedSeq)
+      this.assertContext(ctx)
+    }
   }
   decorate(snapshot: HerdrSnapshot | null): HerdrSnapshot | null {
     if (!snapshot) return null
@@ -166,19 +180,18 @@ export class AgentRestartService {
       if (!supportsModels(a.agent)) continue
       const saved = this.stored(a)
       const info = await service.request<{ process_info: ProcessInfo }>('pane.process_info', { pane_id: a.pane_id })
-      const process = info.process_info.foreground_processes?.find(p => p.argv?.some(arg => /^(claude|codex)(?:\.js)?$/.test(basename(arg))))
+      const process = nativeProcess(a.agent, info.process_info)
       const foregroundPid = process?.pid ?? info.process_info.foreground_processes?.find(p => p.pid !== info.process_info.shell_pid)?.pid
       const shellPid = info.process_info.shell_pid
       if (!foregroundPid || !shellPid) { skipped.push({ paneId: a.pane_id, name: a.name || a.agent, reason: 'agent_not_ready' }); continue }
-      const argv = process?.argv ?? []
-      const executable = argv.findIndex(arg => /^(claude|codex)(?:\.js)?$/.test(basename(arg)))
-      const args = executable >= 0 ? argv.slice(executable + 1) : saved?.args ?? []
+      const args = process?.args ?? saved?.args ?? []
+      if (saved?.restoreUnavailable || sanitizeLaunchArgs(a.agent, args).unavailable) { skipped.push({ paneId: a.pane_id, name: a.name || a.agent, reason: 'restore_unavailable' }); continue }
       const meta = await this.transcript(a.pane_id)
       this.assertContext(context)
       const sessionId = a.agent_session?.kind === 'id' && a.agent_session.agent === a.agent ? a.agent_session.value : meta?.agent === a.agent && meta.located === 'exact' ? meta.sessionId || null : null
       const choice = { ...launchChoice(a.agent, args), ...(saved?.model ? { model: saved.model } : {}), ...(saved?.effort ? { effort: saved.effort } : {}), ...(meta?.model ? { model: meta.model } : {}), ...(meta?.effort ? { effort: meta.effort } : {}) }
-      const bypass = executable >= 0 ? args.some(arg => bypassFlags.has(arg) || arg === '--permission-mode=bypassPermissions') || args.some((arg, i) => arg === '--permission-mode' && args[i + 1] === 'bypassPermissions') : saved?.bypass ?? false
-      this.launches[this.key(a.pane_id)] = { kind: a.agent, terminalId: a.terminal_id, sessionId, args, bypass, ...choice }
+      const bypass = process ? args.some(arg => bypassFlags.has(arg) || arg === '--permission-mode=bypassPermissions') || args.some((arg, i) => arg === '--permission-mode' && args[i + 1] === 'bypassPermissions') : saved?.bypass ?? false
+      this.launches[this.key(a.pane_id)] = { kind: a.agent, terminalId: a.terminal_id, sessionId, args, bypass, ...choice, cwd: a.cwd, name: a.name, processId: foregroundPid, choice: saved?.choice }
       if (selection.workspaceId && bypass === selection.bypass) { skipped.push({ paneId: a.pane_id, name: a.name || a.agent, reason: 'already_bypass' }); continue }
       entries.push({ paneId: a.pane_id, name: a.name || a.agent, originalName: a.name ?? null, kind: a.agent, terminalId: a.terminal_id, sessionId, bypass, args, choice, foregroundPid, shellPid })
     }
@@ -248,8 +261,11 @@ export class AgentRestartService {
       if (!(e instanceof HerdrApiError) || !['agent_not_found', 'not_found'].includes(e.code)) throw e
     }
     await ensureShell()
+    const recordedBeforeStart = this.launches[this.key(entry.paneId)]
     await service.request('agent.start', { name: entry.originalName || `drover-resume-${randomUUID().slice(0, 8)}`, kind: entry.kind, pane_id: entry.paneId, args, timeout_ms: 120000 }, 60000)
-    this.launches[this.key(entry.paneId)] = { kind: entry.kind, terminalId: entry.terminalId, sessionId: entry.sessionId, args, bypass, ...entry.choice }
+    const actual = this.launches[this.key(entry.paneId)]
+    const actualArgs = actual !== recordedBeforeStart && actual?.terminalId === entry.terminalId && actual.kind === entry.kind ? actual.args : args
+    this.launches[this.key(entry.paneId)] = { kind: entry.kind, terminalId: entry.terminalId, sessionId: entry.sessionId, args: actualArgs, bypass, ...entry.choice, name: entry.originalName, cwd: agent.cwd }
     await this.persist()
     this.assertContext(context)
     const state = await waitUntilInteractive(service, entry.paneId, 30000)
@@ -275,4 +291,16 @@ export class AgentRestartService {
 
 function atShell(info: ProcessInfo): boolean {
   return !!info.shell_pid && !!info.foreground_processes?.length && info.foreground_processes.every(p => p.pid === info.shell_pid)
+}
+
+/** Native processes can be an executable, an npm shim, or node plus a package CLI. */
+export function nativeProcess(kind: 'claude' | 'codex', info: ProcessInfo): { args: string[]; pid: number } | null {
+  for (const process of info.foreground_processes ?? []) {
+    const argv = process.argv ?? []
+    const index = argv.findIndex((arg, i) => i < 3 &&
+      (basename(arg.replaceAll(String.fromCharCode(92), '/')).replace(/\.(?:js|cjs|mjs|exe|cmd)$/i, '') === kind ||
+        kind === 'claude' && /(?:^|[/\\])@anthropic-ai[/\\]claude-code[/\\]cli\.js$/.test(arg)))
+    if (index >= 0) return { args: argv.slice(index + 1), pid: process.pid }
+  }
+  return null
 }

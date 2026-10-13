@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { Cable, Check, ChevronRight, Copy, House, KeyRound, Minus, Plus, RefreshCw, Server, Smartphone, TriangleAlert } from 'lucide-react'
 import { locale, t, tp } from '../i18n'
@@ -8,7 +8,7 @@ import { Spinner } from './primitives'
 import { AddMachineWizard, BridgedHostKey, HostKeyCard, InstallCommandPanel } from './AddMachineWizard'
 import { BridgeChecklist, BridgeWizard, UpgradeBridge, useBridgeJob } from './BridgeWizard'
 import type { MachineChecks } from '@shared/machines'
-import { ago, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, phoneOnlyBridge, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
+import { ago, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, phoneOnlyBridge, type BridgeAdoptOptions, type BridgeKeyCandidate, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
 
 export function MachinesSettings() {
   const machines = machinesApi()
@@ -100,7 +100,7 @@ function BridgeFacts({ url, tunnel, children }: { url?: string; tunnel: 'running
   return (
     <ul className="bridge-facts">
       <li className={url ? 'ok' : 'off'}>{url ? <Check size={12} strokeWidth={2.6} /> : <Minus size={12} />}<span>{t('Phone site')}</span>{url ? <code>{url}</code> : <span className="dim">{t('not set up')}</span>}</li>
-      <li className={tunnel === 'running' ? 'ok' : 'warn'}>{tunnel === 'running' ? <Check size={12} strokeWidth={2.6} /> : <TriangleAlert size={12} />}<span>{t('Mac tunnel')}</span><span className="dim">{tunnel === 'running' ? t('running') : tunnel === 'stopped' ? t('stopped') : t('not set up')}</span></li>
+      <li className={tunnel === 'running' ? 'ok' : 'warn'}>{tunnel === 'running' ? <Check size={12} strokeWidth={2.6} /> : <TriangleAlert size={12} />}<span>{t('Computer tunnel')}</span><span className="dim">{tunnel === 'running' ? t('running') : tunnel === 'stopped' ? t('stopped') : t('not set up')}</span></li>
       {children}
     </ul>
   )
@@ -111,7 +111,7 @@ function PhoneOnlyNote() {
   return <p className="machine-note"><Smartphone size={13} /><span>{t('For now this bridge only serves your phone. Home machines can connect through it after you upgrade it.')}</span></p>
 }
 
-const WHY = () => t('A bridge is a small server with a public IP (a VPS), so your machines and phone can reach this Mac from anywhere.')
+const WHY = () => t('A bridge is a small server with a public IP (a VPS), so your machines and phone can reach this computer from anywhere.')
 
 function BridgeCard({ api, state, bridge, report, onReport, onOpen, onSetup }: { api: BridgeApi; state: MachinesState; bridge: Machine | null; report: BridgeProgress[] | null; onReport: (steps: BridgeProgress[] | null) => void; onOpen: (id: string) => void; onSetup: () => void }) {
   const detect = useDetectBridge(api, !!bridge)
@@ -130,8 +130,8 @@ function BridgeCard({ api, state, bridge, report, onReport, onOpen, onSetup }: {
           </div>
           <div className="setting-hint">
             {setup?.state === 'running' ? t('Setting up: {step}', { step: setup.step ?? '…' })
-              : working && phoneOnlyBridge(bridge) ? t('Your phone reaches this Mac through it.')
-              : working ? `${t('Your machines and phone reach this Mac through it — no router setup needed.')} ${homes.length ? tp({ one: '{online} of {n} home machine connected.', other: '{online} of {n} home machines connected.' }, homes.length, { online: homesOnline }) : ''}`
+              : working && phoneOnlyBridge(bridge) ? t('Your phone reaches this computer through it.')
+              : working ? `${t('Your machines and phone reach this computer through it — no router setup needed.')} ${homes.length ? tp({ one: '{online} of {n} home machine connected.', other: '{online} of {n} home machines connected.' }, homes.length, { online: homesOnline }) : ''}`
               : machineErrorText(bridge.status.error ?? setup?.error ?? { code: 'bridge_down' }, bridge, bridge.name)}
           </div>
           <PhoneTunnelNote machine={bridge} />
@@ -162,7 +162,7 @@ function BridgeCard({ api, state, bridge, report, onReport, onOpen, onSetup }: {
         <span className="bridge-icon"><Spinner size={13} /></span>
         <div className="bridge-text">
           <div className="bridge-title">{t('Looking for your bridge…')}</div>
-          <div className="setting-hint">{t('Checking this Mac for a bridge you set up earlier.')}</div>
+          <div className="setting-hint">{t('Checking this computer for a bridge you set up earlier.')}</div>
         </div>
       </div>
     )
@@ -178,59 +178,145 @@ function FoundBridge({ api, found, onReport, onAgain }: { api: BridgeApi; found:
   const [matches, setMatches] = useState(false)
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState('')
-  // Without an admin key on this Mac, one sign-in with a one-time password installs Drover's own admin key.
+  // Without a configured admin key: use a key file from this Mac (preferred), or a one-time password if the server allows it.
+  const signIn = !found.adminKey
+  const [keys, setKeys] = useState<BridgeKeyCandidate[]>(found.adminKeyCandidates ?? [])
+  const [keyPath, setKeyPath] = useState(found.adminKeyCandidates?.[0]?.path ?? '')
+  const [method, setMethod] = useState<'key' | 'password'>('key')
   const [user, setUser] = useState('root')
   const [password, setPassword] = useState('')
-  const signIn = !found.adminKey
   const url = found.phoneUrl ?? found.publicUrl
   const tunnel = found.tunnelRunning || found.macTunnel === 'running' ? 'running' : found.macTunnel
+  // Each probe answers for one login (the server may allow passwords for some accounts only).
+  // Only the newest request may update the card; older answers are dropped.
+  const probeSeq = useRef(0)
+  const lastPrint = useRef<string | null>(null)
+  const [probedUser, setProbedUser] = useState<string | null>(null)
+  const login = user.trim()
+  const probe = async (forUser?: string): Promise<HostKey | null> => {
+    const seq = ++probeSeq.current
+    setChecking(true)
+    setError('')
+    try {
+      const k = await api.probeHostKey(found.host, found.port, forUser)
+      if (seq !== probeSeq.current) return null
+      // A different server key needs confirming again; the same key stays confirmed across logins.
+      if (lastPrint.current !== k.fingerprint) { lastPrint.current = k.fingerprint; setMatches(k.known) }
+      setHostKey(k)
+      setProbedUser(forUser ?? null)
+      return k
+    } catch (e) {
+      if (seq === probeSeq.current) setError(errorText(e))
+      return null
+    } finally { if (seq === probeSeq.current) setChecking(false) }
+  }
+  // Signing in needs to know whether the server accepts passwords for this login: probe at once, then
+  // again ~300 ms after the login stops changing.
+  useEffect(() => {
+    if (!signIn) return
+    // Any edit invalidates answers in flight at once, before the debounce, so none can land for an
+    // old login (even when the login is changed back). The password and method belong to the old login too.
+    probeSeq.current++
+    setProbedUser(null)
+    setChecking(false)
+    setMethod('key')
+    setPassword('')
+    if (!login) return
+    const id = setTimeout(() => void probe(login), hostKey ? 300 : 0)
+    return () => clearTimeout(id)
+  }, [login])
+  const loginPending = signIn && probedUser !== login
+  const passwordAllowed = !loginPending && !!hostKey?.passwordAllowed
+  const usePassword = method === 'password' && passwordAllowed
+  const choose = async () => {
+    setError('')
+    try {
+      // The picker returns a path only; the file is checked when Drover connects with it.
+      const path = await api.chooseBridgeKeyFile!()
+      if (!path) return
+      const picked = keys.find((k) => k.path === path) ?? { path, name: path.split('/').pop() || path, fingerprint: '', algorithm: '', comment: '' }
+      setKeys((list) => [picked, ...list.filter((k) => k.path !== path)])
+      setKeyPath(path)
+    } catch (e) { setError(errorText(e)) }
+  }
   const connect = async () => {
     setError('')
     let key = hostKey
     if (!key) {
       // No local pin: show the server's key first; the user confirms, then presses Connect again.
-      setChecking(true)
-      try { key = await api.probeHostKey(found.host, found.port); setHostKey(key); setMatches(key.known) } catch (e) { setError(errorText(e)) } finally { setChecking(false) }
+      key = await probe(signIn ? login : undefined)
       if (!key?.known) return
     }
-    const secret = signIn ? password : undefined
+    const secret = usePassword ? password : undefined
     // The password is good for one attempt only, whatever the outcome.
     setPassword('')
-    const report = await job.start(() => api.adoptExistingBridge!(signIn ? { acceptedFingerprint: key!.fingerprint, user: user.trim() || 'root', password: secret } : { acceptedFingerprint: key!.fingerprint }), !!url)
+    const options: BridgeAdoptOptions = !signIn ? { acceptedFingerprint: key.fingerprint }
+      : usePassword ? { acceptedFingerprint: key.fingerprint, user: user.trim() || 'root', password: secret }
+      : { acceptedFingerprint: key.fingerprint, user: user.trim() || 'root', keyPath }
+    const report = await job.start(() => api.adoptExistingBridge!(options), !!url)
     if (report) onReport(report.steps)
   }
   const confirmed = !!hostKey && (hostKey.known || matches)
+  const ready = !signIn || (!!user.trim() && (usePassword ? !!password : !!keyPath))
+  const editing = job.phase !== 'running' && job.phase !== 'done'
   return (
     <div className="bridge-card found">
       <span className="bridge-icon"><Cable size={16} /></span>
       <div className="bridge-text">
         <div className="bridge-title">{t('Found your bridge')}<span className="dim">{found.host}</span></div>
-        <p className="setting-hint">{t('Set up earlier on this Mac. Connect it so Drover can use and check it.')} {WHY()}</p>
+        <p className="setting-hint">{t('Set up earlier on this computer. Connect it so Drover can use and check it.')} {WHY()}</p>
         <BridgeFacts url={url} tunnel={tunnel}>
-          {!found.adminKey && <li className="warn"><TriangleAlert size={12} /><span>{t('Admin key')}</span><span className="dim">{t('not on this Mac yet — sign in once below')}</span></li>}
+          {signIn && <li className="warn"><TriangleAlert size={12} /><span>{t('Admin key')}</span><span className="dim">{t('not chosen yet — pick it below')}</span></li>}
         </BridgeFacts>
         {hostKey && !hostKey.known && job.phase === 'idle' && <HostKeyCard hostKey={hostKey} matches={matches} onMatches={setMatches} hint={t('Compare it with the fingerprint in your provider’s console. If they match, Drover remembers this key and refuses to connect if it ever changes.')} />}
-        {signIn && job.phase !== 'running' && job.phase !== 'done' && (
+        {signIn && editing && (
           <div className="bridge-signin">
-            <p className="setting-hint">{t('Sign in to {host} once as an administrator. Drover installs its own admin key there and forgets the password; nothing else on the server changes.', { host: found.host })}</p>
+            {!usePassword ? <>
+              <div className="bridge-signin-title">{t('Use a key from this computer')}</div>
+              <p className="setting-hint">{keys.length
+                ? t('Pick the SSH key you use to sign in to {host} as an administrator. Drover reads it from this computer only; it never leaves it.', { host: found.host })
+                : t('Drover found no admin key in ~/.ssh. Choose the key file you use to sign in to {host}.', { host: found.host })}</p>
+              {keys.length > 0 && (
+                <div className="bridge-keys" role="radiogroup" aria-label={t('Admin key')}>
+                  {keys.map((k, i) => (
+                    <label key={k.path} className={clsx('bridge-key', keyPath === k.path && 'on')} title={[k.path, k.comment].filter(Boolean).join(' · ')}>
+                      <input type="radio" name="found-key" checked={keyPath === k.path} onChange={() => setKeyPath(k.path)} />
+                      <span className="bridge-key-text">
+                        <span className="bridge-key-name">{k.name}{i === 0 && found.adminKeyCandidates?.[0]?.path === k.path && <span className="machine-badge">{t('Best match')}</span>}</span>
+                        <code className="bridge-key-print">{k.fingerprint ? [k.algorithm, k.fingerprint].filter(Boolean).join(' ') : t('Chosen file · checked when you connect')}</code>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {api.chooseBridgeKeyFile && <button type="button" className="link-btn bridge-choose" onClick={() => void choose()}><KeyRound size={12} />{t('Choose key file…')}</button>}
+            </> : (
+              <>
+                <div className="bridge-signin-title">{t('Sign in with a one-time password')}</div>
+                <p className="setting-hint">{t('Sign in to {host} once as an administrator. Drover installs its own admin key there and forgets the password; nothing else on the server changes.', { host: found.host })}</p>
+              </>
+            )}
             <div className="field-row">
               <div className="field bridge-signin-user">
                 <label htmlFor="found-user">{t('Login')}</label>
                 <input id="found-user" className="input mono" value={user} spellCheck={false} onChange={(e) => setUser(e.target.value)} />
               </div>
-              <div className="field grow">
-                <label htmlFor="found-password">{t('One-time password')}</label>
-                <input id="found-password" className="input" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
-              </div>
+              {usePassword && (
+                <div className="field grow">
+                  <label htmlFor="found-password">{t('One-time password')}</label>
+                  <input id="found-password" className="input" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+                </div>
+              )}
             </div>
+            {passwordAllowed && <button type="button" className="link-btn bridge-method" onClick={() => setMethod(usePassword ? 'key' : 'password')}>{usePassword ? t('Use a key from this computer instead') : t('No key? Use a one-time password instead')}</button>}
           </div>
         )}
         {job.steps && <BridgeChecklist steps={job.steps} label={t('Connecting the bridge')} />}
         {!api.adoptExistingBridge && <p className="machine-note warn">{t('This version of Drover cannot connect an existing bridge yet.')}</p>}
         {error && <p role="alert" className="form-error">{error}</p>}
         <div className="machine-actions bridge-actions">
-          {job.phase !== 'running' && job.phase !== 'done' && (
-            <button type="button" className="btn btn-sm btn-primary" disabled={!api.adoptExistingBridge || (signIn && (!password || !user.trim())) || checking || (!!hostKey && !confirmed)} onClick={() => void connect()}>
+          {editing && (
+            <button type="button" className="btn btn-sm btn-primary" disabled={!api.adoptExistingBridge || !ready || checking || loginPending || (!!hostKey && !confirmed)} onClick={() => void connect()}>
               {checking && <Spinner size={12} />}{job.phase === 'failed' ? t('Try again') : t('Connect this bridge')}
             </button>
           )}
@@ -253,7 +339,7 @@ function NoBridge({ api, state, onSetup, onAgain, detectError }: { api: BridgeAp
       <span className="bridge-icon"><Cable size={16} /></span>
       <div className="bridge-text">
         <div className="bridge-title">{t('No bridge yet')}</div>
-        <p className="setting-hint">{WHY()} {t('Without one, home machines work only while this Mac is on the same home network.')}</p>
+        <p className="setting-hint">{WHY()} {t('Without one, home machines work only while this computer is on the same home network.')}</p>
         {detectError && <p className="machine-note warn bridge-detect-error"><TriangleAlert size={13} /><span>{detectError}</span></p>}
         <div className="machine-actions bridge-actions">
           <button type="button" className="btn btn-sm btn-primary" onClick={onSetup}>{t('Set up bridge')}</button>
@@ -331,7 +417,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
       {m.kind === 'bridged' && isLan(m) && (
         <div className="machine-field">
           <span className="machine-field-label">{t('Home network')}</span>
-          <span className="machine-field-value">{m.host ?? t('Waiting for its address')} <span className="dim">{t('(this Mac reaches it only on the same network)')}</span></span>
+          <span className="machine-field-value">{m.host ?? t('Waiting for its address')} <span className="dim">{t('(this computer reaches it only on the same network)')}</span></span>
         </div>
       )}
       {m.kind === 'bridged' && !isLan(m) && m.bridgePort !== undefined && (
@@ -398,7 +484,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
               <p>{bridge
                 ? t('Make {name} the bridge instead of {bridge}? Drover sets it up, then moves {n} home machines to it. Machines it cannot reach will need their setup command run again.', { name: m.name, bridge: bridge.name, n: homes })
                 : t('Make {name} the bridge? Drover creates the bridge users, sets up the firewall and checks that it works.', { name: m.name })}
-                {bridge?.bridgeConnection && ` ${t('Your phone site stays on {bridge}: this Mac’s phone tunnel keeps running there.', { bridge: bridge.name })}`}</p>
+                {bridge?.bridgeConnection && ` ${t('Your phone site stays on {bridge}: this computer’s phone tunnel keeps running there.', { bridge: bridge.name })}`}</p>
               <PhoneSiteCheck value={caddy} onChange={setCaddy} />
               <div className="machine-actions">
                 <button type="button" className="btn btn-sm" onClick={() => setConfirmBridge(false)}>{t('Cancel')}</button>
@@ -423,7 +509,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
       <div className="machine-section machine-remove">
         {confirmRemove ? (
           <div className="machine-confirm danger">
-            <p>{phoneOnlyBridge(m) ? t('Drover forgets {name}. Nothing changes on the server, and the phone tunnel on this Mac keeps running.', { name: m.name }) : m.bridgeConnection ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge. The phone tunnel on this Mac keeps running.', { name: m.name }) : isBridge ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge.', { name: m.name }) : t('Remove {name}? Agents lose access to it. Nothing on the machine is deleted.', { name: m.name })}</p>
+            <p>{phoneOnlyBridge(m) ? t('Drover forgets {name}. Nothing changes on the server, and the phone tunnel on this computer keeps running.', { name: m.name }) : m.bridgeConnection ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge. The phone tunnel on this computer keeps running.', { name: m.name }) : isBridge ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge.', { name: m.name }) : t('Remove {name}? Agents lose access to it. Nothing on the machine is deleted.', { name: m.name })}</p>
             {suppliedAccount(m) && <SuppliedWarning name={m.name} />}
             <div className="machine-actions">
               <button type="button" className="btn btn-sm" onClick={() => setConfirmRemove(false)}>{t('Cancel')}</button>
@@ -479,7 +565,7 @@ function PhoneSiteCheck({ value, onChange }: { value: boolean; onChange: (v: boo
   return (
     <span className="phone-site">
       <label className="check"><input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />{t('Also serve the phone site (HTTPS)')}</label>
-      {value && <span className="setting-hint">{t('Sets up the HTTPS address on the bridge. Linking this Mac to it is still done in Settings › Remote access.')}</span>}
+      {value && <span className="setting-hint">{t('Sets up the HTTPS address on the bridge. Linking this computer to it is still done in Settings › Remote access.')}</span>}
     </span>
   )
 }
@@ -489,7 +575,7 @@ function PhoneTunnelNote({ machine: m }: { machine: Machine }) {
   return (
     <p className="machine-note warn">
       <TriangleAlert size={13} />
-      <span>{t('Caddy route is ready. Finish the Mac reverse tunnel in Remote access (docs/remote-access.md) to make the phone site reachable.')}</span>
+      <span>{t('Caddy route is ready. Finish this computer’s reverse tunnel in Remote access (docs/remote-access.md) to make the phone site reachable.')}</span>
     </p>
   )
 }
@@ -515,7 +601,7 @@ const access = (m: Machine): { id: MachineAccess; label: string; hint: string; u
       hint: t('Agents can read files and logs but not change anything. Enforced on the machine by a bubblewrap sandbox: needs Linux with bubblewrap installed, otherwise agents get no access at all.'),
       unavailable: noSandbox ? t('Read-only needs Linux with bubblewrap. It is not available on {os}.', { os: osName(m.os) }) : undefined
     },
-    { id: 'projects', label: t('Selected projects'), hint: t('Only agents of the projects you tick are told about this machine. Advisory scope: agents sharing this Mac account can still access the key; this is not a security boundary.') }
+    { id: 'projects', label: t('Selected projects'), hint: t('Only agents of the projects you tick are told about this machine. Advisory scope: agents sharing this computer’s user account can still access the key; this is not a security boundary.') }
   ]
 }
 

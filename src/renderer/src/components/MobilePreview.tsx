@@ -90,7 +90,7 @@ export function PreviewSheet({ paneId, recentId, onClose }: { paneId: string; re
         {state.phase === 'loading' && <div className="mw-preview-note" role="status"><Spinner size={20} /><p>{t('Loading preview…')}</p></div>}
         {link && (link.reachable
           ? <iframe key={frame} className="mw-preview-frame" src={link.url} title={link.label} sandbox={SANDBOX} referrerPolicy="no-referrer" />
-          : <PreviewNote text={t('{url} does not respond. Start the server on your Mac and tap Reload.', { url: link.label })} onRetry={() => void load(current)} />)}
+          : <PreviewNote text={t('{url} does not respond. Start the server on your computer and tap Reload.', { url: link.label })} onRetry={() => void load(current)} />)}
         {state.phase === 'error' && <PreviewNote text={errorText(state.code, thread?.name ?? '')} onRetry={state.code === 'failed' || state.code === 'not_found' ? () => void load(current) : undefined}
           href={state.code === 'not_local' && raw && /^https?:\/\//i.test(raw) ? raw : undefined} />}
       </div>
@@ -117,7 +117,7 @@ function errorText(code: RemotePreviewError | 'failed', agent: string): string {
     case 'too_long': return t('{agent} sent a path that is too long for herdr (80 characters at most). Ask it for a path relative to its folder.', { agent })
     case 'not_local': return t('This is an address on the internet; open it in the browser.')
     case 'unsupported': return t('This address cannot be shown in the preview.')
-    case 'not_found': return t('The page file was not found on the Mac.')
+    case 'not_found': return t('The page file was not found on the computer.')
     default: return t('Could not open the preview. Check the connection and try again.')
   }
 }

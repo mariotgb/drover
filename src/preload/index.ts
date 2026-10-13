@@ -22,7 +22,7 @@ const api = {
   machines: {
     state: () => ipcRenderer.invoke('machines:state'),
     onChange: (fn: (state: MachinesState) => void) => on('machines:changed', fn),
-    probeHostKey: (host, port) => ipcRenderer.invoke('machines:probe-host-key', host, port),
+    probeHostKey: (host, port, user) => ipcRenderer.invoke('machines:probe-host-key', host, port, user),
     add: (draft) => ipcRenderer.invoke('machines:add', draft),
     installKey: (id, options) => ipcRenderer.invoke('machines:install-key', id, options),
     check: (id) => ipcRenderer.invoke('machines:check', id),
@@ -31,6 +31,7 @@ const api = {
     setBridge: (id, options) => ipcRenderer.invoke('machines:set-bridge', id, options),
     setupBridge: (id, options) => ipcRenderer.invoke('machines:setup-bridge', id, options),
     detectExistingBridge: () => ipcRenderer.invoke('machines:detect-existing-bridge'),
+    chooseBridgeKeyFile: () => ipcRenderer.invoke('machines:choose-bridge-key-file'),
     adoptExistingBridge: options => ipcRenderer.invoke('machines:adopt-existing-bridge', options),
     setupBridgeFromScratch: options => ipcRenderer.invoke('machines:setup-bridge-from-scratch', options),
     repairExistingBridge: options => ipcRenderer.invoke('machines:repair-existing-bridge', options),

@@ -11,7 +11,7 @@ import {
   screen,
   shell
 } from 'electron'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -38,6 +38,7 @@ import { ATTACHMENTS_DIR, cleanupAttachments, CONVERT_EXTS, IMAGE_EXTS, saveImag
 import { modelCatalog, switchAgentModel } from './models'
 import { addTask, ensureBoard, removeTask, TaskBoards, updateTask, normalizeStatus, type BoardWriteEvidence } from './tasks'
 import { loginEnv, setEnvProbeLogger, which } from './env'
+import { desktopPaths, desktopWindowOptions } from './platform'
 import { HerdrService } from './herdr/service'
 import { quitPlan, stopServerSync } from './herdr/cli'
 import { ServerWatchdog } from './herdr/watchdog'
@@ -68,7 +69,12 @@ import { registerMachinesIpc } from './machines/ipc'
 app.setName('Drover')
 
 // Development overrides: an isolated profile and herdr session.
+const platformUserData = desktopPaths(process.platform, homedir(), process.env).userData
 if (process.env.DROVER_USER_DATA) app.setPath('userData', process.env.DROVER_USER_DATA)
+else if (platformUserData) {
+  mkdirSync(platformUserData, { recursive: true, mode: 0o700 })
+  app.setPath('userData', platformUserData)
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'hdfile', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
@@ -99,6 +105,7 @@ const settings = SettingsStore.at(userData)
 if (process.env.DROVER_SESSION) settings.set({ session: process.env.DROVER_SESSION })
 const service: HerdrService = new HerdrService({
   logDir: join(userData, 'logs'),
+  isolatedHerdrDir: process.env.DROVER_USER_DATA ? join(userData, 'herdr') : undefined,
   autoStartServer: () => settings.get().autoStartServer,
   machineInstructions: cwd => machines.agentInstructions(cwd)
 })
@@ -176,7 +183,7 @@ const transcripts = new TranscriptManager(service, (u: TranscriptUpdate) => {
 const agentRestart = new AgentRestartService(service, userData, async (paneId) => {
   try { return (await transcripts.subscribe(paneId)).meta }
   finally { transcripts.unsubscribe(paneId) }
-}, (paneId, launch) => boss.recordRestart(paneId, launch))
+}, (paneId, launch) => boss.recordRestart(paneId, launch), () => !READONLY)
 
 const boards = new TaskBoards((b: TaskBoard) => send('tasks:changed', b),
   (b, write) => office.onBoard(b, write))
@@ -315,11 +322,7 @@ function createWindow() {
     minHeight: 520,
     show: false,
     title: 'Drover',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 19 },
-    vibrancy: 'sidebar',
-    visualEffectState: 'followWindow',
-    backgroundColor: '#00000000',
+    ...desktopWindowOptions(process.platform),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -414,7 +417,7 @@ function readonlyBlocked(method: string): boolean {
 
 function registerIpc() {
   handle('machines:status', () => machines.status())
-  registerMachinesIpc(ipcMain, machines, event => !READONLY && !!win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame)
+  registerMachinesIpc(ipcMain, machines, event => !READONLY && !!win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame, { home: homedir(), open: options => dialog.showOpenDialog(win!, options) })
   ipcMain.handle('codex:integration-status', () => codexIntegration.status())
   ipcMain.handle('codex:integration-install', () => {
     if (process.platform !== 'darwin' || READONLY) throw new Error('Codex integration installation is only available in the local Mac app')
@@ -531,7 +534,7 @@ function registerIpc() {
       sendPrompt(service, req, { onAccepted: () => office.userPrompt(endpoint, req.text) })
   })
   // Register local Electron channels directly, outside the remote RPC table.
-  ipcMain.handle('office:init', () => process.platform === 'darwin' ? office.init() : null)
+  ipcMain.handle('office:init', () => ['darwin', 'linux'].includes(process.platform) ? office.init() : null)
   ipcMain.on('office:stop', () => office.stop())
   ipcMain.handle('boss:roster', () => boss.roster())
   ipcMain.handle('boss:settings', () => boss.settings())
@@ -588,7 +591,6 @@ function registerIpc() {
     if (req.folder) settings.addRecentFolder(req.folder)
     const result = await createAgent(service, req)
     if (result.ok && result.paneId) {
-      await agentRestart.recordLaunch(req, result.paneId)
       if (service.snapshot) send('herdr:snapshot', agentRestart.decorate(service.snapshot))
     }
     if (result.ok && result.paneId && validOfficeRoleId(req.roleId)) {

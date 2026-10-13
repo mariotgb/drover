@@ -13,7 +13,7 @@ await build({
   plugins: [{ name: 'rename-ui-fixture', setup(b) {
     const mocks = {
       './api': `export const api = {}; export const isRemote = false; export const humanizeError = String; export const call = (...args) => globalThis.renameFixture.call(...args)`,
-      './i18n': `export const t = text => text`,
+      './i18n': `export const t = text => text; export const isMac = true`,
       './store': `export const useStore = { getState: () => globalThis.renameFixture.state, setState: patch => Object.assign(globalThis.renameFixture.state, patch) };
         export const getModel = () => ({groups: globalThis.renameFixture.groups});
         export const updateSettings = async patch => {globalThis.renameFixture.writes.push(patch);Object.assign(globalThis.renameFixture.state.settings,patch)};

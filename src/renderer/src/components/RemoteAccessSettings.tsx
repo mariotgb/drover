@@ -54,7 +54,7 @@ export function RemoteAccessSettings() {
   const expired = pair ? now >= pair.expiresAt : false
   return <div className="settings-section remote-settings">
     <h3>{t('Remote access')}</h3>
-    <p className="setting-hint block">{t('Open Drover in Safari on your phone. Your Mac must stay on and Drover must be running.')}</p>
+    <p className="setting-hint block">{t('Open Drover in Safari on your phone. Your computer must stay on and Drover must be running.')}</p>
     {!available ? <p role="status">{t('Remote access is not available in this build.')}</p> : <>
       {!status && !error && <Spinner />}
       {status && <>
@@ -67,14 +67,14 @@ export function RemoteAccessSettings() {
           <a href="https://github.com/mariotgb/drover/blob/remote-web/docs/remote-access.md" onClick={(e) => { e.preventDefault(); void api.openExternal('https://github.com/mariotgb/drover/blob/remote-web/docs/remote-access.md') }}>{t('Remote access setup guide')}</a>
         </p>
         {(!validPort || !validUrl) && <p className="remote-auth-error">{t('Enter a port from 1024 to 65535 and an HTTPS origin without a path.')}</p>}
-        <div className="remote-setting-actions"><button type="button" className="btn" disabled={busy || !validPort || !validUrl} onClick={() => void run(async () => { const next = await api.setRemoteAccess!({ remotePort: Number(port), remotePublicUrl: url.trim().replace(/\/$/, ''), ...proxyPatch }); setStatus(next); setPair(null); if (next.error) setError(next.error) })}>{t('Save')}</button><span role="status">{status.running ? (phoneOrigin ? t('Remote access is running') : t('Local mode (this Mac only)')) : t('Remote access is off')}</span></div>
+        <div className="remote-setting-actions"><button type="button" className="btn" disabled={busy || !validPort || !validUrl} onClick={() => void run(async () => { const next = await api.setRemoteAccess!({ remotePort: Number(port), remotePublicUrl: url.trim().replace(/\/$/, ''), ...proxyPatch }); setStatus(next); setPair(null); if (next.error) setError(next.error) })}>{t('Save')}</button><span role="status">{status.running ? (phoneOrigin ? t('Remote access is running') : t('Local mode (this computer only)')) : t('Remote access is off')}</span></div>
         {status.error && <p role="alert" className="remote-auth-error">{status.error}</p>}
         {status.running && <>
-          {!canPair && <p className="setting-hint" role="status">{t('Enter and save a public HTTPS address to pair your phone. The local address works only on this Mac.')}</p>}
+          {!canPair && <p className="setting-hint" role="status">{t('Enter and save a public HTTPS address to pair your phone. The local address works only on this computer.')}</p>}
           <button type="button" className="btn btn-primary" disabled={busy || !canPair} onClick={() => { if (!canPair) return; void run(async () => { const next = await api.createRemotePairingCode!();
-            if (new URL(next.url).origin !== phoneOrigin) throw new Error(t('Enter and save a public HTTPS address to pair your phone. The local address works only on this Mac.')); const image = await QRCode.toDataURL(next.url, { width: 240, margin: 4, errorCorrectionLevel: 'M' }); setQr(image); setPair(next); setNow(Date.now()) }) }}><Smartphone size={16} />{t('Pair phone')}</button>
+            if (new URL(next.url).origin !== phoneOrigin) throw new Error(t('Enter and save a public HTTPS address to pair your phone. The local address works only on this computer.')); const image = await QRCode.toDataURL(next.url, { width: 240, margin: 4, errorCorrectionLevel: 'M' }); setQr(image); setPair(next); setNow(Date.now()) }) }}><Smartphone size={16} />{t('Pair phone')}</button>
           {pair && canPair && new URL(pair.url).origin === phoneOrigin && <div className="remote-pair">
-            {expired ? <p role="status">{t('This pairing link has expired. Create a new one on your Mac.')}</p> : <>
+            {expired ? <p role="status">{t('This pairing link has expired. Create a new one on your computer.')}</p> : <>
               <img className="remote-qr" src={qr} width={240} height={240} alt={t('Scan to pair your phone')} />
               <a href={pair.url} onClick={(e) => { e.preventDefault(); void api.openExternal(pair.url) }}>{pair.url}</a>
               <button type="button" className="btn" onClick={() => void navigator.clipboard.writeText(pair.url).then(() => toast('success', t('Link copied'))).catch(() => setError(t('Could not copy the link. Select and copy it manually.')))}><Copy size={16} />{t('Copy link')}</button>

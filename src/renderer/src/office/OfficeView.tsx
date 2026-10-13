@@ -94,7 +94,7 @@ export function OfficeView({ active, onOpen }: OfficeViewProps) {
         const initial = await bridge.officeInit()
         if (cancelled) return
         if (initial) publish(reconcileOffice(null, { state: initial, animations: [] })!, [], true)
-        else setError(t('The office is only available in the Mac app.'))
+        else setError(t('The office is available in Drover for macOS and Linux.'))
       } catch { if (!cancelled) setError(t('Could not load the office. Close this tab and open it again.')) }
       finally { recovering = false }
     }
@@ -109,7 +109,7 @@ export function OfficeView({ active, onOpen }: OfficeViewProps) {
     void bridge.officeInit().then(initial => {
       if (cancelled || received || recovering) return
       if (initial) publish(reconcileOffice(null, { state: initial, animations: [] })!, [], true)
-      else setError(t('The office is only available in the Mac app.'))
+      else setError(t('The office is available in Drover for macOS and Linux.'))
     }).catch(() => { if (!cancelled) setError(t('Could not load the office. Close this tab and open it again.')) })
     return () => { cancelled = true; off(); bridge.officeStop() }
   }, [visible, connected, retry, data])

@@ -258,7 +258,7 @@ function EmptyChat({ hasProjects }: { hasProjects: boolean }) {
     <div className="mw-empty">
       <img src={appIcon} width={64} height={64} alt="" />
       <h1>{hasProjects ? t('No agents in this workspace') : t('No projects yet')}</h1>
-      <p>{t('Open a workspace on your Mac to see it here.')}</p>
+      <p>{t('Open a workspace on your computer to see it here.')}</p>
       {hasProjects && <button type="button" className="btn" onClick={() => useStore.setState({ mobileDrawer: true })}><MenuIcon size={18} />{t('Projects and agents')}</button>}
     </div>
   )
@@ -329,7 +329,7 @@ function DrawerContent() {
             </div>}
           </section>
         ))}
-        {!shown.length && <p className="mw-drawer-empty">{q ? t('No results. Try another search.') : t('Open a workspace on your Mac to see it here.')}</p>}
+        {!shown.length && <p className="mw-drawer-empty">{q ? t('No results. Try another search.') : t('Open a workspace on your computer to see it here.')}</p>}
       </div>
       <MobileMachinesAlert />
       <MobileUsage />

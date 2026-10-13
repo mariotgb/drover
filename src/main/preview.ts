@@ -3,6 +3,7 @@ import { request } from 'node:http'
 import { webContents } from 'electron'
 import type { LocalServer } from '@shared/types'
 import { saveImage } from './attachments'
+import { lsofCommand } from './platform'
 
 // Local dev servers for the preview panel: listening TCP ports, the process
 // behind each, and its working directory so servers can be matched to herdr
@@ -32,7 +33,7 @@ function isHttp(port: number): Promise<boolean> {
 }
 
 export async function detectServers(): Promise<LocalServer[]> {
-  const out = await run('/usr/sbin/lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-F', 'pcn'])
+  const out = await run(lsofCommand(process.platform), ['-nP', '-iTCP', '-sTCP:LISTEN', '-F', 'pcn'])
   const byPid = new Map<number, { command: string; ports: Set<number> }>()
   let pid = 0
   let command = ''
@@ -54,7 +55,7 @@ export async function detectServers(): Promise<LocalServer[]> {
     }
   }
   if (!byPid.size) return []
-  const cwdOut = await run('/usr/sbin/lsof', ['-a', '-d', 'cwd', '-F', 'pn', '-p', [...byPid.keys()].join(',')])
+  const cwdOut = await run(lsofCommand(process.platform), ['-a', '-d', 'cwd', '-F', 'pn', '-p', [...byPid.keys()].join(',')])
   const cwds = new Map<number, string>()
   let cur = 0
   for (const line of cwdOut.split('\n')) {

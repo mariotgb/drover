@@ -1,5 +1,5 @@
-import { execFile, spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, openSync } from 'node:fs'
+import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { HerdrSessionInfo } from '@shared/types'
@@ -9,7 +9,7 @@ export const CONTROLLER_ID = 'drover'
 
 const COMMON_LOCATIONS = [
   join(homedir(), '.local', 'bin', 'herdr'),
-  '/opt/homebrew/bin/herdr',
+  ...(process.platform === 'darwin' ? ['/opt/homebrew/bin/herdr'] : ['/usr/bin/herdr']),
   '/usr/local/bin/herdr',
   join(homedir(), '.cargo', 'bin', 'herdr'),
   join(homedir(), 'bin', 'herdr')
@@ -100,7 +100,7 @@ export function startServer(
   session: string,
   env: NodeJS.ProcessEnv,
   logDir: string
-): void {
+): ChildProcess {
   mkdirSync(logDir, { recursive: true })
   const out = openSync(join(logDir, `herdr-server-${session}.log`), 'a')
   const child = spawn(herdrPath, [...sessionArgs(session), 'server'], {
@@ -109,5 +109,7 @@ export function startServer(
     detached: true,
     stdio: ['ignore', out, out]
   })
+  closeSync(out)
   child.unref()
+  return child
 }

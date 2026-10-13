@@ -15,6 +15,11 @@
 # Remote Login is NOT switched on here: do it in System Settings (see ../docs/remote-access.md).
 set -euo pipefail
 
+# The macOS implementation below is retained unchanged. Linux uses a user unit.
+if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "$(uname -s)" = Linux ]; then
+  exec python3 "$(dirname "${BASH_SOURCE[0]}")/bridge/linux-install.py" "$@"
+fi
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="dev.drover.bridge"
 SSH_DIR="$HOME/.ssh"

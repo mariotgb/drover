@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events'
+import type { ChildProcess } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { withRestoreMutex, type RestoreGuard } from '../agentRestore'
 import type {
   AgentStatus,
   ConnectionState,
@@ -79,10 +82,22 @@ export class HerdrService extends EventEmitter<Events> {
   private refreshQueued = false
   private lastSnapshotJson = ''
   private generation = 0
+  agentRestore?: {
+    prepare(session: string, dir: string, version: string | null, guard: RestoreGuard): Promise<void>
+    restore(client: HerdrClient, current: () => boolean): Promise<void>
+    sessionDir(dir: string | null): void
+    observe(snapshot: HerdrSnapshot): void
+    launched(params: Record<string, unknown>): Promise<void>
+  }
+  private sessionDir: string | null = null
+  private startedHere = false
+  private startedChild: ChildProcess | null = null
+  private startDeadline = 0
+  private starting: Promise<boolean> | null = null
   readonly codexLaunch = new CodexLaunch(() => this.env)
 
   constructor(
-    private opts: { logDir: string; autoStartServer: () => boolean; machineInstructions?: (cwd: string) => Promise<string | null> }
+    private opts: { logDir: string; autoStartServer: () => boolean; isolatedHerdrDir?: string; machineInstructions?: (cwd: string) => Promise<string | null> }
   ) {
     super()
   }
@@ -101,13 +116,14 @@ export class HerdrService extends EventEmitter<Events> {
     this.stop()
     const gen = ++this.generation
     this.session = session || 'default'
+    this.startedHere = false
     this.snapshot = null
     this.lastSnapshotJson = ''
     this.setConnection({ status: 'connecting', error: undefined, version: undefined })
 
     const env = await loginEnv(refreshEnv)
     if (gen !== this.generation) return
-    this.env = env
+    this.env = this.opts.isolatedHerdrDir ? { ...env, HERDR_CONFIG_PATH: this.opts.isolatedHerdrDir } : env
     this.codexLaunch.reset()
     this.herdrPath = findHerdr(this.env)
     if (!this.herdrPath) {
@@ -115,14 +131,17 @@ export class HerdrService extends EventEmitter<Events> {
       return
     }
     let socketPath = defaultSocketPath(this.session, this.env)
+    this.sessionDir = null
     try {
       const sessions = await listSessions(this.herdrPath, this.env)
       const found = sessions.find((s) => s.name === this.session)
       if (found?.socket_path) socketPath = found.socket_path
+      this.sessionDir = found?.session_dir ?? null
     } catch {
       /* use computed path */
     }
     if (gen !== this.generation) return
+    this.agentRestore?.sessionDir(this.sessionDir)
     this.client = new HerdrClient(socketPath)
     this.setConnection({ socketPath, herdrPath: this.herdrPath })
     await this.connect(gen, true)
@@ -130,6 +149,9 @@ export class HerdrService extends EventEmitter<Events> {
 
   stop() {
     this.generation++
+    this.startedHere = false
+    this.startedChild = null
+    this.startDeadline = 0
     this.refreshing = null
     this.refreshQueued = false
     this.lifecycleSub?.close()
@@ -144,8 +166,23 @@ export class HerdrService extends EventEmitter<Events> {
   private async connect(gen: number, allowAutoStart: boolean): Promise<void> {
     if (!this.client || gen !== this.generation) return
     try {
-      const pong = await this.client.request<{ version?: string }>('ping', {}, 4000)
+      const pong = await this.client.request<{ version?: string; pid?: number; server_pid?: number }>('ping', {}, 4000)
       if (gen !== this.generation) return
+      this.connection.version = pong?.version
+      if (this.startedHere && this.agentRestore && this.startedChild) {
+        const client = this.client
+        const child = this.startedChild
+        const pid = pong.server_pid ?? pong.pid
+        // Herdr 0.9.4 pong has no server PID. In that protocol, only a live
+        // child spawned by this attempt and a pong in its start window may
+        // authorize fallback. An external start in that window remains a race.
+        const owned = child.exitCode === null && child.signalCode === null && Date.now() <= this.startDeadline &&
+          (pid === undefined || Number.isSafeInteger(pid) && pid === child.pid)
+        if (owned) await this.agentRestore.restore(client, () => gen === this.generation && client === this.client && child === this.startedChild && child.exitCode === null && child.signalCode === null)
+        if (gen !== this.generation) return
+        this.startedHere = false
+        this.startedChild = null
+      }
       this.setConnection({ status: 'connected', error: undefined, version: pong?.version })
       this.subscribeLifecycle(gen)
       await this.refresh()
@@ -167,22 +204,76 @@ export class HerdrService extends EventEmitter<Events> {
   }
 
   async startServerAndWait(gen = this.generation): Promise<boolean> {
+    if (this.starting) return this.starting
+    const starting = this.startServerAttempt(gen)
+    this.starting = starting
+    try { return await starting } finally { if (this.starting === starting) this.starting = null }
+  }
+  private async startServerAttempt(gen: number): Promise<boolean> {
     if (!this.herdrPath || !this.client) return false
+    const client = this.client, session = this.session, path = this.herdrPath
+    const current = () => gen === this.generation && client === this.client
+    const assertStopped = async () => {
+      if (!current()) throw new HerdrApiError('session_changed', 'The herdr session changed before startup')
+      try { await client.request('ping', {}, 1000) }
+      catch (e) { if (e instanceof HerdrApiError && e.code === 'server_not_running') return; throw e }
+      throw new HerdrApiError('restore_server_running', 'The herdr server started during restore preparation')
+    }
+    // This method is also an explicit UI action. An already-running server
+    // must never have its persisted session rewritten or be started twice.
+    try {
+      await client.request('ping', {}, 2000)
+      if (gen !== this.generation) return false
+      await this.connect(gen, false)
+      return this.connection.status === 'connected'
+    } catch (error) {
+      if (gen !== this.generation || !(error instanceof HerdrApiError) || error.code !== 'server_not_running') return false
+    }
     this.setConnection({ status: 'starting-server', error: undefined })
-    startServer(this.herdrPath, this.session, this.env, this.opts.logDir)
-    const deadline = Date.now() + 15000
+    try {
+      const dir = this.sessionDir ?? dirname(client.socketPath)
+      await withRestoreMutex(join(dir, 'session.json'), async () => {
+        await assertStopped()
+        const version = await herdrVersion(path, this.env)
+        await assertStopped()
+        if (this.sessionDir && this.agentRestore) {
+          // Best-effort external-start guard; Herdr owns socket startup/cleanup.
+          await this.agentRestore.prepare(session, dir, version, { serialized: true, assertStopped: async () => {
+            const latestVersion = await herdrVersion(path, this.env)
+            if (latestVersion !== version) throw new HerdrApiError('restore_version_changed', 'The herdr version changed during migration')
+            await assertStopped()
+          } })
+        }
+        await assertStopped()
+        const child = startServer(path, session, this.env, this.opts.logDir)
+        // A failed spawn cannot authorize fallback. Herdr owns stale sockets.
+        child.on('error', () => { if (this.startedChild === child) { this.startedChild = null; this.startedHere = false } })
+        await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+        if (!current()) return
+        this.startedChild = child
+        this.startedHere = child.exitCode === null && child.signalCode === null
+        this.startDeadline = Date.now() + 15000
+      })
+    } catch (error) {
+      if (!current()) return false
+      this.startedHere = false; this.startedChild = null
+      this.setConnection({ status: 'server-stopped', error: error instanceof HerdrApiError ? `Could not prepare agent restore (${error.code})` : 'Could not prepare agent restore' })
+      return false
+    }
+    const deadline = this.startDeadline || Date.now() + 15000
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 350))
       if (gen !== this.generation) return false
       try {
-        await this.client.request('ping', {}, 2000)
+        await client.request('ping', {}, 2000)
         await this.connect(gen, false)
-        return true
+        return this.connection.status === 'connected'
       } catch {
         /* keep waiting */
       }
     }
     this.setConnection({ status: 'server-stopped', error: 'herdr server did not start in time' })
+    this.startedHere = false; this.startedChild = null
     this.scheduleReconnect(gen)
     return false
   }
@@ -257,7 +348,7 @@ export class HerdrService extends EventEmitter<Events> {
   }
 
   async refresh(): Promise<void> {
-    if (!this.client) return
+    if (!this.client || this.startedHere) return
     if (this.refreshing) {
       this.refreshQueued = true
       return
@@ -269,6 +360,7 @@ export class HerdrService extends EventEmitter<Events> {
       const res = await operation.client.request<{ snapshot: HerdrSnapshot }>('session.snapshot', {}, 8000)
       if (!current()) return
       const snap = res.snapshot
+      this.agentRestore?.observe(snap)
       const json = JSON.stringify(snap)
       if (json !== this.lastSnapshotJson) {
         const prev = this.snapshot
@@ -330,6 +422,7 @@ export class HerdrService extends EventEmitter<Events> {
       if (client !== this.client || generation !== this.generation) throw new HerdrApiError('session_changed', 'The herdr session changed before agent launch')
     }
     const result = await client.request<T>(method, params, timeoutMs)
+    if (method === 'agent.start' && client === this.client && generation === this.generation) await this.agentRestore?.launched(params)
     if (client === this.client && generation === this.generation && !method.endsWith('.list') && !method.endsWith('.get') && !method.endsWith('.read') && method !== 'session.snapshot') {
       this.scheduleRefresh(30)
     }

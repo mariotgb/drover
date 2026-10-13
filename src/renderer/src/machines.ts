@@ -1,12 +1,15 @@
 // Settings > Machines: the UI's view of the machines store. Desktop only.
 // Types come from the backend contract; this module adds UI helpers.
 
-import { api } from './api'
+import { api, registerErrorTexts } from './api'
 import { t, tp } from './i18n'
 
 import type { BridgeProgress, BridgeStepId, Machine, MachineError, MachineOs, MachinesApi } from '@shared/machines'
 export type { SessionCleanupReport, SessionCleanupResult } from '@shared/machines'
 export type { HostKey, InstallCommand, Machine, MachineAccess, MachineDraft, MachineError, MachineKind, MachineOs, MachinesApi, MachinesState } from '@shared/machines'
+
+// Machine errors that arrive over IPC as "[code] message" get the same plain text as structured ones.
+registerErrorTexts((code, detail) => machineCodeText({ code, detail }))
 
 export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,30}$/
 
@@ -20,11 +23,16 @@ export function validName(name: string, taken: string[]): string | null {
 /** Plain-language reason for a machine error code. */
 export function machineErrorText(error: MachineError | undefined, machine?: Pick<Machine, 'name'> & Partial<Pick<Machine, 'kind' | 'bridgeMachineId'>>, bridge?: string): string {
   if (!error) return ''
+  return machineCodeText(error, machine, bridge) ?? (error.detail || t('Something went wrong. Try again.'))
+}
+
+/** Translated text for a known machine error code; undefined for codes this module does not know. */
+function machineCodeText(error: MachineError, machine?: Pick<Machine, 'name'> & Partial<Pick<Machine, 'kind' | 'bridgeMachineId'>>, bridge?: string): string | undefined {
   const name = machine?.name ?? t('the machine')
   switch (error.code) {
     case 'auth_failed': return t('The machine refused the agents key. Install it again with a one-time password.')
     case 'password_rejected': return t('Wrong password, or this user cannot sign in with a password.')
-    case 'host_unreachable': return t('No route to the machine. Check the address and that it is turned on.')
+    case 'host_unreachable': return t('Could not reach the server. It may be briefly busy: try again in a minute, and check the address and that it is on.')
     case 'timeout': return t('The machine did not answer in time. It may be off, asleep or behind a firewall.')
     case 'refused': return t('The machine answered but no SSH server is listening on this port.')
     case 'dns': return t('This address does not resolve. Check for typos.')
@@ -40,8 +48,8 @@ export function machineErrorText(error: MachineError | undefined, machine?: Pick
     case 'key_not_installed': return t('The agents key is not on this machine yet.')
     case 'permission_denied': return t('This user lacks the rights needed. Use an administrator account.')
     case 'unsupported_os': return t('This operating system is not supported for a bridge. Use Debian 12+ or Ubuntu 22.04+.')
-    case 'existing_bridge_invalid': return withDetail(t('A bridge was set up earlier on this Mac, but its settings could not be read.'), error.detail)
-    case 'mac_tunnel_setup_failed': return t('Drover could not set up the Mac tunnel to the bridge.')
+    case 'existing_bridge_invalid': return withDetail(t('A bridge was set up earlier on this computer, but its settings could not be read.'), error.detail)
+    case 'mac_tunnel_setup_failed': return t('Drover could not set up the computer tunnel to the bridge.')
     case 'bridge_repair_required': return t('Some parts of the bridge are missing (marked above).')
     case 'invalid_bridge_options': return t('Choose whether to set up the phone site.')
     case 'invalid_password': return t('Enter the one-time administrator password.')
@@ -50,19 +58,21 @@ export function machineErrorText(error: MachineError | undefined, machine?: Pick
     case 'bridge_repair_confirmation_required': return t('Confirm the upgrade to continue.')
     case 'caddy_repair_requires_manual_integration': return t('The phone site on this server was set up by hand in a way Drover cannot change safely, so the upgrade stopped. The phone site keeps working; it needs a manual fix first.')
     case 'bridge_port_conflict': return withDetail(t('A port the bridge needs is already used by something else on the server.'), error.detail)
-    case 'bridge_credential_conflict': return withDetail(t('The bridge accounts on the server do not match the keys on this Mac.'), error.detail)
+    case 'bridge_credential_conflict': return withDetail(t('The bridge accounts on the server do not match the keys on this computer.'), error.detail)
     case 'invalid_user': return t('Enter the administrator login, for example root.')
-    case 'existing_bridge_missing': return t('Drover no longer finds the bridge set up earlier on this Mac.')
+    case 'bridge_admin_key_rejected': return t('The server refused this key for that login. Pick another key, or check the login.')
+    case 'bridge_admin_key_unreadable': return withDetail(t('Drover could not read this key.'), error.detail)
+    case 'existing_bridge_missing': return t('Drover no longer finds the bridge set up earlier on this computer.')
     case 'bridge_admin_key_missing': return t('Drover has no admin key for this server. Enter the administrator login and a one-time password, then try again.')
     case 'bridge_state_conflict': return withDetail(t('The bridge server was changed by hand and does not match what Drover expects.'), error.detail)
     case 'bridge_verification_failed': return withDetail(t('The bridge is set up, but the final check failed.'), error.detail)
-    case 'mac_tunnel_missing': return t('The Mac tunnel to the bridge is not set up.')
-    case 'mac_tunnel_stopped': return t('The Mac tunnel to the bridge is stopped.')
+    case 'mac_tunnel_missing': return t('The computer tunnel to the bridge is not set up.')
+    case 'mac_tunnel_stopped': return t('The computer tunnel to the bridge is stopped.')
     case 'phone_route_missing': return t('The phone site is not set up on the bridge.')
     case 'bridge_users_missing': return t('The bridge users are missing on the server.')
     case 'bridge_policy_missing': return t('The bridge access rules are missing on the server.')
     case 'bridge_firewall_missing': return t('The bridge firewall is not set up.')
-    default: return error.detail || t('Something went wrong. Try again.')
+    default: return undefined
   }
 }
 
@@ -121,9 +131,10 @@ export function cleanupNote(result: { terminated: number; incomplete: boolean; e
 
 // 0.8.1 bridge detect/adopt/setup. The bridge methods count as optional here so a test page or an
 // older preload without them degrades to "no bridge found" instead of crashing.
-export type { BridgeProgress, BridgeRepairOptions, BridgeScratchOptions, BridgeSetupReport, BridgeStepId, ExistingBridge } from '@shared/machines'
-type BridgeOps = Pick<MachinesApi, 'detectExistingBridge' | 'adoptExistingBridge' | 'setupBridgeFromScratch' | 'repairExistingBridge' | 'onBridgeProgress'>
+export type { BridgeAdoptOptions, BridgeKeyCandidate, BridgeProgress, BridgeRepairOptions, BridgeScratchOptions, BridgeSetupReport, BridgeStepId, ExistingBridge } from '@shared/machines'
+type BridgeOps = Pick<MachinesApi, 'detectExistingBridge' | 'adoptExistingBridge' | 'setupBridgeFromScratch' | 'repairExistingBridge' | 'onBridgeProgress' | 'chooseBridgeKeyFile'>
 export type BridgeApi = Omit<MachinesApi, keyof BridgeOps> & Partial<BridgeOps>
+
 
 /** A bridge connected from the phone setup that Drover has not upgraded yet: it serves the phone only. */
 export function phoneOnlyBridge(m: Machine | null | undefined): boolean {
@@ -139,7 +150,7 @@ export function bridgeStepLabel(step: BridgeStepId): string {
     case 'connect': return t('Sign in to the server')
     case 'users': return t('Bridge users')
     case 'firewall': return t('Firewall')
-    case 'mac_tunnel': return t('Mac tunnel')
+    case 'mac_tunnel': return t('Computer tunnel')
     case 'phone_site': return t('Phone site (HTTPS)')
     case 'check': return t('Check that it works')
   }

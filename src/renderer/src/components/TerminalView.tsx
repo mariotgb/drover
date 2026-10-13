@@ -6,7 +6,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { RotateCw } from 'lucide-react'
 import type { TerminalFrame } from '@shared/types'
 import { api } from '../api'
-import { t } from '../i18n'
+import { t, isMac } from '../i18n'
 import { useStore } from '../store'
 import { monoFontFamily, onAppearanceChange, terminalTheme } from '../appearance'
 import { Spinner } from './primitives'
@@ -156,6 +156,18 @@ export function TerminalView({
 
     // Keep Cmd shortcuts for the app menu; let xterm handle everything else.
     term.attachCustomKeyEventHandler((ev) => {
+      // Off the Mac, menu accelerators fire only for keys xterm leaves unhandled (xterm cancels what it sends).
+      // Hand back just the menu's keys; every other Ctrl key (C, A, E, R, W, U, Z, X…) stays with the shell.
+      if (!isMac && ev.ctrlKey && !ev.metaKey && ev.type === 'keydown') {
+        const code = ev.code
+        if (ev.shiftKey || ev.altKey) {
+          if (/^(Key[BKNTJPCAV]|Digit[1-9]|Period|BracketLeft|BracketRight)$/.test(code)) return false
+        } else {
+          if (code === 'Comma') return false // Settings
+          if (code === 'KeyV') return false // paste through the Edit menu, then onPaste below
+          if (code === 'KeyC' && term.hasSelection()) return false // copy the selection; without one Ctrl+C interrupts
+        }
+      }
       if (ev.metaKey && !ev.ctrlKey && !ev.altKey) {
         const k = ev.key.toLowerCase()
         if (k === 'c' && term.hasSelection()) return false

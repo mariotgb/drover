@@ -1,7 +1,7 @@
 {
   "name": "drover",
   "productName": "Drover",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Desktop app for herdr: run and chat with coding agents without the terminal",
   "license": "MIT",
   "author": "mariotgb",
@@ -17,9 +17,10 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "node --test tests/",
+    "test": "node --test --test-concurrency=2 tests/*.test.mjs",
     "package": "electron-vite build && node scripts/dist.mjs --dir",
     "dist": "electron-vite build && node scripts/dist.mjs",
+    "dist:linux": "electron-vite build && node scripts/dist.mjs --linux",
     "icon": "node scripts/make-icon.mjs"
   },
   "build": {
@@ -50,6 +51,48 @@
       "gatekeeperAssess": false,
       "darkModeSupport": true,
       "minimumSystemVersion": "13.0"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.png",
+      "category": "Development",
+      "desktopName": "drover.desktop",
+      "syncDesktopName": true,
+      "maintainer": "mariotgb",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "deb": {
+      "compression": "gz",
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libgbm1",
+        "libasound2 | libasound2t64",
+        "lsof",
+        "imagemagick"
+      ]
     },
     "dmg": {
       "sign": false,

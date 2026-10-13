@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdtemp, readFile, rm, unlink } from 'node:fs/promises'
+import { access, lstat, mkdtemp, readFile, rm, unlink } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { BridgeAdoptOptions, BridgeProgress, BridgeRepairOptions, BridgeScratchOptions, BridgeSetupReport, BridgeStepId, ExistingBridge, HostKey, InstallCommand, Machine, MachineConfirmationOptions, MachineDraft, MachineOs, MachinePermissions, MachinesState, MachinesStatus, SessionCleanupReason, SessionCleanupReport, SessionCleanupResult } from '@shared/machines'
@@ -10,7 +12,7 @@ import { projectMachineInstructions, writeAwareness } from './awareness'
 import { bridgeTunnelUser, createMachineProvisioner, macTunnelAsset, type BridgeOptions, type BridgeTarget, type ExistingBridgeReport, type InstallContext, type InstallerReport, type LegacyBridge } from './provision'
 import { BridgeCleanupQueue } from './cleanup'
 import { sessionCleanupScript } from './sessions'
-import { detectLocalBridge, keyExists, publicExistingBridge, type BridgeAdmin, type LocalBridge } from './existing-bridge'
+import { bridgeKeyPath, detectLocalBridge, keyExists, publicExistingBridge, type BridgeAdmin, type LocalBridge } from './existing-bridge'
 
 export interface MachineProvisioner {
   setupBridge(machine: Machine, targets: Machine[], agentsPublicKey: string, options: { caddy: boolean }, onStep: (step: string) => Promise<void>): Promise<void>
@@ -186,12 +188,15 @@ export class MachinesService {
   }
   private includeLine(): string { return `Include "${this.configPath}"` }
   async state(): Promise<MachinesState> { return this.serial(() => this.result()) }
-  private async localBridge(machines?: Machine[]): Promise<LocalBridge | null> {
-    return detectLocalBridge({ home: this.options.home, userData: this.options.userData, run: this.run, env: this.env(), remoteSettings: this.options.remoteSettings?.(), admin: this.options.bridgeAdmin?.(), machines })
+  private async localBridge(machines?: Machine[], saved = this.data): Promise<LocalBridge | null> {
+    const ownPublicKeys = [saved?.agentsKey?.publicKey, ...Object.values(saved?.revocations ?? {}).flat(), ...Object.values(saved?.credentialRemovals ?? {}).flatMap(removal => [...removal.agentsPublicKeys, removal.managementPublicKey])].filter((key): key is string => !!key)
+    const ownKeyPaths = Object.values(saved?.bridgeConnections ?? {}).flatMap(connection => [connection.jumpKeyPath, ...(connection.adminManaged ? [connection.adminKeyPath] : [])]).filter((key): key is string => !!key)
+    return detectLocalBridge({ home: this.options.home, userData: this.options.userData, run: this.run, env: this.env(), remoteSettings: this.options.remoteSettings?.(), admin: this.options.bridgeAdmin?.(), machines, ownPublicKeys, ownKeyPaths })
   }
   async detectExistingBridge(): Promise<ExistingBridge | null> {
     // Do not load/render/start polling or run the cleanup queue: detection is local only.
-    const local = await this.localBridge(this.data?.machines ?? (await this.store.load()).machines)
+    const saved = this.data ?? await this.store.load()
+    const local = await this.localBridge(saved.machines, saved)
     return local ? publicExistingBridge(local) : null
   }
   private bridgeSteps(): BridgeProgress[] { return (['connect', 'users', 'firewall', 'mac_tunnel', 'phone_site', 'check'] as BridgeStepId[]).map(step => ({ step, state: 'pending' })) }
@@ -245,20 +250,29 @@ export class MachinesService {
         const local = await this.localBridge(this.d.machines)
         if (!local) throw new MachinesFailure('existing_bridge_missing', 'No local bridge configuration was found.')
         if (!options?.acceptedFingerprint) throw new MachinesFailure('host_key_unconfirmed', 'Probe and explicitly confirm the bridge SSH fingerprint first.')
-        if ((!local.admin || !local.adminKey) && options.password === undefined) throw new MachinesFailure('bridge_admin_key_missing', 'Enter the administrator login and a one-time password to connect this bridge.')
+        if (options.keyPath !== undefined && options.password !== undefined) throw new MachinesFailure('invalid_bridge_auth', 'Choose an administrator key or a one-time password for this connection.')
+        if ((!local.admin || !local.adminKey) && options.password === undefined && options.keyPath === undefined) throw new MachinesFailure('bridge_admin_key_missing', 'Choose an administrator key from this computer, or use a one-time password if the server allows it.')
         const adminUser = options.user ?? local.admin?.user ?? 'root'
         if (!/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(adminUser)) throw new MachinesFailure('invalid_user', 'Enter a valid administrator SSH login.')
         if (!publicAddress(local.host)) throw new MachinesFailure('no_public_ip', 'The detected bridge needs a public IP address.')
         if (this.d.bridgeMachineId && this.d.bridgeMachineId !== local.machineId) throw new MachinesFailure('bridge_state_conflict', 'A different bridge is active. Switch it explicitly before adopting this server.')
         const existing = local.machineId ? this.machine(local.machineId) : null
         if (existing && existing.user !== adminUser) throw new MachinesFailure('bridge_state_conflict', 'The saved server login differs from the configured bridge administrator.')
+        let adminKeyPath = local.admin?.keyPath
+        if (options.keyPath !== undefined) {
+          adminKeyPath = bridgeKeyPath(options.keyPath, this.options.home)
+          // A rejected login must not become a saved machine that prevents correcting it.
+          const target = existing ?? { kind: 'direct' as const, id: '', alias: local.host, host: local.host, port: local.port, user: adminUser }
+          await this.pin(target, options.acceptedFingerprint)
+          await this.authenticateBridgeAdminKey(target, adminKeyPath)
+        }
         const m = existing ?? this.machine((await this.addInternal({ kind: 'direct', name: this.availableName(), host: local.host, port: local.port, user: adminUser })).id)
         machineId = m.id
-        await this.pin(m, options.acceptedFingerprint)
+        if (options.keyPath === undefined) await this.pin(m, options.acceptedFingerprint)
+        else await privateWrite(join(this.options.userData, 'bridge-admin.json'), JSON.stringify({ host: m.host, port: m.port, user: m.user, keyPath: adminKeyPath }))
         this.d.bridgeConnections ??= {}
         const previous = this.d.bridgeConnections[m.id]
-        const adminKeyPath = local.admin?.keyPath
-        this.d.bridgeConnections[m.id] = { ...previous, source: previous?.source ?? 'existing', adminKeyPath, adminManaged: previous?.adminManaged, jumpUser: previous?.managed ? 'drover-jump' : 'jump', tunnelUser: local.tunnelUser, forwards: structuredClone(local.forwards), publicUrl: local.publicUrl, macTunnel: local.macTunnel, ...(previous?.jumpKeyPath ? { jumpKeyPath: previous.jumpKeyPath } : await keyExists(join(this.options.home, '.ssh/mac_jump_ed25519')) ? { jumpKeyPath: join(this.options.home, '.ssh/mac_jump_ed25519') } : {}) }
+        this.d.bridgeConnections[m.id] = { ...previous, source: previous?.source ?? 'existing', adminKeyPath, adminManaged: options.keyPath !== undefined ? false : previous?.adminManaged, jumpUser: previous?.managed ? 'drover-jump' : 'jump', tunnelUser: local.tunnelUser, forwards: structuredClone(local.forwards), publicUrl: local.publicUrl, macTunnel: local.macTunnel, ...(previous?.jumpKeyPath ? { jumpKeyPath: previous.jumpKeyPath } : await keyExists(join(this.options.home, '.ssh/mac_jump_ed25519')) ? { jumpKeyPath: join(this.options.home, '.ssh/mac_jump_ed25519') } : {}) }
         await this.changed()
         if (options.password !== undefined) {
           await this.installBridgeAdminKey(m, options.password)
@@ -278,6 +292,20 @@ export class MachinesService {
         return { machineId: m.id, steps: structuredClone(steps), repairSteps: steps.filter(s => s.state === 'failed' && s.step !== 'check').map(s => ({ ...s, state: 'pending' })) }
       } catch (error) { return this.failedReport(machineId, steps, error) }
     })
+  }
+  private directSshArgs(host: string, port: number, user: string, knownHosts: string): string[] {
+    return ['-F', '/dev/null', '-p', String(port), '-l', user, '-o', `UserKnownHostsFile=${knownHosts}`, '-o', 'GlobalKnownHostsFile=/dev/null', '-o', `HostKeyAlias=[${host}]:${port}`, '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no', '-o', 'ConnectTimeout=5']
+  }
+  private async authenticateBridgeAdminKey(machine: Pick<Machine, 'host' | 'port' | 'user'>, keyPath: string | undefined): Promise<void> {
+    const unreadable = () => new MachinesFailure('bridge_admin_key_unreadable', 'The administrator key could not be read or used. If it has a passphrase, unlock this exact key in ssh-agent on this computer and try again; Drover cannot prompt for a key passphrase in BatchMode.')
+    if (!keyPath || !await keyExists(keyPath)) throw unreadable()
+    try { await access(keyPath, constants.R_OK) } catch { throw unreadable() }
+    const result = await this.run('ssh', [...this.directSshArgs(machine.host!, machine.port!, machine.user, this.knownHosts), '-i', keyPath, '-o', 'PreferredAuthentications=publickey', '-o', 'LogLevel=DEBUG1', machine.host!, 'true'], { env: this.env(), timeoutMs: 15_000 })
+    if (!result.code) return
+    if (/Load key|identity file .*not accessible|no such identity|bad permissions|UNPROTECTED PRIVATE KEY|passphrase|sign_and_send_pubkey: signing failed|agent refused|agent contains no identities|invalid format|error in libcrypto/i.test(result.stderr) || /Server accepts key/i.test(result.stderr) && !/Authenticated to/i.test(result.stderr)) throw unreadable()
+    const reason = sshError(result.stderr)
+    if (reason.code === 'auth_failed') throw new MachinesFailure('bridge_admin_key_rejected', 'The server rejected this administrator key for the selected login. Check the login and choose the key authorized for that account.')
+    throw new MachinesFailure(reason.code, reason.detail!)
   }
   private async setupMacTunnel(local: LocalBridge): Promise<void> {
     const scratch = await mkdtemp(join(tmpdir(), 'drover-mac-bridge-'))
@@ -407,13 +435,13 @@ export class MachinesService {
     await this.render()
     this.options.changed?.(await this.result())
   }
-  private pinName(m: Machine): string { return m.kind === 'direct' ? `[${m.host}]:${m.port}` : `drover-machine-${m.id}` }
+  private pinName(m: Pick<Machine, 'kind' | 'host' | 'port' | 'id'>): string { return m.kind === 'direct' ? `[${m.host}]:${m.port}` : `drover-machine-${m.id}` }
   private infrastructureBridge(m: Machine): boolean {
     return m.kind === 'direct' && (m.id === this.d.bridgeMachineId || !!this.d.bridgeConnections?.[m.id] || !!m.bridgeSetup && m.bridgeSetup.state !== 'none')
   }
   private agentMachines(): Machine[] { return this.d.machines.filter(m => !this.infrastructureBridge(m)) }
-  private sshBlock(alias: string, host: string, port: number, user: string, key: string, pin: string, jump?: string): string {
-    return `Host ${alias}\n  HostName ${host}\n  Port ${port}\n  User ${user}\n  IdentityFile "${key}"\n  IdentitiesOnly yes\n  IdentityAgent none\n  UserKnownHostsFile "${this.knownHosts}"\n  GlobalKnownHostsFile /dev/null\n  HostKeyAlias ${pin}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n  ForwardAgent no\n  ForwardX11 no\n  ConnectTimeout 5\n  ServerAliveInterval 30\n  ServerAliveCountMax 2\n${jump ? `  ProxyJump ${jump}\n` : ''}\n`
+  private sshBlock(alias: string, host: string, port: number, user: string, key: string, pin: string, jump?: string, useIdentityAgent = false): string {
+    return `Host ${alias}\n  HostName ${host}\n  Port ${port}\n  User ${user}\n  IdentityFile "${key}"\n  IdentitiesOnly yes\n${useIdentityAgent ? '' : '  IdentityAgent none\n'}  UserKnownHostsFile "${this.knownHosts}"\n  GlobalKnownHostsFile /dev/null\n  HostKeyAlias ${pin}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n  ForwardAgent no\n  ForwardX11 no\n  ConnectTimeout 5\n  ServerAliveInterval 30\n  ServerAliveCountMax 2\n${jump ? `  ProxyJump ${jump}\n` : ''}\n`
   }
   private async render(): Promise<void> {
     if (!this.d.machines.length && !this.d.agentsKey) return
@@ -423,7 +451,7 @@ export class MachinesService {
       if (m.kind === 'direct') {
         const adminKey = this.d.bridgeConnections?.[m.id]?.adminKeyPath
         if (!m.needsReinstall && !this.infrastructureBridge(m)) text += this.sshBlock(m.alias, m.host!, m.port!, m.user, this.keyPath(), this.pinName(m))
-        text += this.sshBlock(`drover-management-${m.id}`, m.host!, m.port!, m.user, adminKey ?? this.keyPath('management_ed25519'), this.pinName(m))
+        text += this.sshBlock(`drover-management-${m.id}`, m.host!, m.port!, m.user, adminKey ?? this.keyPath('management_ed25519'), this.pinName(m), undefined, !!adminKey && !this.d.bridgeConnections?.[m.id]?.adminManaged && adminKey !== this.keyPath('management_ed25519'))
       } else {
         const b = this.d.machines.find(b => b.id === m.bridgeMachineId)
         if (b) {
@@ -497,20 +525,37 @@ export class MachinesService {
       this.startPeriodic()
       return this.clone(m)
   }
-  private async scan(host: string, port: number, machine?: Machine): Promise<string> {
-    let result: CommandResult
-    if (machine?.kind === 'bridged') {
-      const b = this.d.machines.find(b => b.id === machine.bridgeMachineId)
-      if (b) result = await this.execute(b, `ssh-keyscan -T 5 -t ed25519 -p ${port} 127.0.0.1`, undefined, true)
-      else if (machine.host) result = await this.run('ssh-keyscan', ['-T', '5', '-t', 'ed25519', '-p', String(machine.port ?? 22), machine.host], { timeoutMs: 10_000, env: this.env() })
-      else throw new MachinesFailure('lan_install_pending', 'Run the installer on this local network. Its report will supply the machine’s LAN address; a public bridge is needed across networks.')
-    } else result = await this.run('ssh-keyscan', ['-T', '5', '-t', 'ed25519', '-p', String(port), host], { timeoutMs: 10_000, env: this.env() })
-    const key = result.stdout.split('\n').find(line => !line.startsWith('#') && line.split(/\s+/)[1] === 'ssh-ed25519')
-    if (!key) throw new MachinesFailure(machine?.kind === 'bridged' ? 'tunnel_down' : 'host_unreachable', machine?.kind === 'bridged' ? 'The home machine has not connected its tunnel to the bridge.' : 'Could not read an SSH host key. Check the address, port and firewall.')
-    fingerprint(key)
-    return key.trim()
+  private async scan(host: string, port: number, machine?: Pick<Machine, 'kind' | 'host' | 'port' | 'bridgeMachineId'>): Promise<string> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let result: CommandResult | undefined
+      try {
+        if (machine?.kind === 'bridged') {
+          const b = this.d.machines.find(b => b.id === machine.bridgeMachineId)
+          if (b) result = await this.execute(b, `ssh-keyscan -T 5 -t ed25519 -p ${port} 127.0.0.1`, undefined, true)
+          else if (machine.host) result = await this.run('ssh-keyscan', ['-T', '5', '-t', 'ed25519', '-p', String(machine.port ?? 22), machine.host], { timeoutMs: 10_000, env: this.env() })
+          else throw new MachinesFailure('lan_install_pending', 'Run the installer on this local network. Its report will supply the machine’s LAN address; a public bridge is needed across networks.')
+        } else result = await this.run('ssh-keyscan', ['-T', '5', '-t', 'ed25519', '-p', String(port), host], { timeoutMs: 10_000, env: this.env() })
+      } catch (error) { if (sshError(error).code !== 'timeout') throw error }
+      const key = result?.stdout.split('\n').find(line => !line.startsWith('#') && line.split(/\s+/)[1] === 'ssh-ed25519')
+      if (key) { fingerprint(key); return key.trim() }
+      if (attempt < 2) await delay(250 * (attempt + 1))
+    }
+    throw new MachinesFailure(machine?.kind === 'bridged' ? 'tunnel_down' : 'host_unreachable', machine?.kind === 'bridged' ? 'The home machine has not connected its tunnel to the bridge.' : 'Could not read an SSH host key. Check the address, port and firewall. The server may be briefly busy; try again in a minute.')
   }
-  async probeHostKey(host: string, port: number): Promise<HostKey> {
+  private async passwordAllowed(host: string, port: number, key: string, user: string): Promise<boolean | undefined> {
+    const scratch = await mkdtemp(join(tmpdir(), 'drover-auth-probe-'))
+    try {
+      const pins = join(scratch, 'known_hosts')
+      await privateWrite(pins, `[${host}]:${port} ${key.split(/\s+/).slice(1, 3).join(' ')}\n`)
+      const result = await this.run('ssh', [...this.directSshArgs(host, port, user, pins), '-o', 'PreferredAuthentications=none', '-o', 'PubkeyAuthentication=no', '-o', 'IdentityAgent=none', '-o', 'IdentityFile=none', host, 'true'], { env: this.env(), timeoutMs: 10_000 })
+      if (sshError(result.stderr).code === 'host_key_changed') throw new MachinesFailure('host_key_changed', 'The host key changed during the probe. Check it again through a trusted channel.')
+      const methods = result.stderr.match(/Permission denied\s*\(([^)]*)\)/i)?.[1]
+      return methods === undefined ? undefined : methods.split(',').some(method => method.trim() === 'password')
+    } catch (error) { if (sshError(error).code === 'host_key_changed') throw error; return undefined }
+    finally { await rm(scratch, { recursive: true, force: true }) }
+  }
+  async probeHostKey(host: string, port: number, user?: string): Promise<HostKey> {
+    if (user !== undefined && (typeof user !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(user))) throw new MachinesFailure('invalid_user', 'Enter a valid administrator SSH login.')
     return this.serial(async () => {
       const m = this.d.machines.find(m => m.alias === host && m.kind === 'bridged')
       if (m) { if (port !== m.bridgePort && port !== m.port) throw new MachinesFailure('invalid_port', 'Use this machine’s current SSH port.') }
@@ -519,10 +564,12 @@ export class MachinesService {
       const key = await this.scan(host, port, m)
       const pin = m ? this.pinName(m) : `[${host}]:${port}`
       const known = (await privateRead(this.knownHosts) ?? '').split('\n').some(line => line.split(' ')[0] === pin && fingerprint(line) === fingerprint(key))
-      return { algorithm: 'ssh-ed25519', fingerprint: fingerprint(key), known }
+      const login = user ?? this.d.machines.find(m => m.kind === 'direct' && m.host === host && m.port === port)?.user ?? 'root'
+      const passwordAllowed = m ? undefined : await this.passwordAllowed(host, port, key, login)
+      return { algorithm: 'ssh-ed25519', fingerprint: fingerprint(key), known, ...(passwordAllowed !== undefined ? { passwordAllowed } : {}) }
     })
   }
-  private async pin(m: Machine, accepted: string): Promise<void> {
+  private async pin(m: Pick<Machine, 'kind' | 'host' | 'port' | 'id' | 'alias' | 'bridgePort' | 'bridgeMachineId'>, accepted: string): Promise<void> {
     if (typeof accepted !== 'string' || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(accepted)) throw new MachinesFailure('host_key_unconfirmed', 'Confirm the host-key fingerprint first.')
     const key = await this.scan(m.host ?? m.alias, m.kind === 'direct' ? m.port! : m.bridgePort!, m)
     if (fingerprint(key) !== accepted) throw new MachinesFailure('host_key_changed', 'The host key changed after it was shown. Check it again through a trusted channel.')

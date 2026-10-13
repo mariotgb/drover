@@ -6,6 +6,13 @@ export interface AgentLaunch extends ModelChoice {
   args: string[]
   bypass: boolean
   sessionId?: string | null
+  name?: string | null
+  cwd?: string | null
+  processId?: number
+  /** Only explicit model-menu changes override the original argv. */
+  choice?: ModelChoice
+  /** An inline/private option was omitted; do not invent a replacement launch. */
+  restoreUnavailable?: boolean
 }
 
 export interface RestartSelection { paneId?: string; workspaceId?: string; bypass: boolean }

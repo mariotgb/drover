@@ -8,6 +8,7 @@ import type { IncomingMessage } from 'node:http'
 import { ATTACHMENTS_DIR, convertToJpeg } from '../attachments'
 import { REMOTE_ATTACHMENT_MAX_BYTES, REMOTE_ATTACHMENT_ROUTES, type RemoteAttachment } from '@shared/remote'
 import { RemoteFailure } from './security'
+import { imageCommand } from '../platform'
 
 const images: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
@@ -74,7 +75,12 @@ export const ATTACHMENT_MAX_PIXELS = 50_000_000
 export const ATTACHMENT_MAX_SIDE = 16384
 const run = promisify(execFile)
 async function imageDimensions(path: string): Promise<{ width: number; height: number }> {
-  const { stdout } = await run('/usr/bin/sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', path], { timeout: 10_000 })
+  const command = imageCommand(process.platform, 'dimensions', process.platform === 'darwin' ? path : resolve(path))
+  const { stdout } = await run(command.file, command.args, { timeout: 10_000 })
+  if (process.platform !== 'darwin') {
+    const [width, height] = stdout.trim().split(/\s+/).map(Number)
+    return { width, height }
+  }
   return { width: Number(stdout.match(/pixelWidth: (\d+)/)?.[1]), height: Number(stdout.match(/pixelHeight: (\d+)/)?.[1]) }
 }
 export function validateImageDimensions({ width, height }: { width: number; height: number }): void {

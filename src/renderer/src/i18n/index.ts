@@ -50,10 +50,26 @@ function fill(s: string, params?: Record<string, string | number>): string {
   return s.replace(/\{(\w+)\}/g, (m, k: string) => (params[k] === undefined ? m : String(params[k])))
 }
 
+// UI strings write shortcuts the Mac way (⌘⇧P). Elsewhere the app menu uses its own map (main/menu.ts),
+// chosen so terminal Ctrl keys stay with the shell; anything not in it is plain Ctrl.
+export const isMac = typeof navigator === 'undefined' || /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
+const MAC_SHORTCUT = /⌘(⇧)?(⌥)?(Enter|[^\s)）·,，]|,(?=[\s)）]|$))/g
+const LINUX_MENU: Record<string, string> = {
+  '⌘B': 'Ctrl+Shift+B', '⌘K': 'Ctrl+Shift+K', '⌘N': 'Ctrl+Shift+N', '⌘⇧N': 'Ctrl+Alt+N', '⌘T': 'Ctrl+Shift+T',
+  '⌘J': 'Ctrl+Shift+J', '⌘⇧T': 'Ctrl+Alt+T', '⌘.': 'Ctrl+Shift+.', '⌘]': 'Ctrl+Shift+]', '⌘[': 'Ctrl+Shift+[', '⌘⇧]': 'Ctrl+Alt+]'
+}
+
+/** Shortcut text for this system: ⌘⇧P on a Mac, the matching Linux/Windows keys elsewhere. */
+export function keys(s: string): string {
+  if (isMac) return s
+  return s.replace(MAC_SHORTCUT, (m: string, shift?: string, alt?: string, key?: string) =>
+    LINUX_MENU[m] ?? (/^[1-9]$/.test(key!) && !shift && !alt ? `Ctrl+Shift+${key}` : `Ctrl+${shift ? 'Shift+' : ''}${alt ? 'Alt+' : ''}${key}`))
+}
+
 /** Translate an English UI string. `{name}` placeholders are filled from params. */
 export function t(key: string, params?: Record<string, string | number>): string {
   const v = DICTS[current][key]
-  return fill(typeof v === 'string' ? v : key, params)
+  return keys(fill(typeof v === 'string' ? v : key, params))
 }
 
 /** Translate a counted phrase. English forms are given inline; `{n}` is the count. */

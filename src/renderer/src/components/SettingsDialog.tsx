@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { RefreshCw } from 'lucide-react'
 import type { AppSettings, ClaudeStatuslineState, HerdrSessionInfo } from '@shared/types'
-import { api, isRemote } from '../api'
+import { api, errorText, isRemote } from '../api'
 import { RemoteAccessSettings } from './RemoteAccessSettings'
 import { MachinesSettings } from './MachinesSettings'
 import { PushSettings } from './PushSettings'
@@ -157,7 +157,7 @@ export function ClaudeLimitsRow() {
       setSt(await api.setClaudeStatusline(enable))
       toast('success', enable ? t('Claude Code limits on — they appear after Claude’s next reply') : t('Claude Code status line removed'))
     } catch (e) {
-      toast('error', (e as Error).message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''))
+      toast('error', errorText(e))
     } finally {
       setBusy(false)
     }

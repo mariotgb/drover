@@ -29,7 +29,7 @@ function ConnectionIndicator() {
 }
 function StartupError({ retry }: { retry: () => void }) {
   const [busy, setBusy] = useState(false)
-  return <div className="remote-auth"><div className="remote-auth-content"><WifiOff size={32} /><h1>{t('No connection')}</h1><p>{t('Keep Drover running on your Mac and try again.')}</p><button type="button" className="btn btn-primary" disabled={busy} onClick={() => { setBusy(true); retry() }}><RotateCw size={18} />{t('Retry')}</button></div></div>
+  return <div className="remote-auth"><div className="remote-auth-content"><WifiOff size={32} /><h1>{t('No connection')}</h1><p>{t('Keep Drover running on your computer and try again.')}</p><button type="button" className="btn btn-primary" disabled={busy} onClick={() => { setBusy(true); retry() }}><RotateCw size={18} />{t('Retry')}</button></div></div>
 }
 let pendingPane = new URLSearchParams(location.search).get('pane')
 let openPane: ((paneId: string) => void) | null = null

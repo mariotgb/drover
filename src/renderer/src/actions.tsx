@@ -24,7 +24,7 @@ import type { PaneInfo, WorkspaceInfo } from '@shared/types'
 import { api, call, humanizeError, isRemote } from './api'
 import { supportsBypass } from '@shared/models'
 import type { RestartSelection } from '@shared/agentRestart'
-import { t } from './i18n'
+import { isMac, t } from './i18n'
 import type { MenuItem } from './components/Menu'
 import type { Thread, WorkspaceGroup } from './model'
 import { basename } from './model'
@@ -286,7 +286,7 @@ export function threadMenu(th: Thread): MenuItem[] {
   items.push('separator')
   if (th.cwd) {
     items.push(
-      { label: t('Reveal in Finder'), icon: <FolderOpen size={14} />, onClick: () => void api.openPath(th.cwd!) },
+      { label: (isMac ? t('Reveal in Finder') : t('Show in folder')), icon: <FolderOpen size={14} />, onClick: () => void api.openPath(th.cwd!) },
       { label: t('Open in editor'), icon: <ExternalLink size={14} />, onClick: () => void api.openInEditor(th.cwd!) }
     )
   }
@@ -323,7 +323,7 @@ export function workspaceMenu(g: WorkspaceGroup): MenuItem[] {
     { label: t('Rename…'), icon: <Pencil size={14} />, onClick: () => renameWorkspace(ws) },
     ...(g.cwd
       ? [
-          { label: t('Reveal in Finder'), icon: <FolderOpen size={14} />, onClick: () => void api.openPath(g.cwd!) },
+          { label: (isMac ? t('Reveal in Finder') : t('Show in folder')), icon: <FolderOpen size={14} />, onClick: () => void api.openPath(g.cwd!) },
           { label: t('Open in editor'), icon: <ExternalLink size={14} />, onClick: () => void api.openInEditor(g.cwd!) }
         ]
       : []),

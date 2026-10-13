@@ -236,3 +236,16 @@
 .bridge-signin .setting-hint { margin: 0; }
 .bridge-signin .field-row { display: flex; gap: 10px; }
 .bridge-signin-user { width: 150px; flex: none; }
+.bridge-signin-title { font-size: 12.5px; font-weight: 600; }
+.bridge-keys { display: flex; flex-direction: column; border: 1px solid var(--border-strong); border-radius: 9px; overflow: hidden; background: var(--bg); }
+.bridge-key { display: flex; align-items: flex-start; gap: 9px; padding: 8px 11px; cursor: pointer; }
+.bridge-key + .bridge-key { border-top: 1px solid var(--border); }
+.bridge-key:hover { background: var(--bg-hover); }
+.bridge-key.on { background: var(--accent-soft); }
+.bridge-key input { margin: 3px 0 0; accent-color: var(--accent); }
+.bridge-key-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bridge-key-name { display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
+.bridge-key-name .machine-badge { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.bridge-key-print { font-size: 11px !important; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bridge-choose, .bridge-method { align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.bridge-method { color: var(--text-2); }

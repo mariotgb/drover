@@ -27,8 +27,33 @@ export async function call<T = Record<string, unknown>>(
 
 export function errorText(e: unknown): string {
   if (e instanceof CallError) return humanizeError(e.code, e.message)
-  if (e instanceof Error) return e.message
+  if (e instanceof Error) return ipcErrorText(e.message)
   return String(e)
+}
+
+// Electron wraps main-process errors as "Error invoking remote method 'x': Error: …"; users never see that.
+const IPC_PREFIX = /^Error invoking remote method '[^']*': (?:[A-Z][A-Za-z]*: )?/
+// Main may prefix a stable code, "[host_unreachable] Message", since codes do not cross IPC otherwise.
+const IPC_CODE = /^\[([a-z][a-z0-9_]*)\] ?([\s\S]*)$/
+
+type CodeText = (code: string, detail: string | undefined) => string | undefined
+const codeTexts: CodeText[] = []
+
+/** Lets a feature module (e.g. machines) translate its own error codes. */
+export function registerErrorTexts(fn: CodeText): void {
+  codeTexts.push(fn)
+}
+
+export function ipcErrorText(raw: string): string {
+  const message = raw.replace(IPC_PREFIX, '')
+  const coded = IPC_CODE.exec(message)
+  if (!coded) return message
+  const [, code, detail] = coded
+  for (const fn of codeTexts) {
+    const text = fn(code, detail || undefined)
+    if (text) return text
+  }
+  return humanizeError(code, detail)
 }
 
 export function humanizeError(code: string | undefined, message: string | undefined): string {

@@ -1,16 +1,17 @@
 import { execFile } from 'node:child_process'
 import { mkdir, readdir, rm, stat, writeFile, copyFile, chmod } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { extname, join, basename, dirname } from 'node:path'
+import { extname, join, basename, dirname, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { promisify } from 'node:util'
+import { desktopPaths, imageCommand } from './platform'
 
 const run = promisify(execFile)
 
 // Pasted screenshots are written to disk and handed to agents as file paths:
 // Claude Code and Codex both turn a pasted image path into an image
 // attachment. The directory has no spaces so the path pastes cleanly.
-export const ATTACHMENTS_DIR = join(homedir(), '.drover', 'attachments')
+export const ATTACHMENTS_DIR = desktopPaths(process.platform, homedir(), process.env).attachments
 
 const EXT_BY_MIME: Record<string, string> = {
   'image/png': 'png',
@@ -25,7 +26,7 @@ export const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'])
 
 /**
  * iPhone/macOS photos (HEIC) and TIFFs render neither in Chromium nor in the
- * agents, so they are converted to JPEG with macOS's built-in sips.
+ * agents, so they are converted with sips on Mac or ImageMagick on Linux.
  */
 export const CONVERT_EXTS = new Set(['heic', 'heif', 'tif', 'tiff'])
 const CONVERT_MIMES: Record<string, string> = { 'image/heic': 'heic', 'image/heif': 'heif', 'image/tiff': 'tiff' }
@@ -35,7 +36,8 @@ export async function convertToJpeg(src: string, dest: string): Promise<void> {
   await chmod(dirname(dest), 0o700)
   await writeFile(dest, '', { mode: 0o600 })
   try {
-    await run('/usr/bin/sips', ['-s', 'format', 'jpeg', src, '--out', dest], { timeout: 60000 })
+    const command = imageCommand(process.platform, 'convert', process.platform === 'darwin' ? src : resolve(src), process.platform === 'darwin' ? dest : resolve(dest))
+    await run(command.file, command.args, { timeout: 60000 })
     await chmod(dest, 0o600)
   } catch (error) { await rm(dest, { force: true }); throw error }
 }

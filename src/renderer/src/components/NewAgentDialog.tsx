@@ -317,7 +317,7 @@ export function NewAgentDialog({ preset }: { preset: Preset }) {
             </div>
           )}
           {missingKind && <div className="field-hint" role="status">
-            <p>{t('Install {agent} on your Mac and make sure {binary} is in your shell PATH. Then check again.', { agent: agentKindDef(kind)?.label ?? kind!, binary: kinds.find(k => k.kind === kind)?.binary ?? agentKindDef(kind)?.binaries[0] ?? kind! })}</p>
+            <p>{t('Install {agent} on your computer and make sure {binary} is in your shell PATH. Then check again.', { agent: agentKindDef(kind)?.label ?? kind!, binary: kinds.find(k => k.kind === kind)?.binary ?? agentKindDef(kind)?.binaries[0] ?? kind! })}</p>
             {installGuide && <button type="button" className="link-btn" onClick={() => void api.openExternal(installGuide)}>{t('Installation guide')}</button>}
             {' '}<button type="button" className="link-btn" disabled={checkingKinds} onClick={() => void checkKinds()}>{checkingKinds ? t('Please wait…') : t('Check again')}</button>
           </div>}

@@ -24,7 +24,7 @@ export async function uploadAttachment(file: File): Promise<RemoteAttachment> {
     if (res.status === 413 || code === 'attachment_too_large') throw new Error(t('Files must be 20 MB or smaller.'))
     if (code === 'unsupported_attachment') throw new Error(t('Choose an image or a UTF-8 text file.'))
     if (code === 'empty_attachment') throw new Error(t('The file is empty.'))
-    if (code === 'attachment_quota') throw new Error(t('Attachment storage is full. Remove old files on your Mac and try again.'))
+    if (code === 'attachment_quota') throw new Error(t('Attachment storage is full. Remove old files on your computer and try again.'))
     throw new Error(t('Could not upload {name}. Try again.', { name: file.name }))
   }
   return res.json()

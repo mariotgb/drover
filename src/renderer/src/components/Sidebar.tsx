@@ -27,7 +27,7 @@ import { useBoard } from './TaskBoardView'
 import { openMenu, openMenuAt } from './Menu'
 import { AgentAvatar, IconButton, StatusDot } from './primitives'
 import { UsageWidget } from './Usage'
-import { t, tp } from '../i18n'
+import { t, tp, isMac, keys } from '../i18n'
 import { splitByLead, projectKey } from '../leads'
 import { isRemote } from '../api'
 import { BossBroadcastDialog, BossDialog } from './BossDialogs'
@@ -61,7 +61,7 @@ export function Sidebar() {
         <button type="button" className="sidebar-new" onClick={() => openNewAgent({})} onContextMenu={(e) => openMenu(e, newAgentMenu())}>
           <Plus size={16} />
           <span>{t('New agent')}</span>
-          <span className="shortcut">⌘N</span>
+          <span className="shortcut">{keys('⌘N')}</span>
         </button>
         {!isRemote && <button type="button" className="sidebar-new" onClick={() => useStore.setState({ dialog: { type: 'boss' } })}>
           <Crown size={16} />
@@ -151,7 +151,7 @@ function WorkspaceSection({ group, dragging, drop, onDragStart, onDragOver, onDr
         onKeyDown={e => {
           if (e.target !== e.currentTarget) return
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCollapsed(ws.workspace_id) }
-          if (group.cwd && e.altKey && e.metaKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+          if (group.cwd && e.altKey && (isMac ? e.metaKey : e.ctrlKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
             e.preventDefault()
             // Resolve the current order at keydown, including phone updates.
             const folders = projectFolders(getModel().groups)

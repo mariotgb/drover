@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import { join, delimiter } from 'node:path'
+import { graphicalSessionEnv, loginShell, shellProbeArgs } from './platform'
 
 // Apps launched from Finder/Dock get a minimal launchd environment (PATH is
 // /usr/bin:/bin:...). herdr, claude and codex usually live in user-managed
@@ -54,8 +55,7 @@ const EXTRA_PATHS = [
   join(homedir(), '.local', 'bin'),
   join(homedir(), '.cargo', 'bin'),
   join(homedir(), 'bin'),
-  '/opt/homebrew/bin',
-  '/opt/homebrew/sbin',
+  ...(process.platform === 'darwin' ? ['/opt/homebrew/bin', '/opt/homebrew/sbin'] : []),
   '/usr/local/bin'
 ]
 
@@ -91,10 +91,8 @@ export function fallbackEnv(): NodeJS.ProcessEnv {
 }
 
 function resolveFromShell(): Promise<NodeJS.ProcessEnv> {
-  const shell = process.env.SHELL || userInfo().shell || '/bin/zsh'
+  const shell = loginShell(process.platform, process.env.SHELL, userInfo().shell)
   const mark = `__DROVER_ENV_${Date.now()}__`
-  const exe = process.execPath.replace(/'/g, "'\\''")
-  const script = `'${exe}' -e 'process.stdout.write("${mark}"+JSON.stringify(process.env)+"${mark}")'`
   return new Promise((resolve) => {
     let stdout = ''
     let done = false
@@ -104,7 +102,7 @@ function resolveFromShell(): Promise<NodeJS.ProcessEnv> {
       resolve(env ? finalize(drop(env, ALWAYS_DROP)) : fallbackEnv())
     }
     try {
-      const child = spawn(shell, ['-ilc', script], {
+      const child = spawn(shell, shellProbeArgs(shell, process.execPath, mark), {
         env: {
           HOME: homedir(),
           USER: userInfo().username,
@@ -114,7 +112,8 @@ function resolveFromShell(): Promise<NodeJS.ProcessEnv> {
           LANG: 'en_US.UTF-8',
           PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
           ELECTRON_RUN_AS_NODE: '1',
-          ELECTRON_NO_ATTACH_CONSOLE: '1'
+          ELECTRON_NO_ATTACH_CONSOLE: '1',
+          ...graphicalSessionEnv(process.platform, process.env)
         },
         stdio: ['ignore', 'pipe', 'ignore'],
         detached: true

@@ -127,7 +127,7 @@ function MainPage({ open }: { open: (page: Page) => void }) {
   const current = resolveTheme(a, systemDark())
   const accents = a.accent && !ACCENTS.includes(a.accent) ? [...ACCENTS, a.accent] : ACCENTS
   return <>
-    <Group title={t('Appearance')} footer={t('Appearance is shared with Drover on your Mac: a change shows up on both.')}>
+    <Group title={t('Appearance')} footer={t('Appearance is shared with Drover on your computer: a change shows up on both.')}>
       <NavRow label={t('Theme')} value={themeLabel(a)} onClick={() => open('theme')} />
       <div className="mw-row stacked">
         <span className="mw-row-label">{t('Accent color')}</span>
@@ -209,13 +209,13 @@ function BackgroundPage() {
     applyAppearance({ ...s, appearance: { ...s.appearance, ...p } })
   }
   return <>
-    <Group footer={t('Pick a picture or a video in Drover on your Mac; it shows here too.')}>
+    <Group footer={t('Pick a picture or a video in Drover on your computer; it shows here too.')}>
       <OptionRow label={t('None')} active={bg.kind === 'none'} lead={<span className="mw-bg-preview none" />} onClick={() => set({ background: { ...bg, kind: 'none' } })} />
       {GRADIENTS.map((g) => (
         <OptionRow key={g.id} label={g.name} active={bg.kind === 'gradient' && (bg.gradient ?? GRADIENTS[0].id) === g.id} lead={<span className="mw-bg-preview" style={{ background: g.css }} />}
           onClick={() => set({ background: { ...bg, kind: 'gradient', gradient: g.id } })} />
       ))}
-      {(bg.kind === 'image' || bg.kind === 'video') && <OptionRow label={bg.kind === 'image' ? t('Image from your Mac') : t('Video from your Mac')} active lead={<span className="mw-bg-preview media" />} onClick={() => undefined} />}
+      {(bg.kind === 'image' || bg.kind === 'video') && <OptionRow label={bg.kind === 'image' ? t('Image from your computer') : t('Video from your computer')} active lead={<span className="mw-bg-preview media" />} onClick={() => undefined} />}
     </Group>
     {bg.kind !== 'none' && <Group title={t('Effects')}>
       <SliderRow label={t('Dim')} value={bg.dim} min={0} max={90} unit="%" preview={(dim) => preview({ background: { ...bg, dim } })} onCommit={(dim) => set({ background: { ...useStore.getState().settings.appearance.background, dim } })} />
@@ -296,13 +296,13 @@ function DeviceGroup() {
   }, [])
   const date = (ms?: number) => (ms ? new Date(ms).toLocaleDateString(locale(), { day: 'numeric', month: 'long', year: 'numeric' }) : '—')
   const signOut = () => useStore.setState({ dialog: {
-    type: 'confirm', title: t('Sign out on this phone?'), message: t('To come back, sign in with your passkey. Your agents keep working on the Mac.'), confirm: t('Sign out'), danger: true,
+    type: 'confirm', title: t('Sign out on this phone?'), message: t('To come back, sign in with your passkey. Your agents keep working on the computer.'), confirm: t('Sign out'), danger: true,
     onConfirm: async () => {
       try { await logoutRemote() } catch (e) { toast('error', errorText(e)) }
     }
   } })
   return (
-    <Group title={t('This device')} footer={t('Remove this phone’s access on your Mac: Settings → Remote access.')}>
+    <Group title={t('This device')} footer={t('Remove this phone’s access on your computer: Settings → Remote access.')}>
       <InfoRow label={t('Name')} value={session?.device?.name ?? '—'} />
       <InfoRow label={t('Paired')} value={date(session?.device?.createdAt)} />
       <InfoRow label={t('Signed in until')} value={date(session?.expiresAt)} />

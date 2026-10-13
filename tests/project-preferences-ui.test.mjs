@@ -47,7 +47,7 @@ test('desktop drag, phone arrows, importance sync and explicit Codex repair work
     b.onResolve({ filter: /(?:^|\/)remote-api$/ }, () => ({ path: 'remote-api', namespace: 'fixture' }))
     b.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === 'remote-api'
       ? `export const useRemoteConnection=()=> 'connected';export const remoteSendPrompt=async()=>({ok:true});`
-      : `export const api=new Proxy({},{get:(_,key)=>window.fixtureApi[key]});export const isRemote=!!window.fixtureRemote;export const call=async()=>({});export const errorText=String;export const humanizeError=String;`, loader: 'js' }))
+      : `export const api=new Proxy({},{get:(_,key)=>window.fixtureApi[key]});export const isRemote=!!window.fixtureRemote;export const call=async()=>({});export const errorText=e=>(e instanceof Error?e.message:String(e)).replace(/^Error invoking remote method '[^']*': (?:[A-Z][A-Za-z]*: )?/,'');export const humanizeError=String;export const registerErrorTexts=()=>{};`, loader: 'js' }))
   } }] })
   const server = createServer((req, res) => {
     const file = req.url === '/fixture.js' ? 'fixture.js' : req.url === '/fixture.css' ? 'fixture.css' : null

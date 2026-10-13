@@ -133,7 +133,7 @@ export function App() {
   useEffect(() => {
     if (window.droverRemote) return
     let cancelled = false
-    void api.init().then(info => { if (!cancelled) setOfficeAllowed(info.platform === 'darwin') }).catch(() => undefined)
+    void api.init().then(info => { if (!cancelled) setOfficeAllowed(info.platform === 'darwin' || info.platform === 'linux') }).catch(() => undefined)
     return () => { cancelled = true }
   }, [])
   useEffect(() => useStore.subscribe((next, previous) => {

@@ -209,7 +209,7 @@ export function MobileUsage() {
           <div className="usage-row usage-missing">
             <AgentAvatar kind="claude" size={16} />
             <span className="usage-name">Claude</span>
-            <span className="usage-hint">{t('Turn on the status line bridge on the Mac')}</span>
+            <span className="usage-hint">{t('Turn on the status line bridge on the computer')}</span>
           </div>
         )}
       </button>
@@ -243,7 +243,7 @@ export function MobileUsage() {
             </div>
           ))}
           {!limits.claude && (
-            <p className="usage-detail-sub">{t('Claude Code limits appear once the status line bridge is on in Drover on your Mac: Settings → General. It reads local files only — no tokens, no network.')}</p>
+            <p className="usage-detail-sub">{t('Claude Code limits appear once the status line bridge is on in Drover on your computer: Settings → General. It reads local files only — no tokens, no network.')}</p>
           )}
           <button type="button" className="btn mw-usage-refresh" disabled={busy} onClick={async () => {
             setBusy(true)

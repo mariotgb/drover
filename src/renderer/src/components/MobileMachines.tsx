@@ -77,7 +77,7 @@ export function MobileMachinesGroup() {
           )
         })}
       </div>
-      <div className="mw-group-foot">{t('Status only. Add and manage machines in Drover on your Mac: Settings → Machines.')}</div>
+      <div className="mw-group-foot">{t('Status only. Add and manage machines in Drover on your computer: Settings → Machines.')}</div>
     </section>
   )
 }

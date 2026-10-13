@@ -59,13 +59,13 @@ function AuthScreen() {
   return <main className="remote-auth"><div className="remote-auth-content">
     <div className="remote-auth-mark"><img src={appIcon} width={80} height={80} alt="Drover" /></div>
     <h1>{pairing ? t('Pair your phone') : t('Sign in to Drover')}</h1>
-    <p>{pairing ? t('Create a passkey to securely connect this phone to Drover on your Mac.') : t('Use your passkey to open your agents, conversations and tasks.')}</p>
+    <p>{pairing ? t('Create a passkey to securely connect this phone to Drover on your computer.') : t('Use your passkey to open your agents, conversations and tasks.')}</p>
     {pairing && <label className="remote-auth-field">{t('Device name')}<input className="input" value={name} maxLength={80} placeholder={t('My phone')} autoComplete="off" onChange={(e) => setName(e.target.value)} /></label>}
     {!supported && <p className="remote-auth-error" role="alert">{t('Passkeys require HTTPS and a browser that supports them. Open the public HTTPS address in Safari.')}</p>}
-    {pairing && !code && <p className="remote-auth-error" role="alert">{t('Open the pairing link or QR code from Drover settings on your Mac.')}</p>}
+    {pairing && !code && <p className="remote-auth-error" role="alert">{t('Open the pairing link or QR code from Drover settings on your computer.')}</p>}
     {error && <p className="remote-auth-error" role="alert">{error}</p>}
     <button type="button" className="btn btn-primary btn-lg" disabled={busy || !supported || (pairing && !code)} onClick={() => void submit()}><Fingerprint size={20} />{busy ? t('Please wait…') : pairing ? t('Create passkey and connect') : t('Sign in with passkey')}</button>
-    <p className="remote-auth-hint">{pairing ? t('The pairing link is valid for 10 minutes.') : t('First time? In Drover on your Mac, open Settings → Remote access → Pair phone.')}</p>
+    <p className="remote-auth-hint">{pairing ? t('The pairing link is valid for 10 minutes.') : t('First time? In Drover on your computer, open Settings → Remote access → Pair phone.')}</p>
     {pairing && <a href="/login">{t('Already paired? Sign in')}</a>}
   </div></main>
 }

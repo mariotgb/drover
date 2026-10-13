@@ -73,8 +73,8 @@ export function AddMachineWizard({ api, state, onClose }: { api: MachinesApi; st
             </button>
           </div>
           {kind === 'bridged' && !bridge && <p className="setting-hint">{state.machines.some((m) => m.kind === 'direct' && m.publicIp)
-            ? t('Without a bridge, this Mac reaches it only on the same trusted home network: not away from home and not from your phone. To change that later, open one of your servers in the list and choose Use as bridge.')
-            : t('Without a bridge, this Mac reaches it only on the same trusted home network: not away from home and not from your phone. A bridge is a server with a public IP (a VPS); add one later to change that.')}</p>}
+            ? t('Without a bridge, this computer reaches it only on the same trusted home network: not away from home and not from your phone. To change that later, open one of your servers in the list and choose Use as bridge.')
+            : t('Without a bridge, this computer reaches it only on the same trusted home network: not away from home and not from your phone. A bridge is a server with a public IP (a VPS); add one later to change that.')}</p>}
           <div className="wizard-actions">
             <button type="button" className="btn" onClick={() => onClose()}>{t('Cancel')}</button>
             <button type="button" className="btn btn-primary" disabled={!kind} onClick={() => setStep(2)}>{t('Next')}</button>
@@ -114,7 +114,7 @@ export function AddMachineWizard({ api, state, onClose }: { api: MachinesApi; st
               <div className="segmented small">
                 {OSES.map((o) => <button key={o} type="button" className={clsx(os === o && 'active')} onClick={() => setOs(o)}>{osName(o)}</button>)}
               </div>
-              <span className="field-hint">{bridge ? t('It will connect through {bridge}.', { bridge: bridge.name }) : t('Home network only: this Mac connects to it directly on your LAN.')}</span>
+              <span className="field-hint">{bridge ? t('It will connect through {bridge}.', { bridge: bridge.name }) : t('Home network only: this computer connects to it directly on your LAN.')}</span>
             </div>
           )}
           {error && <p role="alert" className="form-error">{error}</p>}
@@ -301,7 +301,7 @@ export function InstallCommandPanel({ api, machine, initialOs, onClose }: { api:
         ? <p className="machine-note warn"><TriangleAlert size={13} />{t('This command expired.')} <button type="button" className="link-btn" onClick={() => setRound(round + 1)}>{t('Create a new one')}</button></p>
         : isLan(machine)
           ? <>
-            <p className="setting-hint">{t('Works once, until {time}. It creates an agent account and installs the agents key. Run it while {name} and this Mac are on the same home network.', { time: new Date(cmd.expiresAt).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }), name: machine.name })}</p>
+            <p className="setting-hint">{t('Works once, until {time}. It creates an agent account and installs the agents key. Run it while {name} and this computer are on the same home network.', { time: new Date(cmd.expiresAt).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }), name: machine.name })}</p>
             <p className="machine-note warn"><TriangleAlert size={13} /><span>{t('Use this only on a trusted home network: the setup link is plain HTTP inside your network. Without a bridge, the machine is not reachable away from home or from your phone.')}</span></p>
           </>
           : <p className="setting-hint">{t('Works once, until {time}. It creates an agent account, installs the agents key and connects to the bridge; the connection comes back by itself after restarts.', { time: new Date(cmd.expiresAt).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' }) })}</p>)}

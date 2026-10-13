@@ -49,8 +49,7 @@ export function useBridgeJob(api: BridgeApi, ids: BridgeStepId[]) {
     } catch (e) {
       if (!live.current) return null
       // Mark the step that was running as the failed one; the error text goes under it.
-      // Codes do not cross IPC; drop Electron's "Error invoking remote method …" wrapper from the message.
-      const message = errorText(e).replace(/^Error invoking remote method '[^']*': (?:Error: )?/, '')
+      const message = errorText(e)
       setSteps((cur) => {
         const list = cur ?? []
         const at = list.find((s) => s.state === 'running') ?? list.find((s) => s.state === 'pending')
@@ -120,7 +119,7 @@ export function BridgeWizard({ api, onClose }: { api: BridgeApi; onClose: (machi
         <form onSubmit={(e) => { e.preventDefault(); if (ready && (!hostKey || matches)) void submit() }}>
           <div>
             <h3>{t('Set up a bridge')}</h3>
-            <p className="setting-hint">{t('A bridge is a small server with a public IP (a VPS), so your machines and phone can reach this Mac from anywhere. Drover sets everything up on it.')}</p>
+            <p className="setting-hint">{t('A bridge is a small server with a public IP (a VPS), so your machines and phone can reach this computer from anywhere. Drover sets everything up on it.')}</p>
           </div>
           <div className="field-row">
             <div className="field grow">
@@ -165,7 +164,7 @@ export function BridgeWizard({ api, onClose }: { api: BridgeApi; onClose: (machi
         <div className="bridge-run">
           <h3>{job.phase === 'done' ? t('Your bridge is ready') : job.phase === 'failed' ? t('Setup stopped') : t('Setting up {host}…', { host: host.trim() })}</h3>
           <p className="setting-hint">{job.phase === 'done'
-            ? (caddy ? t('Your machines and phone can now reach this Mac from anywhere through {host}.', { host: host.trim() }) : t('Your machines can now reach this Mac from anywhere through {host}.', { host: host.trim() }))
+            ? (caddy ? t('Your machines and phone can now reach this computer from anywhere through {host}.', { host: host.trim() }) : t('Your machines can now reach this computer from anywhere through {host}.', { host: host.trim() }))
             : job.phase === 'failed'
               ? t('Fix the problem marked below and run setup again.')
               : t('This takes about a minute. You can keep this window open.')}</p>
@@ -226,7 +225,7 @@ export function UpgradeBridge({ api, machine: m, onDone }: { api: BridgeApi; mac
         <div className="field">
           <label htmlFor={`upgrade-password-${m.id}`}>{t('One-time password for {user} (optional)', { user: m.user })}</label>
           <input id={`upgrade-password-${m.id}`} className="input" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <span className="field-hint">{t('Leave empty to use the admin key already on this Mac. Without one, enter the password once: Drover installs its own key and forgets the password.')}</span>
+          <span className="field-hint">{t('Leave empty to use the admin key already on this computer. Without one, enter the password once: Drover installs its own key and forgets the password.')}</span>
         </div>
       )}
       {job.steps && <BridgeChecklist steps={job.steps} label={title} />}

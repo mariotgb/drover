@@ -43,7 +43,7 @@ export function MobileAgentList() {
             </button>) : <p className="mobile-empty">{tab === 'terminal' ? t('No terminals in this workspace') : t('No agents in this workspace')}</p>)}
           </section>
         })}
-        {!groups.length && <p className="mobile-empty">{t('Open a workspace on your Mac to see it here.')}</p>}
+        {!groups.length && <p className="mobile-empty">{t('Open a workspace on your computer to see it here.')}</p>}
       </div>
       <nav className="mobile-tabs" aria-label={t('Navigation')}>
         <button type="button" aria-current={tab === 'agents' ? 'page' : undefined} onClick={() => setTab('agents')}><Bot size={22} />{t('Agents')}</button>

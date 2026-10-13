@@ -1,0 +1,9 @@
+.git
+.drover
+.codex
+AGENTS.md
+node_modules
+out
+release
+*.log
+.DS_Store

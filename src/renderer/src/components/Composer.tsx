@@ -5,7 +5,7 @@ import { REMOTE_ATTACHMENT_ACCEPT } from '@shared/remote'
 import { remoteAttachmentUrl, uploadAttachment } from '../attachments'
 import { agentKindDef } from '@shared/agents'
 import { supportsModels } from '@shared/models'
-import { t } from '../i18n'
+import { isMac, t } from '../i18n'
 import { useMobileWeb } from '../mobile'
 import { useRemoteConnection } from '../remote-api'
 import { api, humanizeError, isRemote } from '../api'
@@ -456,7 +456,7 @@ export function Composer({ thread, compact }: { thread: Thread; compact?: boolea
               </span>
             )}
             {!isRemote && thread.cwd && (
-              <button type="button" className="composer-chip link" title={t('Reveal in Finder')} onClick={() => void api.openPath(thread.cwd!)}>
+              <button type="button" className="composer-chip link" title={(isMac ? t('Reveal in Finder') : t('Show in folder'))} onClick={() => void api.openPath(thread.cwd!)}>
                 <FolderOpen size={12} /> {shortPath(thread.cwd, home).split('/').slice(-2).join('/')}
               </button>
             )}

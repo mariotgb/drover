@@ -30,6 +30,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: { rollupOptions: { input: {
       index: resolve(__dirname, 'src/main/index.ts'),
+      captureAgentLaunches: resolve(__dirname, 'src/main/captureAgentLaunches.ts'),
       serverWatchdogWorker: resolve(__dirname, 'src/main/herdr/watchdog-worker.ts'),
       transcriptWorker: resolve(__dirname, 'src/main/transcripts/worker.ts')
     } } },
