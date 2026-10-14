@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { Cable, House, Monitor, Server, Smartphone } from 'lucide-react'
 import { t } from '../i18n'
+import { pendingConnect, pendingConnectLabel } from '../machines'
 import { activeRoute, hasRoute, routeName, routesOf, purposeOf, type RouteKind } from '../machineRoutes'
 import type { Machine, MachinesApi, MachinesState } from '../machines'
 import type { MachinePhone } from '@shared/machines'
@@ -13,7 +14,8 @@ type Tone = 'ok' | 'warn' | 'bad' | 'off'
 interface Node { id: string; x: number; y: number; icon: ReactNode; name: string; sub: string; tone: Tone; kind: 'me' | 'bridge' | 'phone' | 'machine' | 'ghost'; machineId?: string }
 interface Edge { from: string; to: string; route: RouteKind | 'standby' | 'down'; label?: string }
 
-const toneOf = (m: Machine): Tone => m.status.state === 'online' ? 'ok' : m.status.state === 'offline' ? 'bad' : m.status.state === 'unknown' ? 'off' : 'warn'
+const toneOf = (m: Machine): Tone => { const pending = pendingConnect(m.status); return pending ? (pending === 'reachable' ? 'warn' : 'off') : stateTone(m) }
+const stateTone = (m: Machine): Tone => m.status.state === 'online' ? 'ok' : m.status.state === 'offline' ? 'bad' : m.status.state === 'unknown' ? 'off' : 'warn'
 
 function usePhones(api: MachinesApi): MachinePhone[] {
   const [phones, setPhones] = useState<MachinePhone[]>([])
@@ -66,10 +68,13 @@ export function MachinesMap({ api, state, onOpen }: { api: MachinesApi; state: M
   }
   others.forEach((m) => {
     const [x, y] = place(m)
-    const active = activeRoute(m)
+    const pending = pendingConnect(m.status)
+    const active = pending ? null : activeRoute(m)
     const first = routesOf(m)[0]?.kind
-    nodes.push({ id: m.id, x, y, icon: first === 'internet' ? <Server size={20} /> : <House size={20} />, name: m.name, sub: purposeOf(m) || (active ? routeName(active) : t('not answering')), tone: toneOf(m), kind: 'machine', machineId: m.id })
-    if (active === 'bridge' && bridge) edges.push({ from: bridge.id, to: m.id, route: 'bridge' })
+    const sub = pending ? [purposeOf(m), pendingConnectLabel(pending)].filter(Boolean).join(' · ') : purposeOf(m) || (active ? routeName(active) : t('not answering'))
+    nodes.push({ id: m.id, x, y, icon: first === 'internet' ? <Server size={20} /> : <House size={20} />, name: m.name, sub, tone: toneOf(m), kind: 'machine', machineId: m.id })
+    if (pending) edges.push({ from: 'me', to: m.id, route: 'standby' })
+    else if (active === 'bridge' && bridge) edges.push({ from: bridge.id, to: m.id, route: 'bridge' })
     else if (active) edges.push({ from: 'me', to: m.id, route: active })
     // Not connected yet (listed, e.g. from herdr) is not broken: a quiet line until the user connects it.
     else edges.push({ from: 'me', to: m.id, route: m.status.error?.code === 'key_not_installed' ? 'standby' : 'down' })

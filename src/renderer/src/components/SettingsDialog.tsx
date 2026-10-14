@@ -17,7 +17,7 @@ import { logoutRemote } from '../remote-session'
 import { BossSettingsPane } from './BossDialogs'
 import { CodexIntegrationWarning } from './CodexIntegrationWarning'
 
-export function SettingsDialog({ initialTab }: { initialTab?: string }) {
+export function SettingsDialog({ initialTab, connectMachine }: { initialTab?: string; connectMachine?: string }) {
   const [tab, setTab] = useState(initialTab ?? 'general')
   const [signingOut, setSigningOut] = useState(false)
   const close = () => useStore.setState({ dialog: null })
@@ -49,7 +49,7 @@ export function SettingsDialog({ initialTab }: { initialTab?: string }) {
         </nav>
         <div className="settings-pane">
           {tab === 'remote' && <RemoteAccessSettings />}
-          {tab === 'machines' && !isRemote && <MachinesSettings />}
+          {tab === 'machines' && !isRemote && <MachinesSettings connectMachine={connectMachine} />}
           {tab === 'general' && <General />}
           {tab === 'appearance' && <AppearanceSettingsPane />}
           {tab === 'roles' && <RolesSettingsPane />}

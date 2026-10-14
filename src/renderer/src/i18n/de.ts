@@ -1328,4 +1328,12 @@ export const de: Dict = {
   "Access to this bridge can be changed once machines connect through it.": "Der Zugriff auf diese Brücke lässt sich ändern, sobald Maschinen darüber verbunden sind.",
   "This server has a public IP. To switch bridges, first connect machines through {bridge}.": "Dieser Server hat eine öffentliche IP. Um die Brücke zu wechseln, verbinde zuerst Maschinen über {bridge}.",
   "Connect machines": "Maschinen verbinden",
+  "Not connected": "Nicht verbunden",
+  "Unreachable": "Nicht erreichbar",
+  "Connect machine": "Verbinden",
+  "Drover cannot reach {name} right now. Check that it is turned on and on the network, then connect it.": "Drover erreicht {name} gerade nicht. Prüfen Sie, ob das Gerät eingeschaltet und im Netzwerk ist, und verbinden Sie es dann.",
+  "Checking whether {name} answers…": "Prüfe, ob {name} antwortet…",
+  "{name} answers, but Drover is not connected to it yet.": "{name} antwortet, aber Drover ist noch nicht damit verbunden.",
+  "Could not read the keys on this computer: {error}": "Die Schlüssel auf diesem Computer konnten nicht gelesen werden: {error}",
+  "Checking now…": "Prüfe…",
 }

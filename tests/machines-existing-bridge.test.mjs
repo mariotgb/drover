@@ -349,13 +349,12 @@ test('adoption verifies only, maps phone/Mac bridge, survives restart and forget
   const manifest = JSON.parse(Buffer.from(ssh[0].input.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/)[1], 'base64'))
   assert.equal(manifest.action, 'verify')
   assert.doesNotMatch(readFileSync(f.service.configPath, 'utf8'), /Host drover-bridge\n|User root|User jump|admin_ed25519|management_ed25519/)
-  assert.doesNotMatch(readFileSync(join(f.home, '.drover/machines/MACHINES.md'), 'utf8'), /alias `drover-bridge`/)
+  assert.match(readFileSync(join(f.home, '.drover/machines/MACHINES.md'), 'utf8'), /alias `drover-bridge`.*not connected yet/)
   assert.match(readFileSync(join(f.home, '.drover/machines/ssh_control_config'), 'utf8'), /admin_ed25519/)
   assert.doesNotMatch(JSON.stringify(state), /adminKeyPath|DO NOT READ/)
   const restarted = new m.MachinesService({ home: f.home, userData: f.userData, run: async () => { throw Error('No startup SSH') }, tcp: async () => 1 }); t.after(() => restarted.dispose())
   assert.equal((await restarted.state()).bridgeMachineId, r.machineId)
   await assert.rejects(f.service.setupBridge(r.machineId, { caddy: true, confirmed: true }), { code: 'bridge_repair_required' })
-  await assert.rejects(f.service.installKey(r.machineId, { acceptedFingerprint: m.fingerprint(hostKey) }), { code: 'bridge_repair_required' })
   await f.service.remove(r.machineId, { confirmed: true })
   assert.equal(f.calls.filter(c => c.file === 'ssh').length, 1); assert.equal(readFileSync(f.plist, 'utf8'), originalPlist)
 })
@@ -574,13 +573,13 @@ test('bridge bootstrap and repair expose no admin alias; agents revoke removes o
     const state = await f.service.state(), bridge = state.machines.find(machine => machine.id === adopted.machineId)
     assert.doesNotMatch(readFileSync(f.service.configPath, 'utf8'), /admin_ed25519|management_ed25519|drover-management-/)
     assert.ok(!readFileSync(f.service.configPath, 'utf8').includes(`Host ${bridge.alias}\n`))
-    assert.ok(!readFileSync(join(f.home, '.drover/machines/MACHINES.md'), 'utf8').includes(`alias \`${bridge.alias}\``))
+    assert.ok(readFileSync(join(f.home, '.drover/machines/MACHINES.md'), 'utf8').includes(`alias \`${bridge.alias}\``)); assert.match(readFileSync(join(f.home, '.drover/machines/MACHINES.md'), 'utf8'), /not connected yet/)
     await f.service.agentInstructions(join(f.home, 'project'))
     const stored = JSON.parse(readFileSync(join(f.home, '.drover/machines/projects.json'), 'utf8'))
     assert.equal(stored.length, 1)
     // Registered guides/configs also exclude the bridge, including advisory project scope.
     const path = join(f.home, '.drover/machines/projects', createHash('sha256').update(stored[0]).digest('hex') + '.md')
-    assert.ok(!readFileSync(path, 'utf8').includes(`alias \`${bridge.alias}\``))
+    assert.ok(readFileSync(path, 'utf8').includes(`alias \`${bridge.alias}\``)); assert.match(readFileSync(path, 'utf8'), /not connected yet/)
     assert.doesNotMatch(readFileSync(path + '.ssh_config', 'utf8'), /admin_ed25519|management_ed25519|drover-management-/)
     assert.ok(!readFileSync(path + '.ssh_config', 'utf8').includes(`Host ${bridge.alias}\n`))
   }
@@ -721,4 +720,38 @@ test('phone key grant extension preserves managed line endings and all foreign b
     execFileSync('python3', ['remote/machines/bridge-data.py', 'additive-key', output, options, key(5), input])
     assert.deepEqual(readFileSync(input), expected, 'grant extension is byte-idempotent')
   }
+})
+
+
+test('bridge can explicitly connect agents as root while preserving tunnel users, hub policy and foreign keys', async t => {
+  let rootHome, enabled = false
+  const f = fixture(t, {overrideRun:async(file,args,options)=>{
+    if (!enabled || file!=='ssh' || !options.input?.includes('auth="$HOME/.ssh/authorized_keys"')) return
+    execFileSync('/bin/sh',['-s'],{input:options.input,env:{PATH:'/usr/bin:/bin',HOME:rootHome}})
+    return ok('')
+  }})
+  rootHome = join(f.home,'synthetic-root'); mkdirSync(join(rootHome,'.ssh'),{recursive:true})
+  const foreign = `# foreign exact bytes\nrestrict ${key(41)} admin\n${key(42)} jump\n`
+  const auth = join(rootHome,'.ssh','authorized_keys'); writeFileSync(auth,foreign)
+  const adopted = await f.service.adoptExistingBridge({acceptedFingerprint:m.fingerprint(hostKey)})
+  const before = JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8'))
+  assert.equal(before.installed.includes(adopted.machineId),false)
+  const pointer = await f.service.agentInstructions(join(f.home,'project')), guide = pointer.match(/read (.+?\.md)\./)[1]
+  assert.match(readFileSync(guide,'utf8'),/not connected yet/)
+  await assert.rejects(f.service.installKey(adopted.machineId,{keyPath:f.adminPath}),{code:'host_key_unconfirmed'})
+  enabled = true
+  const connected = await f.service.installKey(adopted.machineId,{keyPath:f.adminPath,acceptedFingerprint:m.fingerprint(hostKey)})
+  assert.equal(connected.user,'root'); assert.equal(connected.status.checks.auth,true)
+  const after = JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8'))
+  assert.deepEqual(after.bridgeConnections,before.bridgeConnections); assert.equal(after.bridgeMachineId,before.bridgeMachineId)
+  assert.deepEqual(after.machines[0].bridgeSetup,before.machines[0].bridgeSetup)
+  assert.ok(readFileSync(auth,'utf8').startsWith(foreign)); assert.match(readFileSync(auth,'utf8'),/drover-agents/)
+  assert.match(readFileSync(f.service.configPath,'utf8'),/Host drover-bridge\n[\s\S]*User root/)
+  assert.doesNotMatch(readFileSync(f.service.configPath,'utf8'),/admin_ed25519|management_ed25519|mac_jump/)
+  assert.match(readFileSync(guide,'utf8'),/permission: full/); assert.doesNotMatch(readFileSync(guide,'utf8'),/not connected yet —/)
+  await f.service.setPermissions(adopted.machineId,{mode:'projects',projects:[join(f.home,'project')]})
+  assert.match(readFileSync(guide,'utf8'),/permission: full SSH with advisory project scope/)
+  assert.doesNotMatch(readFileSync(f.service.configPath,'utf8'),/Host drover-bridge\n/)
+  assert.match(readFileSync(guide+'.ssh_config','utf8'),/Host drover-bridge\n/)
+  assert.deepEqual(JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8')).bridgeConnections,before.bridgeConnections)
 })

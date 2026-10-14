@@ -633,7 +633,7 @@ test('saved herdr import deduplicates endpoints and never configures or connects
   let state=await f.service.state()
   assert.equal(state.machines.length,3)
   assert.equal(state.machines.find(r=>r.herdrId==='saved-a').id,local.id)
-  assert.deepEqual(state.machines.filter(r=>r.origin==='herdr').map(r=>r.status.state),['unknown','unknown'])
+  assert.deepEqual(state.machines.filter(r=>r.origin==='herdr').map(r=>r.status.state),['online','online'])
   assert.ok(state.machines.filter(r=>r.origin==='herdr').every(r=>r.status.error.code==='key_not_installed'))
   assert.equal(writes.length,0)
   const before=f.calls.length
@@ -711,7 +711,7 @@ test('three imported machines connect with known-host confirmation, additive log
   }
   let state = await f.service.state()
   assert.equal(state.machines.length, 3)
-  assert.ok(state.machines.every(p => p.status.state === 'unknown' && p.status.error.code === 'key_not_installed'))
+  assert.ok(state.machines.every(p => p.status.state === 'online' && p.status.checks.tcp && p.status.error.code === 'key_not_installed'))
   assert.deepEqual(writes, []); assert.deepEqual(probes, [])
   assert.deepEqual(await f.service.projectMachinePolicy(selected), { configureRoles: ['lead', 'orchestrator', 'devops'] })
   await f.service.agentInstructions(selected); await f.service.agentInstructions(other)
@@ -965,4 +965,38 @@ test('office infrastructure projection includes routes, purpose, phones and remo
   assert.equal(node.purpose,'Build jobs');assert.equal(node.fallback,true);assert.equal(node.routes[1].latencyMs,18)
   assert.equal(node.remoteAgents[0].status,'working');assert.equal(state.externalNodes[0].phones[0].online,true)
   assert.doesNotMatch(JSON.stringify(state),/10\.8\.0\.99|private\/key|private\/project/)
+})
+
+
+test('unconnected imports probe every TCP route without SSH and retain resumable sign-in failures after pinning', async t => {
+  const rows = [{id:'saved',label:'synthetic',host:'10.8.0.75',port:22,user:'drover',target:'drover@10.8.0.75',session:'fixture',enabled:true}]
+  const probes = [], writes = []
+  let reachable = true
+  const registry = {list:async()=>rows,statuses:async()=>{throw Error('No auth probes')},snapshot:async()=>{throw Error('No remote reads')},workspaces:()=>[],add:async()=>{writes.push(1);throw Error('Not now')}}
+  const f = fixture(t, {herdr:registry,tcp:async(host,port)=>{probes.push([host,port]);if (!reachable) throw new m.MachinesFailure('timeout','No TCP response');return 7}})
+  let machine = (await f.service.state()).machines[0]
+  assert.deepEqual(machine.status.checks,{tcp:true,auth:false}); assert.equal(machine.status.state,'online')
+  assert.equal(machine.routes[0].state,'ok'); assert.equal(f.calls.length,0); assert.equal(writes.length,0)
+  const stored = JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8'))
+  stored.machines[0].routes.push({kind:'internet',host:'example.invalid',port:2222,user:'drover',state:'unknown'})
+  writeFileSync(join(f.userData,'machines.json'),JSON.stringify(stored))
+  // Restart against synthetic data only, verifying both routes are actually visited.
+  await f.service.dispose()
+  const restarted = new m.MachinesService({home:f.home,userData:f.userData,herdr:registry,run:async()=>{throw Error('SSH forbidden')},tcp:async(host,port)=>{probes.push([host,port]);throw new m.MachinesFailure('timeout','No TCP response')}})
+  t.after(()=>restarted.dispose())
+  machine = (await restarted.state()).machines[0]
+  assert.equal(machine.status.state,'offline'); assert.deepEqual(machine.status.checks,{tcp:false,auth:false})
+  assert.ok(probes.some(([host,port])=>host==='example.invalid'&&port===2222))
+  await restarted.dispose()
+  // Supplied key rejection happens after pinning and must be persisted, thrown and retryable.
+  const g = fixture(t, {herdr:registry}); machine = (await g.service.state()).machines[0]
+  mkdirSync(join(g.home,'.ssh')); const key = join(g.home,'.ssh','login'); writeFileSync(key,'synthetic-private-key')
+  g.authFailure = 'Permission denied (publickey).'
+  await assert.rejects(g.service.installKey(machine.id,{keyPath:key,acceptedFingerprint:m.fingerprint(hostKey)}),{code:'auth_failed'})
+  machine = (await g.service.state()).machines[0]
+  assert.ok(machine.hostKeyPinnedAt); assert.equal(machine.status.error.code,'key_not_installed'); assert.ok(machine.status.error.detail)
+  assert.equal(JSON.parse(readFileSync(join(g.userData,'machines.json'),'utf8')).installed.includes(machine.id),false)
+  g.authFailure = ''
+  const done = await g.service.installKey(machine.id,{keyPath:key,acceptedFingerprint:m.fingerprint(hostKey)})
+  assert.equal(done.status.checks.auth,true); assert.notEqual(done.status.error?.code,'key_not_installed')
 })

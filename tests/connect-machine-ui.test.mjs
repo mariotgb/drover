@@ -26,7 +26,7 @@ test('Connect flow confirms the server key, installs with the chosen login key a
       probeHostKey: async (...a) => { window.calls.push(['probe', ...a]); return { algorithm: 'ED25519', fingerprint: 'SHA256:host', known: true, passwordAllowed: false } },
       loginKeyCandidates: async (host) => { window.calls.push(['candidates', host]); return [{ path: '/k/deploy', name: 'deploy', fingerprint: 'SHA256:a', algorithm: 'ED25519', comment: '' }, { path: '/k/id', name: 'id', fingerprint: 'SHA256:b', algorithm: 'ED25519', comment: '' }] },
       chooseBridgeKeyFile: async () => { window.calls.push(['choose']); return '/k/picked' },
-      installKey: async (id, o) => { window.calls.push(['install', id, o]); if (window.refuse) throw new Error("Error invoking remote method 'machines:install-key': Error: [auth_failed] denied"); return { ...machine, status: { state: 'online' } } },
+      installKey: async (id, o) => { window.calls.push(['install', id, o]); if (window.reachableOnly) return {...machine,status:{state:'online',checks:{tcp:true,auth:false},error:{code:'key_not_installed'}}}; if (window.refuse) throw new Error("Error invoking remote method 'machines:install-key': Error: [auth_failed] denied"); return { ...machine, status: { state: 'online', checks: {tcp:true,auth:true} } } },
       setPermissions: async (id, p) => { window.calls.push(['permissions', id, p]) }
     }
     function Root() { const [open, setOpen] = useState(true); return open ? <ConnectMachineWizard api={api} state={{ machines: [machine], bridgeMachineId: null }} machineId="m1" onClose={() => setOpen(false)} /> : <p id="closed">closed</p> }
@@ -63,6 +63,13 @@ test('Connect flow confirms the server key, installs with the chosen login key a
   await install.click()
   await page.getByText('The server refused this key for deploy.', { exact: false }).waitFor()
   assert.deepEqual((await calls()).filter(c => c[0] === 'install').at(-1), ['install', 'm1', { keyPath: '/k/picked', acceptedFingerprint: 'SHA256:host' }])
+
+  // TCP reachability alone must keep the wizard on sign-in with a visible error.
+  await page.evaluate(() => { window.refuse = false; window.reachableOnly = true })
+  await install.click()
+  await page.getByRole('alert').waitFor()
+  assert.equal(await install.isVisible(), true)
+  await page.evaluate(() => { window.reachableOnly = false })
 
   // Success with the suggested key, then the project scope.
   await page.evaluate(() => { window.refuse = false })

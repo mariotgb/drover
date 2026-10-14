@@ -6,7 +6,7 @@ import type { MachinesStatus } from '@shared/machines'
 import { api } from '../api'
 import { t, tp } from '../i18n'
 import { useStore } from '../store'
-import { ago, machineErrorText, osName, type Machine } from '../machines'
+import { ago, machineErrorText, osName, pendingConnect, pendingConnectLabel, type Machine } from '../machines'
 import { MachineDot } from './MachinesSettings'
 
 const POLL_MS = 30_000
@@ -58,7 +58,8 @@ export function MobileMachinesGroup() {
         {!s.machines.length && <div className="mw-row"><span className="mw-row-label mw-dim">{t('No machines yet')}</span></div>}
         {s.machines.map((m) => {
           const via = viaName(m, s)
-          const offline = m.status.state === 'offline'
+          const pending = pendingConnect(m.status)
+          const offline = m.status.state === 'offline' && !pending
           const sub = [m.osLabel || osName(m.os), m.kind === 'bridged' ? (via ? t('Through {bridge}', { bridge: via }) : t('Home network')) : t('Direct')].filter(Boolean).join(' · ')
           return (
             <div key={m.id} className={clsx('mw-row mw-machine', offline && 'is-offline')}>
@@ -70,7 +71,7 @@ export function MobileMachinesGroup() {
                 {offline && m.status.error && <span className="mw-machine-reason">{machineErrorText(m.status.error, m, via)}</span>}
               </span>
               <span className="mw-machine-meta">
-                <span>{m.status.state === 'online' && m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : m.status.state === 'offline' ? t('Offline') : m.status.state === 'waiting' ? t('Waiting to connect') : m.status.state === 'checking' ? t('Checking…') : t('Not checked yet')}</span>
+                <span>{pending ? pendingConnectLabel(pending) : m.status.state === 'online' && m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : m.status.state === 'offline' ? t('Offline') : m.status.state === 'waiting' ? t('Waiting to connect') : m.status.state === 'checking' ? t('Checking…') : t('Not checked yet')}</span>
                 <span>{ago(m.status.checkedAt)}</span>
               </span>
             </div>
@@ -85,7 +86,7 @@ export function MobileMachinesGroup() {
 /** Drawer line, shown only when at least one machine is offline. */
 export function MobileMachinesAlert() {
   const s = useMachinesStatus()
-  const offline = s?.machines.filter((m) => m.status.state === 'offline') ?? []
+  const offline = s?.machines.filter((m) => m.status.state === 'offline' && !pendingConnect(m.status)) ?? []
   if (!offline.length) return null
   return (
     <button type="button" className="mw-machines-alert" onClick={() => useStore.setState({ mobileSettings: true, mobileDrawer: false })}>

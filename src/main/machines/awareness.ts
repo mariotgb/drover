@@ -12,7 +12,7 @@ export function mergeMachinesPointer(current: string, pointer: string): string {
   return current.trimEnd() + (current.trim() ? '\n\n' : '') + block + '\n'
 }
 export function machineGuide(machines: Machine[], config: string): string {
-  const rows = machines.map(m => `- **${m.name}**: alias \`${m.alias}\`; ${m.osLabel ?? m.os ?? 'OS not checked'}; ${m.status.state}; routes: ${orderedRoutes(m).map(r => `${r.kind} (${r.state})`).join(' → ')}; active: ${m.activeRoute ?? 'not connected yet'}${m.fallback ? ' (fallback)' : ''}; ${m.purpose ? `purpose: ${m.purpose}; ` : ''}permission: ${m.permissions.mode === 'projects' ? 'full SSH with advisory project scope' : m.permissions.mode}${m.herdrId ? `; herdr machine: ${m.herdrId}` : ''}${m.needsReinstall ? '; reinstall required' : ''}.`)
+  const rows = machines.map(m => `- **${m.name}**: alias \`${m.alias}\`; ${m.osLabel ?? m.os ?? 'OS not checked'}; ${m.status.error?.code === 'key_not_installed' ? 'not connected yet — ask the user to Connect in Drover before SSH' : m.status.state}; routes: ${orderedRoutes(m).map(r => `${r.kind} (${r.state})`).join(' → ')}; active: ${m.activeRoute ?? 'not connected yet'}${m.fallback ? ' (fallback)' : ''}; ${m.purpose ? `purpose: ${m.purpose}; ` : ''}permission: ${m.permissions.mode === 'projects' ? 'full SSH with advisory project scope' : m.permissions.mode}${m.herdrId ? `; herdr machine: ${m.herdrId}` : ''}${m.needsReinstall ? '; reinstall required' : ''}.`)
   return `# Drover machines
 
 Use only the machines listed here for the current project. Check their status before work.

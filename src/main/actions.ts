@@ -128,6 +128,7 @@ export async function waitUntilInteractive(
       if (verifyScreen && a?.agent) {
         const { read } = await service.request<{ read: { text: string } }>('pane.read', { pane_id: paneId, source: 'visible', format: 'text' }, 3000)
         if (blockingDialog(read.text, a.agent)) return 'blocked'
+        if (a.interactive_ready === true || a.agent_status === 'working') return 'ready'
       }
       if (a?.agent_status === 'idle' || a?.agent_status === 'done') {
         if (a.interactive_ready) return 'ready'

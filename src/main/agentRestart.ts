@@ -63,8 +63,10 @@ export class AgentRestartService {
           if (!current()) return
           await service.request('agent.start', { pane_id: entry.paneId, kind: entry.ref.agent,
             name: entry.name || `drover-resume-${randomUUID().slice(0, 8)}`, args: entry.args, timeout_ms: 120000 }, 130000)
-          const state = await waitUntilInteractive(this.boundService(this.context()), entry.paneId, 60000, 1000, true)
-          if (state !== 'ready') throw new HerdrApiError('agent_not_ready', 'The resumed agent did not become interactive')
+          const state = await waitUntilInteractive(this.boundService(this.context()), entry.paneId, 300000, 1000, true)
+          if (state === 'exited') throw new HerdrApiError('agent_not_ready', 'The resumed agent exited before becoming interactive')
+          // Pending and blocked restores remain observed by AgentQuestions.
+          // A slow startup must not be retried over an already running agent.
         })
       },
       sessionDir: dir => this.restoreService.setSessionDir(dir),

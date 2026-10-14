@@ -203,6 +203,7 @@ export class MachinesService {
       machine.origin ??= 'drover'
       machine.enabled ??= true
       machine.route ??= machine.kind === 'bridged' && machine.bridgeMachineId ? 'bridge' : machine.host && !publicAddress(machine.host) ? 'lan' : 'direct'
+      if (this.infrastructureBridge(machine) && !this.d.installed.includes(machine.id)) machine.status.error = { code: 'key_not_installed', detail: 'The bridge is configured, but agents access has not been connected. Connect it to install the agents key for this login.' }
       machine.nextActions = machineNextActions(machine)
       orderedRoutes(machine)
     }
@@ -227,7 +228,8 @@ export class MachinesService {
           const normalized = this.importedName(profile.label, m.id)
           if (m.name !== normalized) { m.name = normalized; m.alias = 'drover-' + normalized }
           m.host = profile.host; m.port = profile.port; m.user = profile.user ?? m.user
-          m.routes = undefined; orderedRoutes(m)
+          if (!m.routes?.some(r => r.host === profile.host && (r.port ?? 22) === (profile.port ?? 22))) m.routes = undefined
+          orderedRoutes(m)
         }
       } else {
         const name = this.importedName(profile.label)
@@ -239,7 +241,7 @@ export class MachinesService {
       if (m.origin === 'herdr' && !this.d.installed.includes(m.id) && !m.bridgeMachineId && !this.d.bridgeConnections?.[m.id]) this.d.machines = this.d.machines.filter(x => x !== m)
       else { m.herdrSynced = false; m.herdrSyncError = { code: 'herdr_machine_missing' } }
     }
-    for (const m of this.d.machines) if (m.origin === 'herdr' && !this.d.installed.includes(m.id)) m.status = { state: 'unknown', error: { code: 'key_not_installed' } }
+    for (const m of this.d.machines) if (m.origin === 'herdr' && !this.d.installed.includes(m.id)) await this.checkUnconnected(m)
     if (before !== JSON.stringify(this.d.machines)) { await this.store.save(this.d); await this.render(); this.options.changed?.(await this.result()) }
     let statuses: Awaited<ReturnType<HerdrMachineRegistry['statuses']>> = []
     // Import is metadata-only. Do not let herdr probe a user's original SSH
@@ -282,7 +284,7 @@ export class MachinesService {
       catch (error) { for (const m of this.d.machines.filter(m => !ids || ids.includes(m.id))) m.herdrSyncError = sshError(error); await this.changed(); return }
       for (const m of this.d.machines) {
         if (ids && !ids.includes(m.id) || !this.d.installed.includes(m.id)) continue
-        if (!m.host && !m.bridgeMachineId || this.infrastructureBridge(m)) continue
+        if (!m.host && !m.bridgeMachineId) continue
         try {
           const target = m.alias, label = m.origin === 'herdr' ? m.herdrLabel ?? m.name : m.name
           let profile = profiles.find(p => p.id === m.herdrId || !!m.host && p.host?.toLowerCase() === m.host.toLowerCase() && p.port === (m.port ?? 22) || p.target === target)
@@ -712,8 +714,8 @@ export class MachinesService {
     if (!before.policy || !before.users.every(u => u.exists && u.authorizedKeyOptions)) throw new MachinesFailure('bridge_policy_missing', 'The existing tunnel policy needs repair before adding Drover grants.')
     const keys = await this.ensureKeys()
     await this.installBridgeAdminKey(m, options.password)
-    // Retire this installation's former unrestricted bridge agent credential.
-    this.requireSuccess(await this.execute(m, 'sh -s', removeKeyScript(keys.agents, keys.management)))
+    // Preserve explicitly connected agents access; legacy hub grants are retired.
+    if (!this.d.installed.includes(m.id)) this.requireSuccess(await this.execute(m, 'sh -s', removeKeyScript(keys.agents, keys.management)))
     connection.installerOrigin ??= connection.publicUrl ?? `https://${m.host!.replace(/\./g, '-')}.sslip.io`
     await privateWrite(join(this.options.userData, 'bridge-admin.json'), JSON.stringify({ host: m.host, port: m.port, user: m.user, keyPath: connection.adminKeyPath }))
     await this.changed()
@@ -757,7 +759,11 @@ export class MachinesService {
   private infrastructureBridge(m: Machine): boolean {
     return m.kind === 'direct' && (m.id === this.d.bridgeMachineId || !!this.d.bridgeConnections?.[m.id] || !!m.bridgeSetup && m.bridgeSetup.state !== 'none')
   }
-  private agentMachines(): Machine[] { return this.d.machines.filter(m => m.enabled !== false && !this.infrastructureBridge(m)) }
+  private agentMachines(): Machine[] { return this.d.machines.filter(m => m.enabled !== false).map(m => {
+    const machine = this.clone(m)
+    if (!this.d.installed.includes(m.id)) machine.status.error = { code: 'key_not_installed' }
+    return machine
+  }) }
   private sshBlock(alias: string, host: string, port: number, user: string, key: string, pin: string, jump?: string, useIdentityAgent = false): string {
     return `Host ${alias}\n  HostName ${host}\n  Port ${port}\n  User ${user}\n  IdentityFile "${key}"\n  IdentitiesOnly yes\n${useIdentityAgent ? '' : '  IdentityAgent none\n'}  UserKnownHostsFile "${this.knownHosts}"\n  GlobalKnownHostsFile /dev/null\n  HostKeyAlias ${pin}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n  ForwardAgent no\n  ForwardX11 no\n  ConnectTimeout 5\n  ServerAliveInterval 30\n  ServerAliveCountMax 2\n${jump ? `  ProxyJump ${jump}\n` : ''}\n`
   }
@@ -778,7 +784,7 @@ export class MachinesService {
     await privateDirectory(this.root)
     let text = '# Managed by Drover Machines. Do not put passwords here.\n\n'
     for (const m of this.d.machines) {
-      if (!m.needsReinstall && !this.infrastructureBridge(m)) text += this.routeBlock(m)
+      if (!m.needsReinstall && (!this.infrastructureBridge(m) || this.d.installed.includes(m.id))) text += this.routeBlock(m)
       text += this.routeBlock(m, true)
     }
     const b = this.bridge()
@@ -1050,7 +1056,18 @@ export class MachinesService {
     return sessions
   }
   async installKey(id: string, options: MachineKeyInstallOptions): Promise<Machine> {
-    await this.serial(() => { if (this.d.bridgeConnections?.[id]) throw new MachinesFailure('bridge_repair_required', 'Bridge credentials are preserved. Use bridge verification to reconnect.'); return this.installKeyInternal(id, options) })
+    await this.serial(async () => {
+      try { return await this.installKeyInternal(id, options) }
+      catch (error) {
+        const m = this.machine(id), reason = sshError(error)
+        if (!this.d.installed.includes(id)) {
+          m.status.error = { code: 'key_not_installed', detail: reason.detail }
+          await this.changed()
+        }
+        // Persist the pin and keep Connect available after a failed sign-in.
+        throw error instanceof MachinesFailure ? error : new MachinesFailure(reason.code, reason.detail ?? 'Machine sign-in failed. Try connecting again.')
+      }
+    })
     await this.serial(() => this.syncHerdrInternal([id]))
     return this.serial(async () => this.clone(this.machine(id)))
   }
@@ -1064,7 +1081,6 @@ export class MachinesService {
     this.requireSuccess(result, password !== undefined)
     const oldAdmin = connection.adminKeyPath
     connection.adminManaged = true
-    if (!this.d.installed.includes(m.id)) this.d.installed.push(m.id)
     connection.adminKeyPath = this.keyPath('management_ed25519')
     await this.changed()
     try { this.requireSuccess(await this.execute(m, 'true')) }
@@ -1138,8 +1154,30 @@ export class MachinesService {
     delete m.activeRoute; m.fallback = false
     throw last
   }
+  /** Reachability only: imported machines must never use a login key or SSH. */
+  private async checkUnconnected(m: Machine): Promise<Machine> {
+    const detail = m.status.error?.code === 'key_not_installed' ? m.status.error.detail : undefined
+    m.status = { state: 'checking', error: { code: 'key_not_installed', ...(detail ? { detail } : {}) } }
+    this.options.changed?.(await this.result())
+    let best: MachineRoute | undefined
+    for (const route of orderedRoutes(m)) {
+      route.checkedAt = Date.now(); delete route.error; delete route.latencyMs
+      if (route.kind === 'bridge' || !route.host) { route.state = 'unknown'; continue }
+      try {
+        route.latencyMs = await this.tcp(route.host, route.port ?? 22, route.kind === 'lan' ? 800 : 3000)
+        route.state = 'ok'; best ??= route
+      } catch (error) { route.state = 'down'; route.error = sshError(error) }
+    }
+    m.activeRoute = best?.kind; m.fallback = !!best && best !== m.routes?.[0]
+    m.status = { state: best ? 'online' : 'offline', checkedAt: Date.now(), ...(best ? { latencyMs: best.latencyMs } : {}),
+      checks: { tcp: !!best, auth: false }, error: { code: 'key_not_installed', ...(detail ? { detail } : {}) } }
+    await this.store.save(this.d)
+    this.options.changed?.(await this.result())
+    return this.clone(m)
+  }
   private async checkInternal(m: Machine): Promise<Machine> {
-    if (m.enabled === false || m.origin === 'herdr' && !this.d.installed.includes(m.id)) return this.clone(m)
+    if (m.origin === 'herdr' && !this.d.installed.includes(m.id)) return this.checkUnconnected(m)
+    if (m.enabled === false) return this.clone(m)
     m.status = { ...m.status, state: 'checking', error: undefined }
     this.options.changed?.(await this.result())
     let tcp = false, auth = false, latencyMs: number | undefined
@@ -1163,7 +1201,7 @@ export class MachinesService {
       const tried = new Set<MachineRouteKind>()
       for (;;) {
         try {
-          result = await this.execute(m, m.os === 'windows' ? `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(WINDOWS_METRICS, 'utf16le').toString('base64')}` : `sh -c ${quote(METRICS)}`, undefined, this.infrastructureBridge(m))
+          result = await this.execute(m, m.os === 'windows' ? `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(WINDOWS_METRICS, 'utf16le').toString('base64')}` : `sh -c ${quote(METRICS)}`, undefined, this.infrastructureBridge(m) && !this.d.installed.includes(m.id))
           this.requireSuccess(result); break
         } catch (error) {
           if (!['timeout', 'host_unreachable', 'tunnel_down', 'bridge_down'].includes(sshError(error).code) || !m.activeRoute) throw error
@@ -1194,7 +1232,7 @@ export class MachinesService {
     return this.serial(async () => {
       validatePermissions(permissions)
       const m = this.machine(id), old = structuredClone(m.permissions)
-      if (this.d.bridgeConnections?.[id]) throw new MachinesFailure('bridge_repair_required', 'Existing bridge credentials are preserved. Permission changes need a dedicated bridge repair.')
+      if (this.d.bridgeConnections?.[id] && !this.d.installed.includes(id)) throw new MachinesFailure('key_not_installed', 'Connect agents access before changing permissions.')
       await this.finishCredentialRemoval(m)
       if (permissions.mode === 'read-only' && m.os && m.os !== 'linux') throw new MachinesFailure('permission_unavailable', 'Read-only access requires Linux with a working bubblewrap sandbox.')
       if (m.kind === 'bridged' && this.d.issuedInstallers.includes(id)) {

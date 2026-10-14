@@ -188,7 +188,7 @@ export function App() {
       </main>
       {!showOffice && !mobile && connected && previewGroup && <PreviewPanel key={previewGroup.workspace.workspace_id} group={previewGroup} />}
       {dialog?.type === 'new-agent' && <NewAgentDialog preset={dialog} />}
-      {dialog?.type === 'settings' && !mobileWeb && <SettingsDialog initialTab={dialog.tab} />}
+      {dialog?.type === 'settings' && !mobileWeb && <SettingsDialog initialTab={dialog.tab} connectMachine={dialog.connectMachine} />}
       {dialog?.type === 'prompt' && <PromptDialog d={dialog} />}
       {dialog?.type === 'confirm' && <ConfirmDialog d={dialog} />}
       {dialog?.type === 'team' && <TeamDialog workspaceId={dialog.workspaceId} />}

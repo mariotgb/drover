@@ -1328,4 +1328,12 @@ export const zh: Dict = {
   "Access to this bridge can be changed once machines connect through it.": "当机器通过此桥接连接后，即可更改其访问权限。",
   "This server has a public IP. To switch bridges, first connect machines through {bridge}.": "此服务器有公网 IP。要切换桥接，请先通过 {bridge} 连接机器。",
   "Connect machines": "连接机器",
+  "Not connected": "未连接",
+  "Unreachable": "无法访问",
+  "Connect machine": "连接",
+  "Drover cannot reach {name} right now. Check that it is turned on and on the network, then connect it.": "Drover 当前无法访问 {name}。请确认它已开机并已联网，然后连接它。",
+  "Checking whether {name} answers…": "正在检查 {name} 是否响应…",
+  "{name} answers, but Drover is not connected to it yet.": "{name} 有响应，但 Drover 尚未连接到它。",
+  "Could not read the keys on this computer: {error}": "无法读取此电脑上的密钥：{error}",
+  "Checking now…": "正在检查…",
 }

@@ -1328,4 +1328,12 @@ export const ru: Dict = {
   "Access to this bridge can be changed once machines connect through it.": "Доступ к этому мосту можно будет изменить, когда через него подключатся машины.",
   "This server has a public IP. To switch bridges, first connect machines through {bridge}.": "У этого сервера публичный IP. Чтобы сменить мост, сначала подключите машины через {bridge}.",
   "Connect machines": "Подключить машины",
+  "Not connected": "Не подключена",
+  "Unreachable": "Недоступна",
+  "Connect machine": "Подключить",
+  "Drover cannot reach {name} right now. Check that it is turned on and on the network, then connect it.": "Drover сейчас не может достучаться до {name}. Проверьте, что машина включена и в сети, затем подключите её.",
+  "Checking whether {name} answers…": "Проверяю, отвечает ли {name}…",
+  "{name} answers, but Drover is not connected to it yet.": "{name} отвечает, но Drover ещё не подключён к ней.",
+  "Could not read the keys on this computer: {error}": "Не удалось прочитать ключи на этом компьютере: {error}",
+  "Checking now…": "Проверяю…",
 }

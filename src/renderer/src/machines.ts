@@ -1,10 +1,11 @@
 // Settings > Machines: the UI's view of the machines store. Desktop only.
 // Types come from the backend contract; this module adds UI helpers.
 
+import { useEffect, useState } from 'react'
 import { api, registerErrorTexts } from './api'
 import { t, tp } from './i18n'
 
-import type { BridgeProgress, BridgeStepId, Machine, MachineError, MachineOs, MachinesApi } from '@shared/machines'
+import type { BridgeProgress, BridgeStepId, Machine, MachineError, MachineOs, MachinesApi, MachinesState } from '@shared/machines'
 export type { SessionCleanupReport, SessionCleanupResult } from '@shared/machines'
 export type { HostKey, InstallCommand, Machine, MachineAccess, MachineDraft, MachineError, MachineKind, MachineOs, MachinesApi, MachinesState } from '@shared/machines'
 
@@ -87,7 +88,9 @@ export function bridgeStatus(bridge: Machine, homes: { total: number; online: nu
   const setup = bridge.bridgeSetup
   const conn = bridge.bridgeConnection
   const online = bridge.status.state === 'online'
-  const error = bridge.status.error ?? setup?.error
+  // The bridge's own setup error (e.g. a stopped tunnel) explains web access best. A missing agents key only
+  // means Drover's agents cannot sign in there yet: that is the card's Connect button, not a broken bridge.
+  const error = setup?.error ?? (bridge.status.error?.code === 'key_not_installed' ? undefined : bridge.status.error)
   const bad = (text: string) => ({ tone: 'bad' as const, label: t('Not working'), text })
   if (setup?.state === 'running') return { tone: 'wait', label: t('Setting up'), text: t('Setting up: {step}', { step: setup.step ?? '…' }) }
   if (error) return bad(machineErrorText(error, bridge, bridge.name))
@@ -189,4 +192,34 @@ export function applyProgress(steps: BridgeProgress[], p: BridgeProgress): Bridg
 
 export function initialSteps(ids: BridgeStepId[], caddy = true): BridgeProgress[] {
   return ids.map((step, i) => ({ step, state: !caddy && step === 'phone_site' ? 'skipped' : i === 0 ? 'running' : 'pending' }))
+}
+
+/** A listed machine Drover has not connected yet (for example imported from herdr). It is never "offline":
+ * either we are still checking it, it answers and only needs connecting, or it cannot be reached.
+ * For such a machine the backend's state reflects an unauthenticated TCP probe only. */
+export type PendingConnect = 'checking' | 'reachable' | 'unreachable'
+type StatusLike = { state: string; error?: MachineError; checks?: { tcp?: boolean } }
+export function pendingConnect(status: StatusLike): PendingConnect | null {
+  if (status.error?.code !== 'key_not_installed') return null
+  if (status.state === 'checking') return 'checking'
+  if (status.state === 'online' || status.checks?.tcp === true) return 'reachable'
+  if (status.state === 'offline' || status.checks?.tcp === false) return 'unreachable'
+  return 'checking'
+}
+export function pendingConnectLabel(p: PendingConnect): string {
+  return p === 'reachable' ? t('Not connected') : p === 'unreachable' ? t('Unreachable') : t('Checking now…')
+}
+
+/** Drover's own machine records, live; null while loading or in a build without machines. */
+export function useMachinesState(): MachinesState | null {
+  const [state, setState] = useState<MachinesState | null>(null)
+  useEffect(() => {
+    const api = machinesApi()
+    if (!api) return
+    let live = true
+    void api.state().then((s) => { if (live) setState(s) }, () => undefined)
+    const off = api.onChange((s) => { if (live) setState(s) })
+    return () => { live = false; off() }
+  }, [])
+  return state
 }

@@ -11,7 +11,10 @@ interface Observation {
   identity: string; revision: number; changedAt: number; checkedAt: number; verifiedRevision?: number
   dialog?: Dialog; question?: AgentQuestion
 }
-interface RestoreWatch extends RestoreTarget { startedAt: number; state: 'starting' | 'failed'; terminalId?: string }
+interface RestoreWatch extends RestoreTarget { startedAt: number; state: 'starting' | 'failed'; terminalId?: string; seenAgent?: boolean; error?: { code: string; message: string } }
+const RESTORE_TIMEOUT_MS = 5 * 60_000
+const restoreMatches = (pane: PaneInfo, restore: RestoreWatch) => (!restore.terminalId || restore.terminalId === pane.terminal_id) && pane.agent === restore.kind && (!pane.agent_session?.value || pane.agent_session.value === restore.sessionId)
+const restoreReady = (pane: PaneInfo, restore: RestoreWatch) => restoreMatches(pane, restore) && ((pane as PaneInfo & { interactive_ready?: boolean }).interactive_ready === true || ['working', 'idle', 'done', 'blocked'].includes(pane.agent_status))
 const identity = (pane: PaneInfo) => JSON.stringify([pane.terminal_id, pane.agent, pane.agent_session?.value])
 
 /** Visible menus only. Ordinary numbered prose/code must not become actionable. */
@@ -78,11 +81,12 @@ export class AgentQuestions extends EventEmitter<{ changed: []; attention: [Stat
     const decorate = <T extends PaneInfo>(pane: T): T => {
       const observed = this.observations.get(pane.pane_id)
       const question = observed?.identity === identity(pane) && observed.verifiedRevision === pane.revision ? observed.question : undefined
-      const restore = this.restores.get(pane.pane_id)
+      let restore = this.restores.get(pane.pane_id)
+      if (restore && restoreReady(pane, restore)) { this.restores.delete(pane.pane_id); restore = undefined }
       const watching = restore && (!restore.terminalId || restore.terminalId === pane.terminal_id) && (!pane.agent || pane.agent === restore.kind && (!pane.agent_session?.value || pane.agent_session.value === restore.sessionId))
       return { ...pane, ...(question ? { agent_question: question, agent_status: 'blocked' as const } : {}),
-        ...(watching ? { restore_state: restore.state, agent: pane.agent || restore.kind, agent_status: question ? 'blocked' as const : 'unknown' as const,
-          ...(restore.state === 'failed' ? { restore_error: { code: 'restore_timeout', message: 'The restored agent did not become ready within 60 seconds.' } } : {}) } : {}) }
+        ...(watching && restore ? { restore_state: restore.state, agent: pane.agent || restore.kind, agent_status: question ? 'blocked' as const : 'unknown' as const,
+          ...(restore.state === 'failed' ? { restore_error: restore.error } : {}) } : {}) }
     }
     const panes = snapshot.panes.map(decorate), agents = snapshot.agents.map(decorate)
     for (const pane of panes) if (pane.restore_state && pane.agent && !agents.some(a => a.pane_id === pane.pane_id)) agents.push({ ...pane, agent: pane.agent, name: pane.label || null })
@@ -106,7 +110,7 @@ export class AgentQuestions extends EventEmitter<{ changed: []; attention: [Stat
         if (!this.current(ctx)) return
         const agent = snapshot.agents.find(a => a.pane_id === pane.pane_id)
         // Native Herdr restore can precede Drover attaching to its server.
-        if (!this.restores.has(pane.pane_id) && agent?.agent_session?.kind === 'id' && (agent.launch_pending || agent.interactive_ready === false)) {
+        if (!this.restores.has(pane.pane_id) && agent?.agent_session?.kind === 'id' && (agent.launch_pending || agent.interactive_ready === false) && agent.agent_status === 'unknown') {
           this.restores.set(pane.pane_id, { paneId: pane.pane_id, kind: agent.agent, sessionId: agent.agent_session.value, startedAt: this.now(), state: 'starting' })
           changed = true
         }
@@ -117,10 +121,20 @@ export class AgentQuestions extends EventEmitter<{ changed: []; attention: [Stat
           observation = { ...(observation?.identity === who ? observation : {}), identity: who, revision: pane.revision, changedAt: time, checkedAt: -Infinity }
           this.observations.set(pane.pane_id, observation)
         }
-        const restore = this.restores.get(pane.pane_id)
+        let restore = this.restores.get(pane.pane_id)
+        if (restore && restoreReady(agent ?? pane, restore)) { this.restores.delete(pane.pane_id); restore = undefined; changed = true }
         if (restore && (restore.terminalId && restore.terminalId !== pane.terminal_id || pane.agent && (pane.agent !== restore.kind || pane.agent_session?.value && pane.agent_session.value !== restore.sessionId))) {
           this.restores.delete(pane.pane_id); changed = true
-        } else if (restore) restore.terminalId = pane.terminal_id
+        } else if (restore) {
+          restore.terminalId = pane.terminal_id
+          if (pane.agent === restore.kind) restore.seenAgent = true
+          if (restore.state !== 'failed' && !pane.agent && (restore.seenAgent || time - restore.startedAt >= RESTORE_TIMEOUT_MS)) {
+            restore.state = 'failed'
+            restore.error = { code: restore.seenAgent ? 'restore_exited' : 'restore_timeout', message: restore.seenAgent ? 'The restored agent exited before becoming ready.' : 'The restored agent did not appear within 5 minutes.' }
+            changed = true
+            this.emit('attention', { pane: this.decorate({ ...snapshot, panes: [pane], agents: [] })!.panes[0], from: 'unknown', to: 'blocked', name: agent?.name ?? pane.label ?? null })
+          }
+        }
         // Restores are checked immediately; other agents only once stationary.
         if (time - observation.changedAt >= (restore ? 0 : this.stableMs) && time - observation.checkedAt >= (restore?.state === 'starting' ? 2000 : this.retryMs)) {
           observation.checkedAt = time
@@ -128,7 +142,6 @@ export class AgentQuestions extends EventEmitter<{ changed: []; attention: [Stat
             const { read } = await ctx.client!.request<{ read: { text: string; revision?: number } }>('pane.read', { pane_id: pane.pane_id, source: 'visible', format: 'text' }, 3000)
             if (!this.current(ctx)) return
             if (read.revision !== undefined && read.revision !== pane.revision) {
-              if (restore && restore.state === 'starting' && time - restore.startedAt >= 60000) { restore.state = 'failed'; changed = true }
               continue
             }
             const dialog = blockingDialog(read.text, pane.agent || restore?.kind || '')
@@ -150,13 +163,14 @@ export class AgentQuestions extends EventEmitter<{ changed: []; attention: [Stat
             }
           } catch { /* Keep pending restores and retry bounded read failures. */ }
         }
-        if (restore && this.restores.has(pane.pane_id) && restore.state === 'starting' && time - restore.startedAt >= 60000) {
-          restore.state = 'failed'; changed = true
-          if (!observation.question) this.emit('attention', { pane: this.decorate({ ...snapshot, panes: [agent ?? pane], agents: [] })!.panes[0], from: 'unknown', to: 'blocked', name: agent?.name ?? null })
-        }
+
       }
       // Deleted restored panes cannot retain a pending banner.
-      for (const id of this.restores.keys()) if (!snapshot.panes.some(p => p.pane_id === id)) { this.restores.delete(id); changed = true }
+      for (const id of this.restores.keys()) if (!snapshot.panes.some(p => p.pane_id === id)) {
+        const pane = this.service.snapshot?.panes.find(p => p.pane_id === id)
+        if (pane) this.emit('attention', { pane: { ...pane, restore_state: 'failed', restore_error: { code: 'restore_exited', message: 'The restored pane was closed before the agent became ready.' } }, from: 'unknown', to: 'blocked', name: pane.label ?? null })
+        this.restores.delete(id); changed = true
+      }
       if (changed && this.current(ctx)) this.emit('changed')
     } finally { this.polling = false }
   }

@@ -4,23 +4,24 @@ import { ChevronRight, FolderClosed, Plus, Server } from 'lucide-react'
 import { AGENT_KINDS } from '@shared/agents'
 import { t } from '../i18n'
 import { errorText } from '../api'
-import { toast } from '../store'
+import { toast, useStore } from '../store'
 import { openMenuAt, type MenuItem } from './Menu'
 import { AgentAvatar, IconButton, StatusDot } from './primitives'
 import { MachineDot } from './MachinesSettings'
 import { herdrAgentCount, herdrMachinesApi, useHerdrMachines, type HerdrMachine, type HerdrMachineAgent } from '../herdrMachines'
-import { machineErrorText } from '../machines'
+import { machineErrorText, pendingConnect, pendingConnectLabel, useMachinesState, type Machine } from '../machines'
 
 const START_KINDS = ['claude', 'codex', 'gemini', 'opencode']
 
 /** Sidebar: herdr machines with their projects and agents, below the local projects. */
 export function MachinesSidebar() {
   const machines = useHerdrMachines()
+  const drover = useMachinesState()
   if (!machines.length) return null
   return (
     <div className="mside">
       <div className="sidebar-section-head"><span>{t('Machines')}</span></div>
-      {machines.map((m) => <MachineSection key={m.id} machine={m} />)}
+      {machines.map((m) => <MachineSection key={m.id} machine={m} drover={drover?.machines.find((x) => x.id === m.droverMachineId) ?? null} />)}
     </div>
   )
 }
@@ -36,20 +37,24 @@ function startMenu(m: HerdrMachine, cwd?: string): MenuItem[] {
   ]
 }
 
-function MachineSection({ machine: m }: { machine: HerdrMachine }) {
-  const [open, setOpen] = useState(m.status.state === 'online')
+function MachineSection({ machine: m, drover }: { machine: HerdrMachine; drover: Machine | null }) {
+  // Imported from herdr but not connected in Drover yet: show whether it answers, never "offline".
+  // When herdr itself reaches the machine, its agents work and herdr's own status wins.
+  const pending = drover && m.status.state !== 'online' ? pendingConnect(drover.status) : null
+  const [open, setOpen] = useState(m.status.state === 'online' || !!pending)
   const online = m.status.state === 'online'
   const agents = herdrAgentCount(m)
-  const meta = online
-    ? (m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : t('Online'))
-    : m.status.state === 'checking' ? t('Checking…') : m.status.state === 'disabled' || m.enabled === false ? t('Turned off') : t('Offline')
+  const meta = pending ? pendingConnectLabel(pending)
+    : online ? (m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : t('Online'))
+    : m.status.state === 'checking' ? t('Checking…') : m.status.state === 'disabled' || m.enabled === false ? t('Turned off') : m.status.state === 'unknown' ? t('Not checked yet') : t('Offline')
+  const connect = () => drover && useStore.setState({ dialog: { type: 'settings', tab: 'machines', connectMachine: drover.id } })
   return (
-    <section className={clsx('mside-machine', !online && 'is-offline')}>
+    <section className={clsx('mside-machine', !online && !pending && 'is-offline', pending && `is-${pending}`)}>
       <div className="mside-head" role="button" tabIndex={0} aria-expanded={open}
         title={[m.target, m.status.error ? machineErrorText(m.status.error, { name: m.label }) : ''].filter(Boolean).join(' · ')}
         onClick={() => setOpen(!open)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!open) } }}>
         <ChevronRight size={12} className={clsx('mside-chev', open && 'open')} />
-        <MachineDot machine={{ status: { ...m.status, state: m.status.state === 'disabled' ? 'unknown' : m.status.state } }} />
+        <MachineDot machine={pending && drover ? drover : { status: { ...m.status, state: m.status.state === 'disabled' ? 'unknown' : m.status.state } }} />
         <Server size={13} className="mside-icon" />
         <span className="mside-label">{m.label}</span>
         {!open && agents > 0 && <span className="mside-count">{agents}</span>}
@@ -62,7 +67,13 @@ function MachineSection({ machine: m }: { machine: HerdrMachine }) {
       </div>
       {open && (
         <div className="mside-body">
-          {!online && <div className="mside-note">{m.status.state === 'disabled' || m.enabled === false
+          {pending && <div className="mside-note mside-connect">
+            <span>{pending === 'reachable' ? t('{name} answers, but Drover is not connected to it yet.', { name: m.label })
+              : pending === 'unreachable' ? t('Drover cannot reach {name} right now. Check that it is turned on and on the network, then connect it.', { name: m.label })
+              : t('Checking whether {name} answers…', { name: m.label })}</span>
+            {pending !== 'checking' && <button type="button" className={clsx('btn btn-sm', pending === 'reachable' && 'btn-primary')} onClick={connect}>{t('Connect machine')}</button>}
+          </div>}
+          {!online && !pending && <div className="mside-note">{m.status.state === 'disabled' || m.enabled === false
             ? t('{name} is turned off. Turn it on in Settings › Machines to see its agents here.', { name: m.label })
             : m.status.error ? machineErrorText(m.status.error, { name: m.label }) : t('{name} is offline. Its agents show up here when it is back.', { name: m.label })}</div>}
           {online && !m.workspaces.length && (

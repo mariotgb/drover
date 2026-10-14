@@ -99,6 +99,10 @@
 .machine-dot.is-offline > span { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 15%, transparent); }
 .machine-dot.is-waiting > span { background: var(--blocked); animation: machine-pulse 1.6s ease-in-out infinite; }
 .machine-dot.is-unknown > span { background: transparent; border: 1.5px solid var(--text-4); }
+/* Listed but not connected yet: it answers (amber ring) or cannot be reached (grey ring). Never the red offline dot. */
+.machine-dot.is-reachable > span { background: transparent; border: 2px solid var(--blocked); }
+.machine-dot.is-unreachable > span { background: transparent; border: 1.5px dashed var(--text-3); }
+.machine-latency.is-reachable { color: var(--blocked); font-weight: 500; }
 @keyframes machine-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--blocked) 45%, transparent); } 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--blocked) 0%, transparent); } }
 
 /* Details */
@@ -272,6 +276,8 @@
 .mside-head:hover .mside-meta, .mside-head:focus-within .mside-meta { display: none; }
 .mside-body { display: flex; flex-direction: column; gap: 2px; padding: 0 0 4px 14px; }
 .mside-note { padding: 4px 8px 6px; font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
+.mside-connect { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.mside-machine.is-reachable .mside-meta { color: var(--blocked); }
 .mside-empty { display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 4px; padding: 5px 8px; border: 1px dashed var(--border-strong); border-radius: 7px; background: transparent; color: var(--text-2); font: inherit; font-size: 11.5px; cursor: pointer; text-align: left; }
 .mside-empty:hover { background: var(--bg-hover); color: var(--text); }
 .mside-ws { display: flex; flex-direction: column; }

@@ -57,7 +57,7 @@ export interface Toast {
 
 export type DialogState =
   | { type: 'new-agent'; workspaceId?: string | null; folder?: string | null; kind?: string | null; pickFolder?: boolean; splitTarget?: string | null; paneId?: string | null }
-  | { type: 'settings'; tab?: string }
+  | { type: 'settings'; tab?: string; connectMachine?: string }
   | { type: 'team'; workspaceId: string }
   | { type: 'broadcast'; workspaceId: string }
   | { type: 'boss' }

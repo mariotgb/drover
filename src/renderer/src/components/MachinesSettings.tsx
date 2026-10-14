@@ -14,9 +14,9 @@ import { MachinesRolesBlock } from './MachinesRolesBlock'
 import { ConnectMachineWizard, needsConnect } from './ConnectMachineWizard'
 import type { MachineChecks } from '@shared/machines'
 import { activeRoute, hasRoute, isFallback, purposeOf, routeChip, routeName, routesOf } from '../machineRoutes'
-import { ago, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, bridgeStatus, phoneOnlyBridge, type BridgeAdoptOptions, type BridgeKeyCandidate, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
+import { ago, pendingConnect, pendingConnectLabel, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, bridgeStatus, phoneOnlyBridge, type BridgeAdoptOptions, type BridgeKeyCandidate, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
 
-export function MachinesSettings() {
+export function MachinesSettings({ connectMachine }: { connectMachine?: string } = {}) {
   const machines = machinesApi()
   const [state, setState] = useState<MachinesState | null>(null)
   const [error, setError] = useState('')
@@ -26,7 +26,7 @@ export function MachinesSettings() {
   const [bridgeWizard, setBridgeWizard] = useState(false)
   const [bridgeReport, setBridgeReport] = useState<BridgeProgress[] | null>(null)
   const [help, setHelp] = useState(false)
-  const [connecting, setConnecting] = useState<string | null>(null)
+  const [connecting, setConnecting] = useState<string | null>(connectMachine ?? null)
   useEffect(() => {
     if (!machines) return
     void machines.state().then(setState, (e) => setError(errorText(e)))
@@ -80,10 +80,11 @@ export function MachinesSettings() {
   )
 }
 
-export function MachineDot({ machine }: { machine: Pick<Machine, 'status'> }) {
-  const s = machine.status.state
-  if (s === 'checking') return <span className="machine-dot"><Spinner size={10} /></span>
-  return <span className={clsx('machine-dot', `is-${s}`)} title={stateLabel(s)}><span /></span>
+export function MachineDot({ machine }: { machine: { status: { state: string; error?: Machine['status']['error']; checks?: { tcp?: boolean } } } }) {
+  const s = machine.status.state, pending = pendingConnect(machine.status)
+  if (s === 'checking' || pending === 'checking') return <span className="machine-dot" title={pending ? pendingConnectLabel(pending) : t('Checking…')}><Spinner size={10} /></span>
+  if (pending) return <span className={clsx('machine-dot', `is-${pending}`)} title={pendingConnectLabel(pending)}><span /></span>
+  return <span className={clsx('machine-dot', `is-${s}`)} title={stateLabel(s as Machine['status']['state'])}><span /></span>
 }
 
 function stateLabel(s: Machine['status']['state']): string {
@@ -385,10 +386,13 @@ function NoBridge({ api, state, onSetup, onAgain, detectError }: { api: BridgeAp
 function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, open, onToggle, onConnect }: { api: MachinesApi; machine: Machine; bridge: Machine | null; via: Machine | null; homes: number; isBridge: boolean; onNotes: (notes: CleanupNote[]) => void; open: boolean; onToggle: () => void; onConnect: () => void }) {
   const { busy, error, run } = useAction()
   const checking = busy === 'check' || m.status.state === 'checking'
-  const unconnected = needsConnect(m)
-  const reason = unconnected ? t('Not connected yet: Drover’s agents cannot sign in here until you connect it.') : needsHostKey(m) ? (isLan(m) ? t('{name} answers on your home network: its SSH port is reachable. Confirm its key to finish.', { name: m.name }) : t('{name} reached the bridge. Confirm its key to finish.', { name: m.name })) : m.status.state === 'offline' || m.status.state === 'waiting' ? machineErrorText(m.status.error, m, via?.name) : ''
+  const unconnected = needsConnect(m), pending = pendingConnect(m.status)
+  const reason = unconnected && pending === 'unreachable' ? t('Drover cannot reach {name} right now. Check that it is turned on and on the network, then connect it.', { name: m.name })
+    : unconnected && pending === 'checking' ? t('Checking whether {name} answers…', { name: m.name })
+    : unconnected ? t('Not connected yet: Drover’s agents cannot sign in here until you connect it.') : needsHostKey(m) ? (isLan(m) ? t('{name} answers on your home network: its SSH port is reachable. Confirm its key to finish.', { name: m.name }) : t('{name} reached the bridge. Confirm its key to finish.', { name: m.name })) : m.status.state === 'offline' || m.status.state === 'waiting' ? machineErrorText(m.status.error, m, via?.name) : ''
   const routes = routesOf(m)
-  const active = activeRoute(m)
+  // Not connected yet: a route that answers is not one agents use "now".
+  const active = pending ? null : activeRoute(m)
   const purpose = purposeOf(m)
   const where = m.host ? `${m.user}@${m.host}${m.port && m.port !== 22 ? `:${m.port}` : ''}` : ''
   const fallbackNote = !reason && m.status.state === 'online' && isFallback(m) && active
@@ -397,7 +401,7 @@ function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, op
   // A bridge exists but this machine has no route through it: it works at home only.
   const homeOnly = !!bridge && !isBridge && !hasRoute(m, 'bridge') && !hasRoute(m, 'internet')
   return (
-    <div id={`machine-${m.id}`} className={clsx('machine', open && 'open', m.status.state === 'offline' && 'is-offline')} role="listitem">
+    <div id={`machine-${m.id}`} className={clsx('machine', open && 'open', m.status.state === 'offline' && !pending && 'is-offline')} role="listitem">
       <div className="machine-head">
         <button type="button" className="machine-toggle" aria-expanded={open} onClick={onToggle}>
           <ChevronRight size={13} className="machine-chev" />
@@ -420,9 +424,9 @@ function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, op
             </span>
           </span>
         </button>
-        {unconnected && <button type="button" className="btn btn-sm btn-primary machine-next" onClick={onConnect}>{t('Connect')}</button>}
+        {unconnected && <button type="button" className={clsx('btn btn-sm machine-next', pending !== 'unreachable' && 'btn-primary')} onClick={onConnect}>{t('Connect machine')}</button>}
         <span className="machine-meta">
-          <span className="machine-latency">{m.status.state === 'online' && m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : stateLabel(m.status.state)}</span>
+          <span className={clsx('machine-latency', pending && `is-${pending}`)}>{pending ? pendingConnectLabel(pending) : m.status.state === 'online' && m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : stateLabel(m.status.state)}</span>
           <span className="machine-ago">{ago(m.status.checkedAt)}</span>
         </span>
         <button type="button" className="icon-btn icon-btn-sm" title={t('Check now')} aria-label={t('Check now')} disabled={checking} onClick={() => void run('check', () => api.check(m.id))}>

@@ -21,9 +21,13 @@ function signInError(e: unknown, user: string): string {
 
 /** A machine is listed (for example imported from herdr) but Drover's agents cannot sign in yet. */
 export function needsConnect(m: Machine): boolean {
-  if (m.kind !== 'direct' || !m.host) return false
-  // The backend marks a listed-but-unconnected machine durably with key_not_installed.
-  return m.status.error?.code === 'key_not_installed'
+  // The backend marks a listed-but-unconnected machine (or a bridge without the agents key) durably with key_not_installed.
+  return !!m.host && m.status.error?.code === 'key_not_installed'
+}
+
+/** Connected means Drover's agents key signed in. For a not-connected machine "online" only means its port answers. */
+export function signedIn(m: Machine): boolean {
+  return m.status.state === 'online' && m.status.checks?.auth === true && m.status.error?.code !== 'key_not_installed'
 }
 
 /**
@@ -41,15 +45,24 @@ export function ConnectMachineWizard({ api, state, machineId, onClose }: { api: 
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [keysError, setKeysError] = useState('')
+  const [keysTry, setKeysTry] = useState(0)
 
   // Step 1: fetch the server key for this login; a key already in known_hosts still needs a click.
   useEffect(() => {
     if (!m?.host) return
     let live = true
     api.probeHostKey(m.host, m.port ?? 22, m.user).then((k) => { if (live) { setHostKey(k); setConfirmed(k.known) } }, (e) => { if (live) setError(errorText(e)) })
-    api.loginKeyCandidates(m.host).then((list) => { if (live) { setKeys(list); setKeyPath((p) => p || list[0]?.path || '') } }, () => undefined)
     return () => { live = false }
   }, [api, m?.host, m?.port, m?.user])
+  // Keys on this computer that fit; a failure is shown with a retry instead of an empty list.
+  useEffect(() => {
+    if (!m?.host) return
+    let live = true
+    setKeysError('')
+    api.loginKeyCandidates(m.host).then((list) => { if (live) { setKeys(list); setKeyPath((p) => p || list[0]?.path || '') } }, (e) => { if (live) setKeysError(errorText(e)) })
+    return () => { live = false }
+  }, [api, m?.host, keysTry])
 
   if (!m) return null
   const passwordAllowed = !!hostKey?.passwordAllowed
@@ -71,7 +84,7 @@ export function ConnectMachineWizard({ api, state, machineId, onClose }: { api: 
     setPassword('')
     try {
       const done = await api.installKey(m.id, usePassword ? { password: secret, acceptedFingerprint: hostKey.fingerprint } : { keyPath, acceptedFingerprint: hostKey.fingerprint })
-      if (done.status.state === 'online') setStep(3)
+      if (signedIn(done)) setStep(3)
       else setError(machineErrorText(done.status.error, done) || t('Could not connect.'))
     } catch (e) { setError(signInError(e, m.user)) } finally { setBusy(false) }
   }
@@ -126,7 +139,8 @@ export function ConnectMachineWizard({ api, state, machineId, onClose }: { api: 
                     </label>
                   ))}
                 </div>
-              ) : <p className="setting-hint">{t('Drover found no key in ~/.ssh that fits. Choose the key file you use to sign in to {name}.', { name: m.name })}</p>}
+              ) : keysError ? <p role="alert" className="form-error">{t('Could not read the keys on this computer: {error}', { error: keysError })} <button type="button" className="link-btn" onClick={() => setKeysTry((n) => n + 1)}>{t('Try again')}</button></p>
+                : <p className="setting-hint">{t('Drover found no key in ~/.ssh that fits. Choose the key file you use to sign in to {name}.', { name: m.name })}</p>}
               <button type="button" className="link-btn bridge-choose" onClick={() => void choose()}><KeyRound size={12} />{t('Choose key file…')}</button>
               <span className="field-hint">{t('The key stays on this computer. Drover uses it once to install the agents key.')}</span>
             </div>
