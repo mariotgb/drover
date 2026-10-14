@@ -7,6 +7,7 @@ import { t } from '../i18n'
 import { isRemote } from '../api'
 import { useRemoteConnection } from '../remote-api'
 import { AgentAvatar, StatusDot } from './primitives'
+import { QuestionCard } from './AgentQuestion'
 import { projectImportance } from '@shared/projects'
 import { ProjectImportanceMarker, ProjectOrderButtons, projectImportanceMenu } from './ProjectPreferences'
 import { openMenuAt } from './Menu'
@@ -71,6 +72,7 @@ export function QuickReplies({ thread }: { thread: Thread }) {
   const serverConnected = useStore((s) => s.connection.status === 'connected')
   const connected = serverConnected && (!isRemote || remoteConnection === 'connected')
   const keys = ['enter', 'esc', '1', '2', '3', 'ctrl+c']
+  if (thread.pane.agent_question) return <div className="mobile-quick-replies"><QuestionCard thread={thread} compact /></div>
   return <div className="mobile-quick-replies">
     <div role="status">{t('{name} is waiting for your answer', { name: thread.name })}</div>
     <div className="mobile-quick-buttons">{keys.map((key) => <button key={key} type="button" className="btn" disabled={busy || !connected} onClick={async () => { setBusy(true); try { await sendKeys(thread, [key]) } finally { setBusy(false) } }}>{key === 'enter' ? 'Enter' : key === 'esc' ? 'Esc' : key === 'ctrl+c' ? 'Ctrl+C' : key}</button>)}</div>

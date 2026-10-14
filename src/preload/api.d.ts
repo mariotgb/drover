@@ -18,6 +18,7 @@ import type {
   RoleTemplate,
   SendPromptRequest,
   SendPromptResult,
+  AnswerAgentQuestionRequest,
   TerminalFrame,
   TranscriptUpdate
 } from '../shared/types'
@@ -85,6 +86,8 @@ export interface DroverApi {
   capturePreview(webContentsId: number, rect: { x: number; y: number; width: number; height: number }): Promise<string | null>
   setClaudeStatusline(enable: boolean): Promise<ClaudeStatuslineState>
   sendPrompt(req: SendPromptRequest): Promise<SendPromptResult>
+  /** Picks one choice of a dialog Drover detected in the agent's terminal; only on an explicit click. */
+  answerAgentQuestion(req: AnswerAgentQuestionRequest): Promise<SendPromptResult>
   createAgent(req: NewAgentRequest): Promise<NewAgentResult>
   planAgentRestart(selection: RestartSelection): Promise<RestartPlan>
   restartAgents(token: string): Promise<RestartResult[]>

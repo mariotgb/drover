@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { createReadStream, readFileSync, realpathSync, statSync } from 'node:fs'
-import { extname, join, resolve, sep } from 'node:path'
+import { createReadStream, realpathSync, statSync } from 'node:fs'
+import { extname, join, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { pipeline } from 'node:stream'
@@ -21,6 +21,7 @@ import { RemotePreviews, type PreviewSource } from './preview'
 import { attachmentStorage, attachmentType, readAttachment, readAttachmentBody, saveAttachment } from './attachments'
 import type { HerdrSnapshot } from '@shared/types'
 import type { StatusChange } from '../herdr/service'
+import { RemoteStaticFiles } from './static'
 
 interface Host {
   webRoot: string
@@ -65,6 +66,7 @@ export function validateRemoteSettings(patch: Partial<RemoteAccessSettings>, cur
 }
 
 export class RemoteServer {
+  private staticFiles = new RemoteStaticFiles()
   private backgrounds = new RemoteTransfers(8)
   private backgroundConnections = new Map<Transfer, string>()
   private uploads = 0
@@ -81,6 +83,7 @@ export class RemoteServer {
   private applied = ''
   private error: string | undefined
   private changing = Promise.resolve()
+  private movingOrigins: string[] = []
   private push: PushNotifications
   private log: RemoteLog
   private previews: RemotePreviews
@@ -109,6 +112,26 @@ export class RemoteServer {
       connectedDevices: new Set([...this.clients].map((c) => this.auth.store.session(c.token, identity.origin)?.device.id).filter(Boolean)).size, error: this.error }
   }
   private emitStatus(): void { this.host.statusChanged(this.status()) }
+  /** Exact, in-memory allowance while the desktop moves its phone tunnel.
+   * Authentication stays bound to the configured identity until commit.
+   */
+  beginPublicOriginMove(publicUrl: string): (committed: boolean) => Promise<void> {
+    if (this.movingOrigins.length) throw new RemoteFailure('phone_move_pending', 'A phone origin move is already running')
+    const settings = this.host.settings()
+    const previous = { remoteEnabled: settings.remoteEnabled, remotePort: settings.remotePort, remotePublicUrl: settings.remotePublicUrl, remoteBehindProxy: remoteUsesProxy(settings) }
+    const next = remoteIdentity(validateRemoteSettings({ remotePublicUrl: publicUrl }, previous)).origin
+    this.movingOrigins = [remoteIdentity(previous).origin, next]
+    let finished = false
+    return async committed => {
+      if (finished) return
+      finished = true
+      try { if (!committed && Object.entries(previous).some(([key, value]) => this.host.settings()[key as keyof RemoteAccessSettings] !== value)) await this.configure(previous) }
+      finally { this.movingOrigins = [] }
+    }
+  }
+  private validOrigin(origin: unknown): boolean {
+    return allowedOrigin(origin, this.host.settings()) || typeof origin === 'string' && this.movingOrigins.includes(origin)
+  }
   async configure(patch: Partial<RemoteAccessSettings>): Promise<RemoteStatus> {
     this.requireNoPoisonFailure()
     const next = validateRemoteSettings(patch, this.host.settings())
@@ -152,6 +175,14 @@ export class RemoteServer {
     return { ...code, url: `${remoteIdentity(this.host.settings()).origin}/pair?code=${encodeURIComponent(code.code)}` }
   }
   devices() { return this.auth.store.devices() }
+  /** Saved phones with a currently authorized, open websocket projection. */
+  phoneDevices(): { id: string; name: string; lastSeenAt: number; online: boolean }[] {
+    let origin = ''
+    try { origin = remoteIdentity(this.host.settings()).origin } catch { /* Invalid settings have no authorized live clients. */ }
+    const online = new Set([...this.clients].filter(client => client.ws.readyState === WebSocket.OPEN)
+      .map(client => this.auth.store.session(client.token, origin)?.device.id).filter(Boolean))
+    return this.devices().map(({ id, name, lastUsedAt }) => ({ id, name, lastSeenAt: lastUsedAt, online: online.has(id) }))
+  }
   async revoke(id: string): Promise<void> {
     this.requireNoPoisonFailure()
     try { this.auth.store.revoke(id) }
@@ -210,13 +241,15 @@ export class RemoteServer {
     const server = createServer((req, res) => { void this.http(req, res).catch((e) => this.httpError(res, e)) })
     server.headersTimeout = 10_000
     server.requestTimeout = 120_000 // Allow bounded 20 MB uploads over a phone connection.
+    // Mixed private RPC/transcript data and reflected request IDs must never share
+    // a compression context, including within a single message.
     const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false })
     this.server = server
     this.wss = wss
     server.on('upgrade', (req, socket, head) => {
       if (this.validHost(req) && this.previews.upgrade(req, socket, head)) return
       const reject = (status: number) => { socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`, () => socket.destroy()) }
-      if (req.url !== REMOTE_WS_PATH || !this.validHost(req) || !allowedOrigin(req.headers.origin, this.host.settings())) return reject(403)
+      if (req.url !== REMOTE_WS_PATH || !this.validHost(req) || !this.validOrigin(req.headers.origin)) return reject(403)
       const token = sessionToken(req.headers.cookie)
       if (!token || !this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)) return reject(401)
       if (this.clients.size >= 32) return reject(429)
@@ -238,6 +271,7 @@ export class RemoteServer {
     attachmentStorage(this.host.attachmentsDir).startCleanup()
   }
   async stop(): Promise<void> {
+    this.staticFiles.clear()
     attachmentStorage(this.host.attachmentsDir).stopCleanup()
     this.authInstance?.clearPending()
     this.previews.clear()
@@ -262,7 +296,7 @@ export class RemoteServer {
   }
   private validHost(req: IncomingMessage): boolean {
     const identity = remoteIdentity(this.host.settings())
-    return req.headers.host === new URL(identity.origin).host || req.headers.host === new URL(identity.localUrl).host
+    return req.headers.host === new URL(identity.origin).host || req.headers.host === new URL(identity.localUrl).host || this.movingOrigins.some(origin => req.headers.host === new URL(origin).host)
   }
   private connect(ws: WebSocket, token: string): void {
     const deviceId = this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)!.device.id
@@ -280,6 +314,12 @@ export class RemoteServer {
       let message: unknown
       try { message = JSON.parse(data.toString()) } catch { ws.close(1008, 'Invalid JSON'); return }
       const call = message as { t?: unknown; id?: unknown; method?: unknown; args?: unknown } | null
+      // A liveness probe must bypass slow/queued RPC work and pending-call limits.
+      if (call?.t === 'ping' && typeof call.id === 'string' && call.id.length <= 128) {
+        if (!this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)) { ws.close(4001, 'Unauthorized'); return }
+        this.write(client, { t: 'pong', id: call.id })
+        return
+      }
       if (call?.t === 'timeout') {
         const active = typeof call.id === 'string' ? client.calls.get(call.id) : undefined
         if (active && !active.timedOut) { active.timedOut = true; this.log.write('rpc_timeout', client.rpc.id, active.method) }
@@ -366,17 +406,6 @@ export class RemoteServer {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RemoteFailure('invalid_json', 'Expected a JSON object')
     return value
   }
-  private staticFile(res: ServerResponse, relative: string, head: boolean): void {
-    let root: string
-    try { root = realpathSync(this.host.webRoot) } catch { throw new RemoteFailure('web_build_missing', 'Web entry not built; build the web renderer', 404) }
-    const file = resolve(root, relative)
-    if (!file.startsWith(root + sep)) throw new RemoteFailure('not_found', 'Not found', 404)
-    let actual: string
-    try { actual = realpathSync(file) } catch { throw new RemoteFailure('web_build_missing', 'Web entry not built; build the web renderer', 404) }
-    if (!actual.startsWith(root + sep) || !statSync(actual).isFile() || !MIME[extname(actual)]) throw new RemoteFailure('not_found', 'Not found', 404)
-    res.writeHead(200, { 'Content-Type': MIME[extname(actual)] })
-    res.end(head ? undefined : readFileSync(actual))
-  }
   /** Safari plays video only with byte-range responses. */
   private background(req: IncomingMessage, res: ServerResponse, token: string, expiresAt: number): void {
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return }
@@ -422,7 +451,7 @@ export class RemoteServer {
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
     if (!this.validHost(req)) throw new RemoteFailure('invalid_host', 'Invalid Host', 403)
     const identity = remoteIdentity(this.host.settings())
-    const currentOrigin = req.headers.host === new URL(identity.origin).host ? identity.origin : identity.localUrl
+    const currentOrigin = this.movingOrigins.find(origin => req.headers.host === new URL(origin).host) ?? (req.headers.host === new URL(identity.origin).host ? identity.origin : identity.localUrl)
     const wsOrigin = currentOrigin.replace(/^http/, 'ws')
     res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src ${currentOrigin} ${wsOrigin}; form-action 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`)
     let path: string
@@ -434,7 +463,7 @@ export class RemoteServer {
     const token = sessionToken(req.headers.cookie)
     const session = this.auth.store.session(token, identity.origin)
     if (req.method === 'POST') {
-      if (!allowedOrigin(req.headers.origin, this.host.settings())) throw new RemoteFailure('invalid_origin', 'Invalid Origin', 403)
+      if (!this.validOrigin(req.headers.origin)) throw new RemoteFailure('invalid_origin', 'Invalid Origin', 403)
       if (path === REMOTE_ATTACHMENT_ROUTES.upload) {
         if (!session) throw new RemoteFailure('unauthorized', 'Login required', 401)
         this.authenticatedLimiter.check(session.device.id)
@@ -499,8 +528,8 @@ export class RemoteServer {
       this.json(res, 200, session ? { authenticated: true, device: session.device, expiresAt: session.session.expiresAt } : { authenticated: false })
       return
     }
-    if (path === '/login' || path === '/pair') { this.staticFile(res, REMOTE_AUTH_ENTRY, req.method === 'HEAD'); return }
-    if (path.startsWith('/auth/assets/')) { this.staticFile(res, path.slice(1), req.method === 'HEAD'); return }
+    if (path === '/login' || path === '/pair') { await this.staticFiles.serve(this.host.webRoot, REMOTE_AUTH_ENTRY, MIME, req, res); return }
+    if (path.startsWith('/auth/assets/')) { await this.staticFiles.serve(this.host.webRoot, path.slice(1), MIME, req, res); return }
     if (path.startsWith('/auth/')) throw new RemoteFailure('not_found', 'Not found', 404)
     if (!session) {
       if (path === '/') { res.writeHead(302, { Location: '/login' }); res.end(); return }
@@ -513,6 +542,6 @@ export class RemoteServer {
       res.end(req.method === 'HEAD' ? undefined : attachment.bytes)
       return
     }
-    this.staticFile(res, path === '/' ? REMOTE_WEB_ENTRY : path.slice(1), req.method === 'HEAD')
+    await this.staticFiles.serve(this.host.webRoot, path === '/' ? REMOTE_WEB_ENTRY : path.slice(1), MIME, req, res)
   }
 }

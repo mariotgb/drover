@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 const bundle = mkdtempSync(join(tmpdir(), 'drover-restore-test-'))
-await build({ stdin: { contents: `export * from './src/main/agentRestore'; export * from './src/main/agentLaunchArgs'; export * from './src/main/agentRestart'; export * from './src/main/herdr/service'; export * from './src/main/captureAgentLaunches'; export * from './src/main/herdr/cli'`, resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(bundle, 'test.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent' })
+await build({ stdin: { contents: `export * from './src/main/agentRestore'; export * from './src/main/agentLaunchArgs'; export * from './src/main/agentRestart'; export * from './src/main/herdr/service'; export * from './src/main/captureAgentLaunches'; export * from './src/main/herdr/cli'; export { HerdrApiError } from './src/shared/types'`, resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(bundle, 'test.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent' })
 const m = createRequire(import.meta.url)(join(bundle, 'test.cjs'))
 rmSync(bundle, { recursive: true, force: true })
 const codexArgs = ['--no-daemon', '-m', 'openai/gpt-6.1-sol', '--dangerously-bypass-approvals-and-sandbox', '-p', 'office', '--add-dir', '/extra', '--search']
@@ -148,6 +148,51 @@ test('snapshot observation captures external CLI launch and the same-process /cl
   saved = JSON.parse(readFileSync(join(dir, 'agent-launches.json'), 'utf8'))['isolated:w1:p1']
   assert.deepEqual(saved.args, ['-m', 'different-model'])
   assert.ok(calls.every(([method]) => ['agent.get', 'pane.process_info'].includes(method)))
+})
+
+test('a replacement after restore cannot inherit a PID-less compatibility launch or its model', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'drover-replaced-restore-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const file = join(dir, 'agent-launches.json')
+  const agent = { pane_id: 'w1:p1', terminal_id: 'restored-term', name: 'drover-restored', cwd: dir, agent: 'codex', agent_session: ref('codex', 'restored-session') }
+  const service = { sessionName: 'isolated', connectionGeneration: 1, connection: { version: '0.9.1' }, client: {}, scheduleRefresh() {}, request: async method =>
+    method === 'agent.get' ? { agent: { ...agent } } : { process_info: { shell_pid: 20, foreground_processes: [{ pid: 22, argv: ['codex', ...codexArgs] }] } } }
+  const restart = new m.AgentRestartService(service, dir, async () => null)
+  // Explicit compatibility restore recording has not observed a native PID yet.
+  await restart.recordLaunch({ kind: 'codex', args: ['--no-daemon', '-m', 'old-model'] }, agent.pane_id)
+  assert.equal(JSON.parse(readFileSync(file, 'utf8'))['isolated:w1:p1'].processId, undefined)
+  agent.name = 'drover-replacement'; agent.agent_session = ref('codex', 'replacement-session')
+  service.agentRestore.observe({ agents: [agent], panes: [agent] }); await restart.observing
+  const saved = JSON.parse(readFileSync(file, 'utf8'))['isolated:w1:p1']
+  assert.deepEqual(saved.args, codexArgs)
+  assert.equal(saved.choice.model, 'openai/gpt-6.1-sol'); assert.equal(saved.bypass, true); assert.equal(saved.processId, 22)
+  // The replacement's policy must survive the next cold restore, too.
+  const sessionDir = join(dir, 'session'); mkdirSync(sessionDir)
+  const sessionFile = join(sessionDir, 'session.json')
+  writeFileSync(sessionFile, JSON.stringify({ version: 3, workspaces: [{ id: 'w1', public_pane_numbers: { 101: 1 }, tabs: [{ panes: { 101: { cwd: dir, agent_name: agent.name, agent_session: agent.agent_session } } }] }] }))
+  service.codexLaunch = { supportsNoDaemon: async () => true }
+  const reloaded = new m.AgentRestartService(service, dir, async () => null)
+  await service.agentRestore.prepare('isolated', sessionDir, '0.9.4', { serialized: true, assertStopped: async () => {} })
+  assert.deepEqual(JSON.parse(readFileSync(sessionFile, 'utf8')).workspaces[0].tabs[0].panes[101].agent_resume.argv, ['codex', '--no-daemon', '--dangerously-bypass-approvals-and-sandbox', '-p', 'office', '--add-dir', '/extra', '--search', '-m', 'openai/gpt-6.1-sol', 'resume', 'replacement-session'])
+  assert.equal(reloaded.decorate({ agents: [agent], panes: [agent] }).panes[0].bypass, true)
+})
+
+test('observation skips exited detections and continues after an agent disappears', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'drover-observe-exit-')); t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const agents = ['shell', 'gone', 'live'].map(pane_id => ({ pane_id, terminal_id: pane_id, agent: 'codex', name: pane_id, cwd: dir }))
+  const calls = []
+  const service = { sessionName: 'isolated', connectionGeneration: 1, connection: { version: '0.9.1' }, client: {}, scheduleRefresh() {}, request: async (method, params) => {
+    const id = params.pane_id || params.target
+    calls.push([method, id])
+    if (method === 'agent.get') {
+      if (id === 'gone') throw new m.HerdrApiError('agent_not_found', 'Detection ended')
+      return { agent: agents.find(a => a.pane_id === id) }
+    }
+    return { process_info: { shell_pid: 20, foreground_processes: [{ pid: id === 'shell' ? 20 : 21, argv: [id === 'shell' ? 'zsh' : 'codex', '-m', 'fixture'] }] } }
+  } }
+  const restart = new m.AgentRestartService(service, dir, async () => null)
+  service.agentRestore.observe({ agents, panes: agents }); await restart.observing
+  assert.ok(!calls.some(([method, id]) => method === 'agent.get' && id === 'shell'))
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(dir, 'agent-launches.json'), 'utf8'))), ['isolated:live'])
 })
 
 test('H1 shared sanitizer prevents credentials, inline JSON/env and prompts at every disk/report boundary', async t => {

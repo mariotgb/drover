@@ -8,6 +8,7 @@ import type { HerdrService } from './herdr/service'
 import { waitUntilInteractive } from './actions'
 import { bypassFlags, launchChoice, restartArgs, sanitizeAgentLaunch, sanitizeLaunchArgs, safeLaunchChoice } from './agentLaunchArgs'
 import { AgentRestore, writeRestoreJson } from './agentRestore'
+import type { RestoreTarget } from './agentQuestions'
 export { launchChoice, restartArgs, resumeArgs } from './agentLaunchArgs'
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -29,7 +30,8 @@ export class AgentRestartService {
   private restoreService: AgentRestore
   private observing: Promise<void> = Promise.resolve()
   constructor(private service: HerdrService, userData: string, private transcript: (paneId: string) => Promise<TranscriptMeta | null>,
-    private onRestart?: (paneId: string, launch: AgentLaunch) => Promise<void>, enabled: () => boolean = () => true) {
+    private onRestart?: (paneId: string, launch: AgentLaunch) => Promise<void>, enabled: () => boolean = () => true,
+    private onRestore?: (targets: RestoreTarget[]) => void) {
     this.file = join(userData, 'agent-launches.json')
     let scrub = false
     try {
@@ -53,6 +55,7 @@ export class AgentRestartService {
         const noDaemon = await service.codexLaunch.supportsNoDaemon()
         if (!this.currentContext(context)) return
         await this.restoreService.prepare(session, dir, version, noDaemon, () => this.currentContext(context), guard)
+        if (this.currentContext(context)) this.onRestore?.(this.restoreService.restoreTargets())
       },
       restore: async (client, current) => {
         if (!enabled()) return
@@ -60,7 +63,7 @@ export class AgentRestartService {
           if (!current()) return
           await service.request('agent.start', { pane_id: entry.paneId, kind: entry.ref.agent,
             name: entry.name || `drover-resume-${randomUUID().slice(0, 8)}`, args: entry.args, timeout_ms: 120000 }, 130000)
-          const state = await waitUntilInteractive(this.boundService(this.context()), entry.paneId, 120000)
+          const state = await waitUntilInteractive(this.boundService(this.context()), entry.paneId, 60000, 1000, true)
           if (state !== 'ready') throw new HerdrApiError('agent_not_ready', 'The resumed agent did not become interactive')
         })
       },
@@ -123,7 +126,7 @@ export class AgentRestartService {
   private async remember(agent: AgentInfo, args: string[], processId?: number, fresh = false) {
     if (!supportsModels(agent.agent)) return
     const cached = this.launches[this.key(agent.pane_id)]
-    const saved = !fresh && cached?.kind === agent.agent && cached.terminalId === agent.terminal_id && (!processId || !cached.processId || processId === cached.processId) ? cached : undefined
+    const saved = !fresh && processId !== undefined && cached?.kind === agent.agent && cached.terminalId === agent.terminal_id && processId === cached.processId ? cached : undefined
     this.launches[this.key(agent.pane_id)] = sanitizeAgentLaunch({ kind: agent.agent, terminalId: agent.terminal_id,
       sessionId: agent.agent_session?.kind === 'id' ? agent.agent_session.value : saved?.sessionId ?? null,
       name: agent.name ?? null, cwd: agent.cwd, processId, args: [...args],
@@ -142,12 +145,22 @@ export class AgentRestartService {
       const saved = cached?.kind === candidate.agent && cached.terminalId === candidate.terminal_id ? cached : undefined
       const { process_info } = await service.request<{ process_info: ProcessInfo }>('pane.process_info', { pane_id: candidate.pane_id })
       const process = nativeProcess(candidate.agent, process_info)
-      const sameProcess = !process || !saved?.processId || process.pid === saved.processId
-      const args = sameProcess && saved ? saved.args : process?.args
-      const processId = process?.pid ?? saved?.processId
+      // Detection can outlive a process for a few frames. A shell or an
+      // unrecognized occupant has no launch policy to capture.
+      if (!process) continue
+      // A restore/explicit launch can leave the cache without a PID. That is
+      // not evidence that the next occupant is the same native process.
+      const sameProcess = saved?.processId === process.pid
+      const args = sameProcess ? saved.args : process.args
+      const processId = process.pid
       // Sequence precedes identity observation; a newer official hook wins a race.
       const observedSeq = (Date.now() - 1) * 1_000_000
-      const { agent } = await service.request<{ agent: AgentInfo }>('agent.get', { target: candidate.pane_id })
+      let agent: AgentInfo
+      try { ({ agent } = await service.request<{ agent: AgentInfo }>('agent.get', { target: candidate.pane_id })) }
+      catch (error) {
+        if (error instanceof HerdrApiError && ['agent_not_found', 'not_found'].includes(error.code)) continue
+        throw error
+      }
       if (agent.agent !== candidate.agent || agent.terminal_id !== candidate.terminal_id || !args) continue
       // A /clear changes the native session but keeps the process's launch policy.
       if (!saved || JSON.stringify([saved.args, saved.sessionId, saved.name, saved.cwd, saved.processId]) !==
@@ -262,6 +275,7 @@ export class AgentRestartService {
     }
     await ensureShell()
     const recordedBeforeStart = this.launches[this.key(entry.paneId)]
+    if (entry.sessionId) this.onRestore?.([{ paneId: entry.paneId, kind: entry.kind, sessionId: entry.sessionId }])
     await service.request('agent.start', { name: entry.originalName || `drover-resume-${randomUUID().slice(0, 8)}`, kind: entry.kind, pane_id: entry.paneId, args, timeout_ms: 120000 }, 60000)
     const actual = this.launches[this.key(entry.paneId)]
     const actualArgs = actual !== recordedBeforeStart && actual?.terminalId === entry.terminalId && actual.kind === entry.kind ? actual.args : args

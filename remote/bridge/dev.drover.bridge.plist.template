@@ -7,8 +7,8 @@
 
   <!-- Plain ssh, no autossh: launchd restarts it when it exits. -F /dev/null keeps
        the live ~/.ssh/config (other hosts, ControlMaster, ...) out of this tunnel.
-       Two reverse forwards on the VPS loopback: 2222 -> this Mac's sshd,
-       8780 -> the Drover site on 127.0.0.1:7780. -->
+       Independent SSH jobs: this template and its .phone companion isolate
+       machine port 2222 from phone port 8780. Load both for phone access. -->
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/ssh</string>
@@ -17,14 +17,14 @@
     <string>-N</string>
     <string>-R</string>
     <string>127.0.0.1:2222:localhost:22</string>
-    <string>-R</string>
-    <string>127.0.0.1:8780:127.0.0.1:7780</string>
     <string>-p</string>
     <string>__VPS_PORT__</string>
     <string>-i</string>
     <string>__HOME__/.ssh/mac_bridge_ed25519</string>
     <string>-o</string><string>IdentitiesOnly=yes</string>
     <string>-o</string><string>BatchMode=yes</string>
+    <string>-o</string><string>ConnectTimeout=10</string>
+    <string>-o</string><string>ConnectionAttempts=1</string>
     <string>-o</string><string>ServerAliveInterval=30</string>
     <string>-o</string><string>ServerAliveCountMax=3</string>
     <string>-o</string><string>ExitOnForwardFailure=yes</string>

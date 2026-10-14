@@ -44,7 +44,7 @@ export function pushPayload(change: StatusChange, snapshot: HerdrSnapshot | null
   const project = label(workspace?.label || (change.pane.cwd ? basename(change.pane.cwd) : session))
   return {
     title: `${name} ${kind === 'finished' ? 'finished' : 'needs your input'}`,
-    body: project,
+    body: change.pane.agent_question?.question || change.pane.restore_error?.message || project,
     tag: `drover-${createHash('sha256').update(`${session}:${change.pane.pane_id}`).digest('hex').slice(0, 24)}`,
     data: { url: `/?pane=${encodeURIComponent(change.pane.pane_id)}`, paneId: change.pane.pane_id, kind }
   }
@@ -73,7 +73,7 @@ export class PushNotifications {
     const store = this.host.store()
     const recipients = store.pushRecipients(identity.rpID).filter((r) => r.preferences[payload.data.kind])
     if (!recipients.length) return
-    const agentId = `${session}:${change.pane.pane_id}:${change.pane.agent_session?.value ?? change.name ?? change.pane.agent}`
+    const agentId = `${session}:${change.pane.pane_id}:${change.pane.agent_session?.value ?? change.name ?? change.pane.agent}:${change.pane.agent_question?.id ?? change.pane.restore_state ?? ''}`
     const last = this.lastSent.get(agentId)
     if (last !== undefined && this.now() - last < 30_000) return
     for (const [id, time] of this.lastSent) if (this.now() - time > 86400_000) this.lastSent.delete(id)

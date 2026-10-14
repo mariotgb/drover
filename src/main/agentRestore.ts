@@ -74,6 +74,8 @@ export class AgentRestore {
   private reports = new Map<string, string>()
   private attempts = new Map<string, number>()
   private prepared = new Map<string, string>()
+  private targets: { paneId: string; kind: string; sessionId: string }[] = []
+  restoreTargets() { return this.targets.map(target => ({ ...target })) }
   constructor(private repository: LaunchRepository, userData: string) {
     this.queueFile = join(userData, 'agent-restores.json')
   }
@@ -114,6 +116,7 @@ export class AgentRestore {
     await this.loadQueue()
     if (!current()) return
     this.prepared.clear()
+    this.targets = []
     await guard.assertStopped()
     this.reports.clear(); this.attempts.clear()
     const target = await restoreWriteTarget(file)
@@ -141,6 +144,7 @@ export class AgentRestore {
       const identity = `${ref.agent}:${ref.value}`
       if (seen.has(identity)) { delete pane.agent_session; delete pane.agent_resume; changed = true; continue }
       seen.add(identity)
+      this.targets.push({ paneId, kind: ref.agent, sessionId: ref.value })
       const launch = this.repository.get(paneId, session)
       const matching = launch?.kind === ref.agent && (launch.sessionId === ref.value || !launch.sessionId &&
         !!launch.cwd && launch.cwd === pane.cwd && !!launch.name && launch.name === pane.agent_name) && (!launch.cwd || launch.cwd === pane.cwd)
@@ -178,6 +182,7 @@ export class AgentRestore {
     const panes = new Set(saved.workspaces.flatMap(w => w.tabs.flatMap(t => Object.keys(t.panes).map(raw =>
       w.id && w.public_pane_numbers?.[raw] ? `${w.id}:p${publicNumber(w.public_pane_numbers[raw])}` : ''))))
     this.queue.entries[session] = [...fallback.values()].filter(e => panes.has(e.paneId))
+    for (const entry of this.queue.entries[session]) if (!this.targets.some(t => t.paneId === entry.paneId)) this.targets.push({ paneId: entry.paneId, kind: entry.ref.agent, sessionId: entry.ref.value })
     if (!current()) return
     await writeRestoreJson(this.queueFile, this.queue)
     if (!current()) return

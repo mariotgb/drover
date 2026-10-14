@@ -18,6 +18,7 @@ import { openMenuAt, type MenuItem } from './Menu'
 import { MobileSettings } from './MobileSettings'
 import { MobileTerminal } from './MobileTerminal'
 import { StatusDot } from './primitives'
+import { QuestionCard } from './AgentQuestion'
 import { BoardRow, MoreAgentsRow, ThreadRow } from './Sidebar'
 import { BackdropLayer } from './Backdrop'
 import { MobileUsage } from './Usage'
@@ -240,6 +241,7 @@ const KEYS: [string, string][] = [['enter', 'Enter'], ['esc', 'Esc'], ['1', '1']
 function QuickReplies({ thread }: { thread: Thread }) {
   const [busy, setBusy] = useState(false)
   const connected = useConnected()
+  if (thread.pane.agent_question) return <div className="mw-question"><QuestionCard thread={thread} compact /></div>
   return (
     <div className="mw-quick" role="group" aria-label={t('{name} is waiting for your answer', { name: thread.name })}>
       <span className="mw-quick-mark" title={t('Needs input')}><Bell size={16} /></span>

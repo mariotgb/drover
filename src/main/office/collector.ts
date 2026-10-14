@@ -10,6 +10,8 @@ import { analyzeTranscriptTool, diffTaskBoard } from './analyze'
 import type { BoardWriteEvidence } from '../tasks'
 import { officeProjects } from './projects'
 import { boardTaskTitle, journalSummary, statusCounts } from './hud'
+import type { HerdrMachine, Machine, MachinePhone } from '@shared/machines'
+import type { AgentInfo } from '@shared/types'
 
 export interface OfficeSources {
   session(): string
@@ -55,6 +57,8 @@ export class OfficeCollector {
     departments: '', seats: '', externalNodes: '', statusCounts: '' }
   private changedEvents = new Set<string>()
   private lastPrune = -Infinity
+  private infrastructure: OfficeState['externalNodes'] | null = null
+  private machineAliases = new Map<string, string>([['pc','machine:pc'], ['homeserver','machine:homeserver']])
 
   constructor(private sources: OfficeSources, private publish: (update: OfficeUpdate) => void,
     private now: () => number = Date.now) {
@@ -62,7 +66,7 @@ export class OfficeCollector {
   }
   private empty(): OfficeState {
     return { session: this.sources.session(), generation: randomUUID(), version: 0, departments: [], seats: [], agents: [],
-      externalNodes: [{ id: 'user', kind: 'user', name: 'User' },
+      externalNodes: this.infrastructure ?? [{ id: 'user', kind: 'user', name: 'User' },
         { id: 'machine:pc', kind: 'machine', name: 'pc' }, { id: 'machine:homeserver', kind: 'machine', name: 'homeserver' }],
       links: [], recentEvents: [], statusCounts: statusCounts([]) }
   }
@@ -122,6 +126,25 @@ export class OfficeCollector {
     return state
   }
   endpoint(paneId: string): string | null { return this.state.agents.find(a => a.paneId === paneId)?.id ?? null }
+  /** Also works when the office view is closed. Never authorize a name-inferred role. */
+  async configurationRole(agent: AgentInfo): Promise<OfficeRole | null> {
+    const cwd = agent.cwd || ''
+    if (this.sources.roles && !this.projectRoles.has(cwd)) this.projectRoles.set(cwd, await this.sources.roles(cwd))
+    const token = agent.agent_session?.value ?? this.incarnations.get(agent.pane_id)?.token ?? ''
+    const [role, source] = this.role(token, agent.name || '', cwd)
+    return ['binding', 'projectLead', 'template'].includes(source) || this.sources.isBoss?.(agent.pane_id) ? this.sources.isBoss?.(agent.pane_id) ? 'lead' : role : null
+  }
+  onInfrastructure(machines: Machine[], phones: MachinePhone[], herdrRows: HerdrMachine[]): void {
+    const clean = (value: string) => boardTaskTitle(value) ?? 'Machine'
+    this.machineAliases = new Map(machines.flatMap(m => [[m.alias, `machine:${m.id}`], [m.name, `machine:${m.id}`]]))
+    const nodes: OfficeState['externalNodes'] = [{ id: 'user', kind: 'user', name: 'User' }]
+    for (const m of machines) nodes.push({ id: `machine:${m.id}`, kind: 'machine', name: clean(m.name),
+      purpose: m.purpose ? clean(m.purpose) : undefined, state: m.status.state === 'online' ? 'online' : m.status.state === 'offline' ? 'offline' : 'unknown',
+      activeRoute: m.activeRoute, fallback: m.fallback, routes: m.routes?.map(r => ({ kind: r.kind, state: r.state, latencyMs: r.latencyMs })),
+      remoteAgents: herdrRows.filter(row => row.droverMachineId === m.id).flatMap(row => row.workspaces.flatMap(w => w.agents.map(a => ({ id: digest(`${row.id}:${row.session}:${a.paneId}`), paneId: a.paneId, name: clean(a.name || a.agent), kind: a.agent, status: a.status })))) })
+    nodes[0].phones = phones.map(p => ({ ...p, name: clean(p.name) }))
+    this.infrastructure = nodes; this.state.externalNodes = structuredClone(nodes); this.dirty = true
+  }
   bindRole(paneId: string, template: RoleTemplate): void {
     const pane = this.sources.snapshot()?.panes.find(p => p.pane_id === paneId)
     if (!pane?.agent) return
@@ -308,7 +331,7 @@ export class OfficeCollector {
     }
   }
   private analysisContext(from: string | null) {
-    return { session: this.state.session, from, observedAt: this.now(), sshAliases: ['pc','homeserver'],
+    return { session: this.state.session, from, observedAt: this.now(), sshAliases: [...this.machineAliases.keys()],
       onConfirmedPrompt: (targetPaneId: string, text: string) => {
         const sender = this.state.agents.find(a => a.id === from)
         if (sender) this.sources.confirmedPrompt?.(sender.paneId, targetPaneId, text)
@@ -317,7 +340,7 @@ export class OfficeCollector {
         if (session !== this.state.session) return null
         const matches = this.state.agents.filter(a=>a.paneId === target || a.name === target)
         return matches.length === 1 ? {id: matches[0].id, paneId: matches[0].paneId, name: matches[0].name} : null
-      }, resolveMachine: (alias: string) => ['pc','homeserver'].includes(alias) ? `machine:${alias}` : null }
+      }, resolveMachine: (alias: string) => this.machineAliases.get(alias) ?? null }
   }
   onBoard(board: TaskBoard, write?: BoardWriteEvidence): void {
     const watch = this.boards.get(board.cwd)

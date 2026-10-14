@@ -20,6 +20,7 @@ import type { ModelChoice } from '@shared/models'
 import {
   HerdrApiError,
   type AgentKindInfo,
+  type AnswerAgentQuestionRequest,
   type AppSettings,
   type NewAgentRequest,
   type SendPromptRequest,
@@ -29,6 +30,7 @@ import {
 } from '@shared/types'
 import { createAgent, sendPrompt } from './actions'
 import { AgentRestartService } from './agentRestart'
+import { AgentQuestions } from './agentQuestions'
 import type { RestartSelection } from '@shared/agentRestart'
 import { BossService } from './boss/service'
 import { BossSettingsStore } from './boss/store'
@@ -65,6 +67,10 @@ import { CodexIntegration } from './codexIntegration'
 import { CodexDaemon } from './codexDaemon'
 import { MachinesService } from './machines/service'
 import { registerMachinesIpc } from './machines/ipc'
+import { HerdrMachineRegistry } from './machines/herdr'
+import { MachineHelper } from './machines/helper'
+import { quote as machineQuote } from './machines/ssh'
+import type { Machine, HerdrMachine } from '@shared/machines'
 
 app.setName('Drover')
 
@@ -107,7 +113,11 @@ const service: HerdrService = new HerdrService({
   logDir: join(userData, 'logs'),
   isolatedHerdrDir: process.env.DROVER_USER_DATA ? join(userData, 'herdr') : undefined,
   autoStartServer: () => settings.get().autoStartServer,
-  machineInstructions: cwd => machines.agentInstructions(cwd)
+  machineInstructions: async cwd => {
+    const pointer = await machines.agentInstructions(cwd)
+    const helper = await machineHelper.start()
+    return `${pointer ?? ''}\nMachine configuration requests use ${machineQuote(helper)}; Drover checks your project role and asks the desktop user for confirmation.`
+  }
 })
 const serverWatchdog = new ServerWatchdog(join(userData, 'logs'), (event, details) => lifecycle.record(event, details))
 function syncServerWatchdog(): void {
@@ -128,18 +138,45 @@ let win: BrowserWindow | null = null
 let selectedPaneId: string | null = null
 const rpcHandlers = new RpcHandlers()
 let remote: RemoteServer | null = null
+let infrastructureMachines: Machine[] = []
+let infrastructureHerdr: HerdrMachine[] = []
+const machinesHome = process.env.DROVER_USER_DATA ? join(userData, 'machines-home') : homedir()
+const machineRegistry = new HerdrMachineRegistry({ root: join(machinesHome, '.drover/machines'), userData,
+  configPath: join(machinesHome, '.drover/machines/herdr_ssh_config'), env: () => service.env.PATH ? service.env : process.env,
+  binary: () => service.herdrPath })
+function updateInfrastructure(): void { office.onInfrastructure(infrastructureMachines, remote?.phoneDevices() ?? [], infrastructureHerdr) }
 // An isolated profile must never create keys or pointers in the real home.
 const machines: MachinesService = new MachinesService({
-  userData, home: process.env.DROVER_USER_DATA ? join(userData, 'machines-home') : homedir(),
+  userData, home: machinesHome,
+  herdr: machineRegistry,
+  phones: () => remote?.phoneDevices() ?? [],
+  herdrChanged: rows => { infrastructureHerdr = rows; if (win && !win.isDestroyed()) win.webContents.send('machines:herdr-changed', rows); updateInfrastructure() },
+  openHerdr: async profile => {
+    const result = await service.request<{ root_pane: { pane_id: string } }>('workspace.create', { cwd: machinesHome, label: profile.label, focus: false })
+    if (!result.root_pane?.pane_id) throw new Error('Herdr did not return a terminal pane.')
+    await service.request('pane.send_input', { pane_id: result.root_pane.pane_id, text: await machineRegistry.remoteTerminalCommand(profile), keys: ['enter'] })
+    selectedPaneId = result.root_pane.pane_id
+    send('app:select-pane', selectedPaneId)
+  },
   env: () => service.env.PATH ? service.env : process.env,
   runtime: process.execPath,
-  changed: state => { if (win && !win.isDestroyed()) win.webContents.send('machines:changed', state) },
+  changed: state => { infrastructureMachines = state.machines; if (win && !win.isDestroyed()) win.webContents.send('machines:changed', state); updateInfrastructure() },
   bridgeProgress: progress => { if (win && !win.isDestroyed()) win.webContents.send('machines:bridge-progress', progress) },
   remoteSettings: () => settings.get(),
+  phoneOriginTransition: async publicUrl => {
+    if (!remote) throw new Error('Remote access is unavailable.')
+    return remote.beginPublicOriginMove(publicUrl)
+  },
   configurePhone: async publicUrl => {
     if (!remote) throw new Error('Remote access is unavailable.')
-    const status = await remote.configure({ remoteEnabled: true, remotePublicUrl: publicUrl, remoteBehindProxy: true })
-    if (status.error) throw new Error('Remote access could not start.')
+    const previous = remote.status()
+    try {
+      const status = await remote.configure({ remoteEnabled: true, remotePublicUrl: publicUrl, remoteBehindProxy: true })
+      if (status.error) throw new Error('Remote access could not start.')
+    } catch {
+      await remote.configure({ remoteEnabled: previous.remoteEnabled, remotePublicUrl: previous.remotePublicUrl, remoteBehindProxy: previous.remoteBehindProxy ?? previous.remotePublicUrl.startsWith('https://') })
+      throw new Error('Remote access could not start.')
+    }
   },
   confirmInclude: async () => {
     if (!win || win.isDestroyed()) return false
@@ -150,6 +187,12 @@ const machines: MachinesService = new MachinesService({
     })
     return response.response === 0
   }
+})
+const machineHelper = new MachineHelper({ root: machines.root, runtime: process.execPath, service: machines,
+  session: () => service.sessionName, writable: () => !READONLY && !!win && !win.isDestroyed(),
+  agent: async paneId => { try { return (await service.request<{ agent: import('@shared/types').AgentInfo }>('agent.get', { target: paneId })).agent } catch { return null } },
+  role: agent => office.configurationRole(agent),
+  confirm: async detail => !!win && !win.isDestroyed() && (await dialog.showMessageBox(win, { type: 'warning', message: 'Allow this agent to configure a machine?', detail, buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1 })).response === 0
 })
 settings.onSaveError((error) => {
   void remote?.persistenceFailed(error)
@@ -180,10 +223,18 @@ const transcripts = new TranscriptManager(service, (u: TranscriptUpdate) => {
   }
 }, (u) => office.onTranscript(u))
 
+const agentQuestions = new AgentQuestions(service)
 const agentRestart = new AgentRestartService(service, userData, async (paneId) => {
   try { return (await transcripts.subscribe(paneId)).meta }
   finally { transcripts.unsubscribe(paneId) }
-}, (paneId, launch) => boss.recordRestart(paneId, launch), () => !READONLY)
+}, (paneId, launch) => boss.recordRestart(paneId, launch), () => !READONLY, targets => agentQuestions.beginRestore(targets))
+const decoratedSnapshot = () => agentQuestions.decorate(agentRestart.decorate(service.snapshot))
+agentQuestions.on('changed', () => {
+  send('herdr:snapshot', agentRestart.decorate(agentQuestions.snapshot()))
+  updateBadge()
+})
+agentQuestions.on('attention', change => service.emit('status-change', change))
+agentQuestions.start()
 
 const boards = new TaskBoards((b: TaskBoard) => send('tasks:changed', b),
   (b, write) => office.onBoard(b, write))
@@ -234,13 +285,15 @@ service.on('connection', (c) => {
 })
 service.on('snapshot', (s) => {
   boss.onChange()
-  send('herdr:snapshot', agentRestart.decorate(s))
+  send('herdr:snapshot', agentQuestions.decorate(agentRestart.decorate(s)))
+  void agentQuestions.poll().catch(() => {})
   office.onSnapshot(s)
   transcripts.onSnapshot(s)
   updateBadge()
 })
 
 service.on('status-change', ({ pane, from, to, name }) => {
+  if (!pane.agent_question && !pane.restore_state && ['idle', 'done'].includes(to) && decoratedSnapshot()?.panes.find(p => p.pane_id === pane.pane_id)?.restore_state) return
   // Push is independent of native notification preferences/window focus.
   void remote?.agentStatusChanged({ pane, from, to, name }, service.snapshot, service.sessionName)
     .catch(() => console.warn('[web-push] unable to dispatch notification'))
@@ -250,9 +303,10 @@ service.on('status-change', ({ pane, from, to, name }) => {
   const focusedHere = win?.isFocused() && selectedPaneId === pane.pane_id
   if (focusedHere) return
   const label = name || pane.label || pane.agent || pane.pane_id
-  const detail = pane.terminal_title_stripped || pane.title || ''
+  const detail = pane.agent_question?.question || pane.restore_error?.message || pane.terminal_title_stripped || pane.title || ''
   let title: string | null = null
-  if (to === 'done' && (from === 'working' || from === 'unknown')) title = mt('{name} finished', { name: label })
+  if (pane.restore_state === 'failed') title = `${label}: ${mt('did not start')}`
+  else if (to === 'done' && (from === 'working' || from === 'unknown')) title = mt('{name} finished', { name: label })
   else if (to === 'blocked') title = mt('{name} needs your input', { name: label })
   if (!title) return
   const n = new Notification({ title, body: detail, silent: !s.notificationSound })
@@ -265,7 +319,7 @@ service.on('status-change', ({ pane, from, to, name }) => {
 
 function updateBadge() {
   if (process.platform !== 'darwin' || !app.dock) return
-  const panes = service.snapshot?.panes ?? []
+  const panes = decoratedSnapshot()?.panes ?? []
   const count = panes.filter((p) => p.agent_status === 'blocked' || p.agent_status === 'done').length
   app.dock.setBadge(count ? String(count) : '')
 }
@@ -438,7 +492,7 @@ function registerIpc() {
     return {
       settings: settings.get(),
       connection: service.connection,
-      snapshot: agentRestart.decorate(service.snapshot),
+      snapshot: decoratedSnapshot(),
       home: homedir(),
       attachmentsDir: ATTACHMENTS_DIR,
       platform: process.platform,
@@ -530,9 +584,11 @@ function registerIpc() {
 
   handle('agent:send', (_e, req: SendPromptRequest) => {
     const endpoint = office.endpoint(req.paneId)
+    if (agentQuestions.hasQuestion(req.paneId)) return { ok: false, code: 'agent_blocked', error: 'Answer the visible question first.' }
     return READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } :
       sendPrompt(service, req, { onAccepted: () => office.userPrompt(endpoint, req.text) })
   })
+  handle('agent:answer-question', (_ctx, req: AnswerAgentQuestionRequest) => READONLY ? { ok: false, code: 'readonly', error: 'read-only mode' } : agentQuestions.answer(req))
   // Register local Electron channels directly, outside the remote RPC table.
   ipcMain.handle('office:init', () => ['darwin', 'linux'].includes(process.platform) ? office.init() : null)
   ipcMain.on('office:stop', () => office.stop())
@@ -591,7 +647,7 @@ function registerIpc() {
     if (req.folder) settings.addRecentFolder(req.folder)
     const result = await createAgent(service, req)
     if (result.ok && result.paneId) {
-      if (service.snapshot) send('herdr:snapshot', agentRestart.decorate(service.snapshot))
+      if (service.snapshot) send('herdr:snapshot', decoratedSnapshot())
     }
     if (result.ok && result.paneId && validOfficeRoleId(req.roleId)) {
       const cwd = service.snapshot?.panes.find(p => p.pane_id === result.paneId)?.cwd || req.folder
@@ -606,13 +662,13 @@ function registerIpc() {
   handle('agent:restart-plan', async (ctx, selection: RestartSelection) => {
     if (READONLY || ctx.remote) throw new HerdrApiError('not_available_remotely', 'Agent restart is desktop-only')
     const plan = await agentRestart.plan(selection)
-    send('herdr:snapshot', agentRestart.decorate(service.snapshot))
+    send('herdr:snapshot', decoratedSnapshot())
     return plan
   })
   handle('agent:restart', async (ctx, token: string) => {
     if (READONLY || ctx.remote) throw new HerdrApiError('not_available_remotely', 'Agent restart is desktop-only')
     const result = await agentRestart.execute(token)
-    send('herdr:snapshot', agentRestart.decorate(service.snapshot))
+    send('herdr:snapshot', decoratedSnapshot())
     return result
   })
 
@@ -755,7 +811,7 @@ app.whenReady().then(() => {
     },
     saveSettings: (patch) => { settings.set(patch); settings.flush() },
     trustedProxy: testTrustedProxy(process.env),
-    statusChanged: (status) => send('remote:status', status),
+    statusChanged: (status) => { send('remote:status', status); updateInfrastructure() },
     persistenceWarning: (error, poisonSaved) => dialog.showErrorBox(mt('Remote access stopped'), mt(poisonSaved
       ? 'Restart Drover and pair your devices again. {error}'
       : 'Could not record access revocation. Old access may return after restart. {error}', { error })),
@@ -801,9 +857,9 @@ app.on('before-quit', (e) => {
   // "Stop herdr when quitting": ask first if agents are still at work.
   let stopServer = false
   if (!READONLY && service.herdrPath && mayStopServer(ownsInstanceLock, attachedSession, service.sessionName, lifecycle.canStopServer)) {
-    const plan = quitPlan(settings.get().stopServerOnQuit, service.snapshot?.panes)
+    const plan = quitPlan(settings.get().stopServerOnQuit, decoratedSnapshot()?.panes)
     if (plan === 'ask') {
-      const busy = (service.snapshot?.panes ?? []).filter((p) => p.agent && (p.agent_status === 'working' || p.agent_status === 'blocked')).length
+      const busy = (decoratedSnapshot()?.panes ?? []).filter((p) => p.agent && (p.agent_status === 'working' || p.agent_status === 'blocked')).length
       const ask: Electron.MessageBoxSyncOptions = {
         type: 'warning',
         message: mt('Agents are still working'),
@@ -838,6 +894,8 @@ app.on('before-quit', (e) => {
   boards.dispose()
   limits.stop()
   service.stop()
+  machineHelper.dispose()
+  agentQuestions.stop()
   if (stopServer && service.herdrPath) {
     const stopped = stopServerSync(service.herdrPath, service.sessionName, service.env)
     lifecycle.record('herdr-stop', { session: service.sessionName, stopped })

@@ -51,6 +51,33 @@ async function fixture(t, extra = {}) {
  return { dir, p, origin, settings, server, token, auth, device, handlers, statuses, warnings, http }
 }
 
+test('phone origin transition allows exact old and new hosts before verification and removes the old on commit', async t => {
+ const f = await fixture(t)
+ const old = 'https://old.example.test', next = 'https://new.example.test'
+ await f.server.configure({ remotePublicUrl: old })
+ const check = origin => f.http('/auth/session', { method: 'GET', headers: { Host: new URL(origin).host, Origin: origin } })
+ assert.equal((await check(next)).status, 403)
+ const finish = f.server.beginPublicOriginMove(next)
+ assert.equal((await check(old)).status, 200)
+ const incoming = await check(next)
+ assert.equal(incoming.status, 200)
+ assert.ok(incoming.headers['content-security-policy'].includes(next))
+ assert.equal((await check('https://new.example.test.attacker.invalid')).status, 403)
+ assert.equal((await f.http('/auth/session', { headers: { Host: 'new.example.test', Origin: 'https://attacker.invalid' } })).status, 403)
+ assert.throws(() => f.server.beginPublicOriginMove('https://third.example.test'), { code: 'phone_move_pending' })
+ await f.server.configure({ remotePublicUrl: next })
+ assert.equal((await check(old)).status, 200, 'old stays allowed until tunnel transaction commits')
+ await finish(true)
+ assert.equal((await check(old)).status, 403)
+ assert.equal((await check(next)).status, 200)
+ const rollback = f.server.beginPublicOriginMove(old)
+ await f.server.configure({ remotePublicUrl: old })
+ await rollback(false)
+ assert.equal(f.server.status().remotePublicUrl, next)
+ assert.equal((await check(old)).status, 403)
+ assert.equal((await check(next)).status, 200)
+})
+
 test('nested request allowlist denies raw reads/control APIs and validates fields; shell keys require this connection subscription', async () => {
  const handlers = new m.RpcHandlers(), invoked = []
  handlers.register('herdr:request', (_ctx, ...args) => { invoked.push(args); return { ok: true } })

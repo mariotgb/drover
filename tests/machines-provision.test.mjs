@@ -28,6 +28,42 @@ function decode(script) {
   return { data: JSON.parse(Buffer.from(data[1], 'base64')), assets: JSON.parse(gunzipSync(Buffer.from(bundle[1], 'base64'))) }
 }
 
+test('generated legacy bridge policy cleans dead Mac tunnels in 30 seconds while retaining other users', () => {
+  // Source only: main is guarded and no VPS/sshd/service command is run.
+  const policy = execFileSync('bash', ['-c', 'source remote/bridge/vps-setup.sh; render_dropin'], { encoding: 'utf8' })
+  const blocks = policy.split('\nMatch User ')
+  const mac = blocks.find(block => block.startsWith('bridge-mac\n'))
+  assert.match(mac, /ClientAliveInterval 15\n/); assert.match(mac, /ClientAliveCountMax 2\n/)
+  for (const user of ['bridge-pc', 'bridge-home', 'jump']) {
+    const block = blocks.find(block => block.startsWith(user + '\n'))
+    assert.match(block, /ClientAliveInterval 30\n/); assert.match(block, /ClientAliveCountMax 3\n/)
+  }
+  const validate = execFileSync('bash', ['-c', `
+source remote/bridge/vps-setup.sh
+HUB_CONTEXTS='fixture,192.0.2.20,192.0.2.30,22'
+sshd_T() {
+  render_dropin | awk -v user="$2" '
+    /^Match User / { selected = ($3 == user); next }
+    /^Match all/ { selected = 0 }
+    selected && NF { key = tolower($1); $1 = ""; sub(/^ +/, ""); print key " " $0 }
+  '
+}
+verify_hub /synthetic-config || exit 1
+VERIFY_FAIL=0
+# A stale 30/3 Mac policy must still be rejected.
+sshd_T() {
+  render_dropin | awk -v user="$2" '
+    /^Match User / { selected = ($3 == user); next }
+    /^Match all/ { selected = 0 }
+    selected && NF { key = tolower($1); $1 = ""; sub(/^ +/, ""); if(user == "bridge-mac" && key == "clientaliveinterval") $0 = "30"; print key " " $0 }
+  '
+}
+if verify_hub /synthetic-config; then exit 2; fi
+printf 'validator passed and rejected stale policy'
+`], { encoding: 'utf8' })
+  assert.match(validate, /validator passed and rejected stale policy/)
+})
+
 test('bridge setup is self-contained, awaits progress and assigns only dedicated dynamic accounts', async () => {
   const calls = [], steps = []
   const p = m.createMachineProvisioner({ run: async (...args) => { calls.push(args); return { code: 0, stdout: '', stderr: '' } } })

@@ -51,12 +51,12 @@ function machineCodeText(error: MachineError, machine?: Pick<Machine, 'name'> & 
     case 'existing_bridge_invalid': return withDetail(t('A bridge was set up earlier on this computer, but its settings could not be read.'), error.detail)
     case 'mac_tunnel_setup_failed': return t('Drover could not set up the computer tunnel to the bridge.')
     case 'bridge_repair_required': return t('Some parts of the bridge are missing (marked above).')
-    case 'invalid_bridge_options': return t('Choose whether to set up the phone site.')
+    case 'invalid_bridge_options': return t('Choose whether to set up web access.')
     case 'invalid_password': return t('Enter the one-time administrator password.')
     case 'no_public_ip': return t('A bridge needs a public IP address. Addresses like 192.168.x.x work only at home.')
     case 'invalid_response': return withDetail(t('The server gave an unexpected answer.'), error.detail)
     case 'bridge_repair_confirmation_required': return t('Confirm the upgrade to continue.')
-    case 'caddy_repair_requires_manual_integration': return t('The phone site on this server was set up by hand in a way Drover cannot change safely, so the upgrade stopped. The phone site keeps working; it needs a manual fix first.')
+    case 'caddy_repair_requires_manual_integration': return t('Web access on this server was set up by hand in a way Drover cannot change safely, so the upgrade stopped. Web access keeps working; it needs a manual fix first.')
     case 'bridge_port_conflict': return withDetail(t('A port the bridge needs is already used by something else on the server.'), error.detail)
     case 'bridge_credential_conflict': return withDetail(t('The bridge accounts on the server do not match the keys on this computer.'), error.detail)
     case 'invalid_user': return t('Enter the administrator login, for example root.')
@@ -68,7 +68,7 @@ function machineCodeText(error: MachineError, machine?: Pick<Machine, 'name'> & 
     case 'bridge_verification_failed': return withDetail(t('The bridge is set up, but the final check failed.'), error.detail)
     case 'mac_tunnel_missing': return t('The computer tunnel to the bridge is not set up.')
     case 'mac_tunnel_stopped': return t('The computer tunnel to the bridge is stopped.')
-    case 'phone_route_missing': return t('The phone site is not set up on the bridge.')
+    case 'phone_route_missing': return t('Web access is not set up on the bridge.')
     case 'bridge_users_missing': return t('The bridge users are missing on the server.')
     case 'bridge_policy_missing': return t('The bridge access rules are missing on the server.')
     case 'bridge_firewall_missing': return t('The bridge firewall is not set up.')
@@ -78,6 +78,32 @@ function machineCodeText(error: MachineError, machine?: Pick<Machine, 'name'> & 
 
 function withDetail(text: string, detail: string | undefined): string {
   return detail && !text.includes(detail) ? `${text} ${detail}` : text
+}
+
+export type BridgeTone = 'wait' | 'phone' | 'ok' | 'bad'
+
+/** Bridge card status: tone, short label and one plain sentence. */
+export function bridgeStatus(bridge: Machine, homes: { total: number; online: number }): { tone: BridgeTone; label: string; text: string } {
+  const setup = bridge.bridgeSetup
+  const conn = bridge.bridgeConnection
+  const online = bridge.status.state === 'online'
+  const error = bridge.status.error ?? setup?.error
+  const bad = (text: string) => ({ tone: 'bad' as const, label: t('Not working'), text })
+  if (setup?.state === 'running') return { tone: 'wait', label: t('Setting up'), text: t('Setting up: {step}', { step: setup.step ?? '…' }) }
+  if (error) return bad(machineErrorText(error, bridge, bridge.name))
+  if (!online) return bad(machineErrorText({ code: 'bridge_down' }, bridge, bridge.name))
+  // An adopted bridge answers but has no home-machine grants yet (backend: setup 'failed' with no error).
+  // It is "phone only" only while the phone path really works: a phone address and a running tunnel.
+  if (phoneOnlyBridge(bridge) && conn) {
+    if (conn.macTunnel !== 'running') return bad(machineErrorText({ code: conn.macTunnel === 'stopped' ? 'mac_tunnel_stopped' : 'mac_tunnel_missing' }))
+    if (!conn.publicUrl) return bad(machineErrorText({ code: 'phone_route_missing' }))
+    return { tone: 'phone', label: t('Web access only'), text: t('The bridge gives web access to Drover from any device. To let machines connect through it too, connect them.') }
+  }
+  if (setup?.state === 'ready') {
+    const count = homes.total ? ` ${tp({ one: '{online} of {n} home machine connected.', other: '{online} of {n} home machines connected.' }, homes.total, { online: homes.online })}` : ''
+    return { tone: 'ok', label: t('Working'), text: t('Your devices and machines reach this computer through it — no router setup needed.') + count }
+  }
+  return bad(t('{bridge} answers, but it is not set up for home machines yet. Open it in the list below and choose Check and repair.', { bridge: bridge.name }))
 }
 
 export function osName(os: MachineOs | undefined): string {
@@ -151,7 +177,7 @@ export function bridgeStepLabel(step: BridgeStepId): string {
     case 'users': return t('Bridge users')
     case 'firewall': return t('Firewall')
     case 'mac_tunnel': return t('Computer tunnel')
-    case 'phone_site': return t('Phone site (HTTPS)')
+    case 'phone_site': return t('Web access (HTTPS)')
     case 'check': return t('Check that it works')
   }
 }

@@ -340,6 +340,14 @@ select {
   color: var(--blocked);
   background: color-mix(in srgb, var(--blocked) 16%, transparent);
 }
+.pill-failed {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.pill-starting {
+  color: var(--text-2);
+  background: var(--bg-active);
+}
 
 .sidebar-footer {
   flex: none;

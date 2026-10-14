@@ -9,25 +9,27 @@
 #   VPS_HOST=… [VPS_PORT=22] ./install.sh ssh-config
 #                                              write bridge/mac-ssh-config (Host pc / homeserver for agents)
 #   ./install.sh status                        read-only checks
-#   ./install.sh render                        print the LaunchAgent plist, change nothing
+#   ./install.sh render / render-phone         print a LaunchAgent plist, change nothing
 #   ./install.sh uninstall                     remove agent + pinned key; [SUDO] removes the drop-in
 #
 # Remote Login is NOT switched on here: do it in System Settings (see ../docs/remote-access.md).
 set -euo pipefail
 
-# The macOS implementation below is retained unchanged. Linux uses a user unit.
+# Linux uses a user unit; macOS uses independent launchd tunnel jobs.
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "$(uname -s)" = Linux ]; then
   exec python3 "$(dirname "${BASH_SOURCE[0]}")/bridge/linux-install.py" "$@"
 fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="dev.drover.bridge"
+PHONE_LABEL="$LABEL.phone"
 SSH_DIR="$HOME/.ssh"
 KEY_BRIDGE="$SSH_DIR/mac_bridge_ed25519"    # tunnel -> VPS user bridge-mac
 KEY_JUMP="$SSH_DIR/mac_jump_ed25519"        # Mac agents -> VPS user jump (forwarding to 2223/2224 only)
 KEY_AGENTS="$SSH_DIR/agents_ed25519"        # Mac agents -> user "agent" on the PC / home server
 KNOWN="$SSH_DIR/mac_bridge_known_hosts"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+PHONE_PLIST="$HOME/Library/LaunchAgents/$PHONE_LABEL.plist"
 DROPIN_NAME="050-drover-bridge.conf"
 DROPIN_DST="/etc/ssh/sshd_config.d/$DROPIN_NAME"
 DOMAIN="gui/$(id -u)"
@@ -69,6 +71,7 @@ fill_template() {   # fill_template FILE — substitutes __HOME__ __VPS_*__ with
   printf '%s\n' "$t"
 }
 render_plist() { fill_template "$root/bridge/$LABEL.plist.template"; }
+render_phone_plist() { fill_template "$root/bridge/$PHONE_LABEL.plist.template"; }
 
 # --- keys ---------------------------------------------------------------------------------
 ensure_ssh_dir() {
@@ -116,29 +119,33 @@ cmd_bridge() {
     printf '%s\n' "$scan" > "$KNOWN"; chmod 600 "$KNOWN"
   fi
 
-  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-  local new old="" had_old=0
-  new="$(mktemp)"; render_plist > "$new"
-  plutil -lint "$new" >/dev/null || { rm -f "$new"; die "generated plist is invalid; nothing changed"; }
-  if [ -f "$PLIST" ]; then old="$(mktemp)"; cp -p "$PLIST" "$old"; had_old=1; fi
-  install -m 644 "$new" "$PLIST"; rm -f "$new"
-
-  launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-  if ! launchctl bootstrap "$DOMAIN" "$PLIST"; then
-    if [ "$had_old" = 1 ]; then
-      cp -p "$old" "$PLIST"
-      if launchctl bootstrap "$DOMAIN" "$PLIST"; then
-        rm -f "$old"; die "bootstrap failed; previous LaunchAgent restored and loaded"
-      fi
-      rm -f "$old"; die "bootstrap failed; previous plist restored BUT LaunchAgent remains unloaded; load it manually with launchctl bootstrap $DOMAIN $PLIST"
-    fi
-    rm -f "$PLIST"; die "bootstrap failed; the new plist was removed"
+  # This explicit installer command may migrate a legacy combined job. Drover's
+  # ordinary detection/setup leaves existing jobs untouched; split has a backup.
+  local manifest result
+  manifest="$(mktemp)"
+  python3 - "$manifest" "$HOME" "$VPS_HOST" "$VPS_PORT" "$VPS_USER" "$KEY_BRIDGE" "$KNOWN" "${DROVER_REMOTE_PORT:-7780}" <<'DROVER_MAC_MANIFEST'
+import json, sys
+from pathlib import Path
+manifest, home, host, port, user, key, known, remote_port = sys.argv[1:]
+forwards = [dict(listenHost='127.0.0.1', listenPort=2222, targetHost='127.0.0.1', targetPort=22),
+            dict(listenHost='127.0.0.1', listenPort=8780, targetHost='127.0.0.1', targetPort=int(remote_port))]
+Path(manifest).write_text(json.dumps(dict(action='split', home=home, host=host, port=int(port), user=user, keyPath=key, knownHostsPath=known, forwards=forwards)))
+DROVER_MAC_MANIFEST
+  if ! result="$(python3 "$root/machines/mac-tunnel.py" "$manifest")"; then
+    unlink "$manifest"
+    die "tunnel setup failed; inspect the LaunchAgent logs and retained split backup"
   fi
-  rm -f "$old"
-  sleep 3
-  say "Loaded $LABEL. Log: ~/Library/Logs/$LABEL.log"
-  launchctl print "$DOMAIN/$LABEL" 2>/dev/null | grep -E '^\s*(state|pid|last exit code) ' || true
-  say "If it keeps restarting, run vps-setup.sh on the VPS first (see ../docs/remote-access.md)."
+  unlink "$manifest"
+  printf '%s\n' "$result"
+  python3 - "$result" <<'DROVER_MAC_RESULT'
+import json, sys
+r = json.loads(sys.argv[1].removeprefix('DROVER_MAC_BRIDGE_REPORT '))
+if not r['tunnelRunning'] or r['missing']:
+    sys.exit('Tunnel jobs installed but not both running; inspect their separate logs: ' + ', '.join(r['missing']))
+DROVER_MAC_RESULT
+  say "Loaded independent $LABEL (machines) and $PHONE_LABEL (phone) jobs. Each retries at 10-second intervals."
+  say "Logs: ~/Library/Logs/$LABEL.log and ~/Library/Logs/$PHONE_LABEL.log"
+
 }
 
 # --- sshd hardening (with rollback) ---------------------------------------------------------------
@@ -210,13 +217,18 @@ cmd_status() {
   if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
     launchctl print "$DOMAIN/$LABEL" | grep -E '^\s*(state|pid|last exit code) ' || true
   else say "                 not loaded"; fi
+  if [ -f "$PHONE_PLIST" ]; then
+    say "Phone LaunchAgent: $PHONE_LABEL"
+    launchctl print "$DOMAIN/$PHONE_LABEL" 2>/dev/null | grep -E '^\s*(state|pid|last exit code) ' || true
+  fi
   [ -f "$root/bridge/mac-ssh-config" ] && say "agent ssh cfg:  bridge/mac-ssh-config present" || say "agent ssh cfg:  not generated"
   if [ -f "$HOME/Library/Logs/$LABEL.log" ]; then say "log tail:"; tail -n 5 "$HOME/Library/Logs/$LABEL.log"; fi
 }
 
 cmd_uninstall() {
+  launchctl bootout "$DOMAIN/$PHONE_LABEL" 2>/dev/null || true
   launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-  rm -f "$PLIST" "$KNOWN"
+  rm -f "$PLIST" "$PHONE_PLIST" "$KNOWN"
   say "LaunchAgent and pinned VPS host key removed. Your keys in ~/.ssh are kept; delete them yourself if you want."
   if [ -f "$DROPIN_DST" ]; then
     sudo_note "Removing $DROPIN_DST"
@@ -234,6 +246,7 @@ main() {
     add-key)    shift; cmd_add_key "$@" ;;
     status)     cmd_status ;;
     render)     render_plist ;;
+    render-phone) render_phone_plist ;;
     uninstall)  cmd_uninstall ;;
     *) sed -n '2,15p' "$0"; exit 1 ;;
   esac

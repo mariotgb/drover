@@ -46,6 +46,20 @@ export interface PaneScrollInfo {
   viewport_rows: number
 }
 
+export interface AgentQuestion {
+  id: string
+  kind: 'codex' | 'claude' | 'generic'
+  question: string
+  choices: { id: string; label: string }[]
+  detectedAt: number
+}
+
+export interface AnswerAgentQuestionRequest {
+  paneId: string
+  questionId: string
+  choiceId: string
+}
+
 export interface PaneInfo {
   pane_id: string
   terminal_id: string
@@ -58,6 +72,10 @@ export interface PaneInfo {
   agent_session?: AgentSessionRef | null
   /** Drover's last observed launch permission mode for this pane occupant. */
   bypass?: boolean
+  /** Visible interactive dialog, independently verified by Drover. */
+  agent_question?: AgentQuestion
+  restore_state?: 'starting' | 'failed'
+  restore_error?: { code: string; message: string }
   cwd?: string | null
   foreground_cwd?: string | null
   label?: string | null

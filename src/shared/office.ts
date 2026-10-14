@@ -91,6 +91,13 @@ export interface OfficeExternalNode {
   name: string
   /** Machines only: last check from the machines store. Unset = unknown (drawn as reachable). */
   state?: 'online' | 'offline' | 'unknown'
+  purpose?: string
+  activeRoute?: 'lan' | 'internet' | 'bridge'
+  fallback?: boolean
+  routes?: { kind: 'lan' | 'internet' | 'bridge'; state: 'ok' | 'down' | 'checking' | 'setup' | 'unknown'; latencyMs?: number }[]
+  /** Paired phones and remote agents are safe labels/status only, no paths or credentials. */
+  phones?: { id: string; name: string; lastSeenAt: number; online: boolean }[]
+  remoteAgents?: { id: string; paneId: string; name: string; kind: string; status: OfficeStatus }[]
 }
 export interface OfficeLink {
   id: string

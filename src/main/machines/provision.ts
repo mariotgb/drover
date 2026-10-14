@@ -17,6 +17,7 @@ import repointScript from '../../../remote/machines/repoint.sh?raw'
 import recoveryUnix from '../../../remote/machines/recovery-unix.py?raw'
 import bridgeAdopt from '../../../remote/machines/bridge-adopt.py?raw'
 import macTunnel from '../../../remote/machines/mac-tunnel.py?raw'
+import linuxTunnel from '../../../remote/bridge/linux-install.py?raw'
 import vpsSetup from '../../../remote/bridge/vps-setup.sh?raw'
 import vpsWeb from '../../../remote/bridge/vps-web.sh?raw'
 
@@ -92,6 +93,18 @@ const BUNDLED_ASSETS: Record<string, string> = {
 }
 export async function macTunnelAsset(assetsDir?: string): Promise<string> {
   return assetsDir ? readFile(join(assetsDir, 'machines/mac-tunnel.py'), 'utf8') : macTunnel
+}
+export async function linuxTunnelAsset(assetsDir?: string): Promise<string> {
+  return assetsDir ? readFile(join(assetsDir, 'bridge/linux-install.py'), 'utf8') : linuxTunnel
+}
+/** Existing account policy is verified by the service first. Add one restricted
+ * key without replacing any prior key or changing sshd/account permissions.
+ */
+export function phoneKeyGrantScript(user: string, publicKey: string, listenPort: number): string {
+  if (!/^[a-z_][a-z0-9_-]{0,63}$/.test(user) || !Number.isInteger(listenPort) || listenPort < 1024 || listenPort > 65535) throw new ProvisionFailure('invalid_phone_grant', 'Invalid phone tunnel grant.')
+  const key = publicKey.trim().split(/\s+/).slice(0, 2).join(' ')
+  if (!/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$/.test(key)) throw new ProvisionFailure('invalid_key', 'Expected a dedicated phone public key.')
+  return `set -eu\npython3 - <<'DROVER_PHONE_GRANT'\nimport os,pwd,pathlib,tempfile\nnamespace={'__name__':'drover_phone_grant'}\nexec(${JSON.stringify(bridgeData)},namespace)\nuser=${JSON.stringify(user)}\nkey=${JSON.stringify(key)}\naccount=pwd.getpwnam(user)\nroot=pathlib.Path(account.pw_dir)/'.ssh'\nauth=root/'authorized_keys'\nif account.pw_uid == 0 or not root.is_dir() or any(p.is_symlink() for p in [auth,root,*root.parents]) or not auth.is_file(): raise RuntimeError('unsafe phone account')\nfd,tmp=tempfile.mkstemp(prefix='.drover-phone-',dir=root)\ntry:\n os.close(fd)\n namespace['additive_key'](str(auth),'restrict,port-forwarding,permitlisten="127.0.0.1:${listenPort}"',key,tmp)\n with open(tmp,'r+b') as file:\n  os.fchmod(file.fileno(),auth.stat().st_mode & 0o777);os.fchown(file.fileno(),account.pw_uid,account.pw_gid);file.flush();os.fsync(file.fileno())\n os.replace(tmp,auth)\nfinally:\n if os.path.exists(tmp): os.unlink(tmp)\nDROVER_PHONE_GRANT\n`
 }
 export function parseExistingBridgeReport(stdout: string): ExistingBridgeReport {
   try {

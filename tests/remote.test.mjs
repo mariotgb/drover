@@ -312,6 +312,7 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   t.after(() => server.stop())
   await server.sync()
   assert.equal(server.status().running, true)
+  assert.deepEqual(server.phoneDevices(), [{ id: d.id, name: d.name, lastSeenAt: d.lastUsedAt, online: false }])
   assert.equal(server.server.address().address, '127.0.0.1')
   const request = (path, options = {}, auth = false) => new Promise((done, reject) => {
     const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET',
@@ -347,6 +348,7 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   assert.equal(await rejectedUpgrade(port, token, ''), 403)
   const a = websocket(port, token), b = websocket(port, token)
   await Promise.all([once(a, 'open'), once(b, 'open')])
+  assert.deepEqual(server.phoneDevices(), [{ id: d.id, name: d.name, lastSeenAt: d.lastUsedAt, online: true }])
   t.after(() => { a.terminate(); b.terminate() })
   const received = [], otherReceived = []
   a.on('message', (data) => received.push(JSON.parse(data.toString())))
@@ -374,6 +376,7 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   server.revoke(d.id)
   assert.equal((await closeA)[0], 4001)
   assert.equal((await closeB)[0], 4001)
+  assert.deepEqual(server.phoneDevices(), [])
   assert.equal((await request('/assets/app.js', {}, true)).status, 401)
   await server.configure({ remoteEnabled: false })
   assert.equal(server.status().running, false)

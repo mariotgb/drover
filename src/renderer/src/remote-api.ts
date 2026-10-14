@@ -41,6 +41,8 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
   let opened = false
   let stopped = false
   let selectedPane: string | null = null
+  let probeSequence = 0
+  let checkInFlight: Promise<void> | undefined
   const pending = new Map<string, { method: string; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
   const transcripts = new Set<string>()
@@ -122,13 +124,21 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
     return job
   }
   const checkSession = async () => {
-    try {
-      const res = await fetch(REMOTE_AUTH_ROUTES.session, { credentials: 'same-origin', cache: 'no-store' })
-      if (res.status === 401 || (res.ok && !(await res.json()).authenticated)) {
-        stopped = true
-        location.replace('/login')
-      }
-    } catch { /* A network outage must not discard the current conversation. */ }
+    if (checkInFlight) return checkInFlight
+    checkInFlight = (async () => {
+      const controller = new AbortController()
+      const deadline = setTimeout(() => controller.abort(), 10_000)
+      try {
+        const res = await fetch(REMOTE_AUTH_ROUTES.session, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal })
+        if (res.status === 401 || (res.ok && !(await res.json()).authenticated)) {
+          stopped = true
+          clearTimeout(retry)
+          location.replace('/login')
+        }
+      } catch { /* A network outage must not discard the current conversation. */ }
+      finally { clearTimeout(deadline) }
+    })()
+    try { await checkInFlight } finally { checkInFlight = undefined }
   }
   const restoreState = (epoch: number) => {
     if (epoch !== generation || socket?.readyState !== WebSocket.OPEN) return
@@ -150,8 +160,40 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
     loadingTranscripts.clear()
     stateEvents.clear()
     const current = socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${REMOTE_WS_PATH}`)
+    let ended = false
+    let heartbeat: ReturnType<typeof setTimeout> | undefined
+    let probeDeadline: ReturnType<typeof setTimeout> | undefined
+    let probeId: string | undefined
+    let lastMessage = Date.now()
+    const clearTransportTimers = () => { clearTimeout(openDeadline); clearTimeout(heartbeat); clearTimeout(probeDeadline) }
+    const drop = () => {
+      if (ended || epoch !== generation) return
+      // close() can wait on an unresponsive TCP path. Release locally immediately;
+      // stale callbacks are ignored, and the next connection restores subscriptions.
+      disconnect()
+      try { current.close() } catch { /* Already closed. */ }
+    }
+    const probe = () => {
+      if (ended || epoch !== generation || current.readyState !== WebSocket.OPEN || probeId) return
+      clearTimeout(heartbeat)
+      probeId = `ping-${++probeSequence}`
+      probeDeadline = setTimeout(drop, 10_000)
+      try { current.send(JSON.stringify({ t: 'ping', id: probeId })) } catch { drop() }
+    }
+    const scheduleHeartbeat = () => {
+      clearTimeout(heartbeat)
+      heartbeat = setTimeout(() => {
+        if (ended || epoch !== generation) return
+        if (Date.now() - lastMessage >= 20_000) probe()
+        else scheduleHeartbeat()
+      }, Math.max(1, 20_000 - (Date.now() - lastMessage)))
+    }
+    const openDeadline = setTimeout(drop, 15_000)
     current.onopen = () => {
-      if (epoch !== generation) return
+      if (ended || epoch !== generation) return
+      clearTimeout(openDeadline)
+      lastMessage = Date.now()
+      scheduleHeartbeat()
       const restoring = opened
       opened = true
       attempt = 0
@@ -162,9 +204,14 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
       if (restoring) void rpc('setSelectedPane', [selectedPane]).catch(() => undefined)
     }
     current.onmessage = (event) => {
-      if (epoch !== generation || current.readyState !== WebSocket.OPEN) return
+      if (ended || epoch !== generation || current.readyState !== WebSocket.OPEN) return
       try {
         const message = JSON.parse(event.data) as RemoteServerMessage
+        lastMessage = Date.now()
+        if (message.t === 'pong') {
+          if (message.id === probeId) { clearTimeout(probeDeadline); probeId = undefined; scheduleHeartbeat() }
+          return
+        }
         if (message.t === 'result') {
           const call = pending.get(message.id)
           if (!call) return
@@ -207,8 +254,11 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
         }
       } catch { /* Ignore malformed frames; the next server snapshot can recover. */ }
     }
-    current.onclose = () => {
-      if (epoch !== generation) return
+    const disconnect = () => {
+      if (ended || epoch !== generation) return
+      ended = true
+      clearTransportTimers()
+      socket = null
       // A reconnect cannot reuse a cursor whose in-flight restoration was lost.
       for (const key of loadingTranscripts.keys()) invalidateTranscript(key)
       for (const key of deferredTranscripts.keys()) invalidateTranscript(key)
@@ -221,9 +271,15 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
       void checkSession()
       if (!stopped) retry = setTimeout(connect, Math.min(15_000, 500 * 2 ** attempt++) + Math.random() * 300)
     }
+    current.onclose = disconnect
+    current.onerror = drop
+    resumeProbe = probe
   }
-  window.addEventListener('online', connect)
-  window.addEventListener('pageshow', connect)
+  let resumeProbe = () => {}
+  const resume = () => { if (socket?.readyState === WebSocket.OPEN) resumeProbe(); else connect() }
+  window.addEventListener('online', resume)
+  window.addEventListener('pageshow', resume)
+  document.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'visible') resume() })
   connect()
 
   const on = new Proxy({}, { get: (_, name: string) => (fn: (...args: unknown[]) => void) => {
@@ -233,7 +289,7 @@ export function createRemoteApi(): DroverApi & RemoteManagementApi & RemotePushA
     return () => { listeners.get(channel)?.delete(fn) }
   } })
   const voidMethods = new Set(['unwatchTasks', 'transcriptUnsubscribe', 'setSelectedPane', 'termInput', 'termInputBytes', 'termResize', 'termScroll', 'termClose'])
-  const resultMethods = new Set(['request', 'sendPrompt', 'createAgent', 'setAgentModel', 'termOpen', 'ensureBoard', 'addTask', 'updateTask', 'removeTask'])
+  const resultMethods = new Set(['request', 'sendPrompt', 'answerAgentQuestion', 'createAgent', 'setAgentModel', 'termOpen', 'ensureBoard', 'addTask', 'updateTask', 'removeTask'])
   return new Proxy({ on }, { get: (target, name: string) => {
     if (name === 'on') return target.on
     if (name === 'pathForFile') return () => ''

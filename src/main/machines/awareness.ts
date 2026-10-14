@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import type { Machine } from '@shared/machines'
 import { privateRead, privateWrite, quote } from './ssh'
+import { orderedRoutes } from './routes'
 
 const START = '<!-- DROVER MACHINES START -->', END = '<!-- DROVER MACHINES END -->'
 export function mergeMachinesPointer(current: string, pointer: string): string {
@@ -11,12 +12,14 @@ export function mergeMachinesPointer(current: string, pointer: string): string {
   return current.trimEnd() + (current.trim() ? '\n\n' : '') + block + '\n'
 }
 export function machineGuide(machines: Machine[], config: string): string {
-  const rows = machines.map(m => `- **${m.name}**: alias \`${m.alias}\`; ${m.osLabel ?? m.os ?? 'OS not checked'}; ${m.status.state}; permission: ${m.permissions.mode === 'projects' ? 'full SSH with advisory project scope' : m.permissions.mode}${m.needsReinstall ? '; reinstall required' : ''}.`)
+  const rows = machines.map(m => `- **${m.name}**: alias \`${m.alias}\`; ${m.osLabel ?? m.os ?? 'OS not checked'}; ${m.status.state}; routes: ${orderedRoutes(m).map(r => `${r.kind} (${r.state})`).join(' → ')}; active: ${m.activeRoute ?? 'not connected yet'}${m.fallback ? ' (fallback)' : ''}; ${m.purpose ? `purpose: ${m.purpose}; ` : ''}permission: ${m.permissions.mode === 'projects' ? 'full SSH with advisory project scope' : m.permissions.mode}${m.herdrId ? `; herdr machine: ${m.herdrId}` : ''}${m.needsReinstall ? '; reinstall required' : ''}.`)
   return `# Drover machines
 
 Use only the machines listed here for the current project. Check their status before work.
 SSH uses a dedicated revocable agents key. Never use or read management or tunnel keys, bypass host-key checks, change access controls, or copy private keys to a machine.
 Use \`ssh -F ${quote(config)} <alias> <command>\`. Aliases also work without -F after the user installs the managed SSH Include.
+Drover tries LAN first with a short timeout, then internet, then bridge through its jump. Check active route and fallback before work. Use \`ssh drover-<name>\` after the SSH Include is installed, or \`herdr --machine <saved-id> agent list\` for saved Herdr machines.
+Configuration roles default to lead/orchestrator/DevOps; the project's policy may narrow them. Configuration requests use the local \`drover-machines\` helper supplied in your launch instructions. Drover resolves the live bound/project role and requires a native desktop confirmation. Never change the registry directly or claim a role through CLI arguments.
 Read-only access is enforced by a Linux filesystem/network sandbox. Selected-project scope is advisory, not a security boundary between agents sharing the same desktop account.
 
 ${rows.join('\n') || 'No machines are available to this project.'}

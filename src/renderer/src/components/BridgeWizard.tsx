@@ -119,7 +119,7 @@ export function BridgeWizard({ api, onClose }: { api: BridgeApi; onClose: (machi
         <form onSubmit={(e) => { e.preventDefault(); if (ready && (!hostKey || matches)) void submit() }}>
           <div>
             <h3>{t('Set up a bridge')}</h3>
-            <p className="setting-hint">{t('A bridge is a small server with a public IP (a VPS), so your machines and phone can reach this computer from anywhere. Drover sets everything up on it.')}</p>
+            <p className="setting-hint">{t('A bridge is a small server on the internet. Through it any of your devices and machines away from home reach this computer. Drover sets everything up on it.')}</p>
           </div>
           <div className="field-row">
             <div className="field grow">
@@ -144,8 +144,8 @@ export function BridgeWizard({ api, onClose }: { api: BridgeApi; onClose: (machi
           <label className="check bridge-toggle">
             <input type="checkbox" checked={caddy} onChange={(e) => setCaddy(e.target.checked)} />
             <span>
-              <strong>{t('Phone site')}</strong>
-              <span className="setting-hint">{t('Also open Drover on your phone at a secure https:// address on this server.')}</span>
+              <strong>{t('Web access')}</strong>
+              <span className="setting-hint">{t('Open Drover in a browser on any device — phone, tablet or another computer — at a secure https:// address on this server.')}</span>
             </span>
           </label>
           {hostKey && <HostKeyCard hostKey={hostKey} matches={matches} onMatches={setMatches} hint={t('Compare it with the fingerprint in your provider’s console. If they match, Drover remembers this key and refuses to connect if it ever changes.')} />}
@@ -164,7 +164,7 @@ export function BridgeWizard({ api, onClose }: { api: BridgeApi; onClose: (machi
         <div className="bridge-run">
           <h3>{job.phase === 'done' ? t('Your bridge is ready') : job.phase === 'failed' ? t('Setup stopped') : t('Setting up {host}…', { host: host.trim() })}</h3>
           <p className="setting-hint">{job.phase === 'done'
-            ? (caddy ? t('Your machines and phone can now reach this computer from anywhere through {host}.', { host: host.trim() }) : t('Your machines can now reach this computer from anywhere through {host}.', { host: host.trim() }))
+            ? (caddy ? t('Your devices and machines can now reach this computer from anywhere through {host}.', { host: host.trim() }) : t('Your machines can now reach this computer from anywhere through {host}.', { host: host.trim() }))
             : job.phase === 'failed'
               ? t('Fix the problem marked below and run setup again.')
               : t('This takes about a minute. You can keep this window open.')}</p>
@@ -209,15 +209,15 @@ export function UpgradeBridge({ api, machine: m, onDone }: { api: BridgeApi; mac
     const report = await job.start(() => api.repairExistingBridge!({ machineId: m.id, acceptedFingerprint: hostKey.fingerprint, password: secret, confirmed: true }))
     if (report) onDone(report.steps)
   }
-  const title = scratch ? t('Finish setup for home machines') : t('Upgrade for home machines')
+  const title = scratch ? t('Finish setup for home machines') : t('Connect machines too')
   if (!open) return <div className="machine-actions bridge-actions"><button type="button" className="btn btn-sm btn-primary" disabled={!supported} title={supported ? undefined : t('This version of Drover cannot upgrade a bridge yet.')} onClick={() => setOpen(true)}>{title}…</button></div>
   const running = job.phase === 'running'
   return (
     <div className="machine-confirm bridge-upgrade">
-      <strong>{scratch ? t('Finish {name} for home machines', { name: m.name }) : t('Upgrade {name} for home machines', { name: m.name })}</strong>
+      <strong>{scratch ? t('Finish {name} for home machines', { name: m.name }) : t('Connect machines through {name} too', { name: m.name })}</strong>
       <ul className="bridge-upgrade-list">
         <li><Check size={12} strokeWidth={2.6} />{t('Adds SSH access for Drover agents only, and a route that new home machines use to connect.')}</li>
-        <li><Check size={12} strokeWidth={2.6} />{t('Keeps your phone site, its login and the keys you already use exactly as they are.')}</li>
+        <li><Check size={12} strokeWidth={2.6} />{t('Keeps web access, its sign-in and the keys you already use exactly as they are.')}</li>
       </ul>
       {!hostKey && !error && <div className="install-cmd loading"><Spinner size={13} /></div>}
       {hostKey && job.phase === 'idle' && <HostKeyCard hostKey={hostKey} matches={matches} onMatches={setMatches} hint={t('Compare it with the fingerprint in your provider’s console. If they match, Drover remembers this key and refuses to connect if it ever changes.')} />}
@@ -234,7 +234,7 @@ export function UpgradeBridge({ api, machine: m, onDone }: { api: BridgeApi; mac
         {!running && job.phase !== 'done' && <button type="button" className="btn btn-sm" onClick={() => { setOpen(false); job.reset() }}>{t('Cancel')}</button>}
         {!running && job.phase !== 'done' && (
           <button type="button" className="btn btn-sm btn-primary" disabled={!hostKey || !(hostKey.known || matches)} onClick={() => void upgrade()}>
-            {job.phase === 'failed' ? t('Try again') : t('Upgrade bridge')}
+            {job.phase === 'failed' ? t('Try again') : t('Connect machines')}
           </button>
         )}
       </div>

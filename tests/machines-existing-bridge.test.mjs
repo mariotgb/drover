@@ -8,9 +8,12 @@ import { tmpdir } from 'node:os'
 import { createHash, createHmac } from 'node:crypto'
 import { gunzipSync } from 'node:zlib'
 import { execFileSync } from 'node:child_process'
+import { createServer, request } from 'node:http'
+import { once } from 'node:events'
 
 const bundle = mkdtempSync(join(tmpdir(), 'drover-existing-bundle-'))
-await build({ stdin: { contents: `export * from './src/main/machines/service'; export * from './src/main/machines/ssh'; export * from './src/main/machines/existing-bridge'; export * from './src/main/machines/provision';`, resolveDir: resolve('.'), loader: 'ts' }, outfile: join(bundle, 'test.cjs'), bundle: true, platform: 'node', format: 'cjs', alias: { '@shared': resolve('src/shared') }, loader: { '.sh': 'text', '.py': 'text', '.ps1': 'text' }, logLevel: 'silent' })
+await build({ stdin: { contents: `export * from './src/main/machines/service'; export * from './src/main/machines/ssh'; export * from './src/main/machines/existing-bridge'; export * from './src/main/machines/provision'; export { bridgeStatus } from './src/renderer/src/machines'; export { RemoteServer } from './src/main/remote/server'; export { RpcHandlers } from './src/main/remote/rpc';`, resolveDir: resolve('.'), loader: 'ts' }, outfile: join(bundle, 'test.cjs'), bundle: true, platform: 'node', format: 'cjs', alias: { '@shared': resolve('src/shared') }, loader: { '.sh': 'text', '.py': 'text', '.ps1': 'text' }, logLevel: 'silent' })
+globalThis.window ??= {}
 const m = createRequire(import.meta.url)(join(bundle, 'test.cjs'))
 rmSync(bundle, { recursive: true, force: true })
 const blob = seed => { const algorithm = Buffer.from('ssh-ed25519'), length = Buffer.alloc(4); length.writeUInt32BE(algorithm.length); return Buffer.concat([length, algorithm, Buffer.from([0,0,0,32]), Buffer.alloc(32, seed)]).toString('base64') }
@@ -58,8 +61,33 @@ function fixture(t, { existing = true, overrideRun, provisioner } = {}) {
   }
   const service = new m.MachinesService({ home, userData, run, tcp: async () => 1, periodMs: 3_600_000, bridgeProgress: p => progress.push(p), ...(provisioner ? { provisioner } : {}) })
   t.after(() => { service.dispose(); rmSync(dir, { recursive: true, force: true }) })
-  return { home, userData, adminPath, pins, plist, args, calls, service, progress, set running(v) { running = v }, set scan(v) { scan = v }, set verification(v) { verification = v }, set sshFail(v) { sshFail = v } }
+  return { home, userData, adminPath, pins, plist, args, calls, run, service, progress, set running(v) { running = v }, set scan(v) { scan = v }, set verification(v) { verification = v }, set sshFail(v) { sshFail = v } }
 }
+
+test('split bridge jobs retain both routes and verify each process without SSH or restarts', async t => {
+  const f = fixture(t), phonePlist = f.plist.replace('.plist', '.phone.plist')
+  const machine = f.args.filter((_, i) => ![6, 7].includes(i))
+  const phone = f.args.filter((_, i) => ![4, 5].includes(i))
+  writeFileSync(phonePlist, '<plist fixture/>')
+  let phoneRunning = true
+  const run = async (file, args, options) => {
+    if (file === 'plutil') return ok(JSON.stringify({ Label: args.at(-1) === phonePlist ? 'dev.drover.bridge.phone' : 'dev.drover.bridge', ProgramArguments: args.at(-1) === phonePlist ? phone : machine }))
+    if (file === 'launchctl' && args.at(-1).endsWith('.phone')) return phoneRunning ? ok('state = running\npid = 234\n') : ok('state = waiting\n')
+    return f.run(file, args, options)
+  }
+  const options = { home: f.home, userData: f.userData, run, env: {} }
+  const found = await m.detectLocalBridge(options)
+  assert.deepEqual(found.forwards.map(f => f.listenPort), [2222, 8780]); assert.equal(found.tunnelRunning, true)
+  phoneRunning = false; assert.equal((await m.detectLocalBridge(options)).tunnelRunning, false)
+  assert.equal(f.calls.some(c => c.file === 'ssh' || c.args[0] === 'bootstrap'), false)
+})
+
+test('incomplete tunnel recovery blocks discovery instead of claiming a surviving machine job is recovered service', async t => {
+  const f = fixture(t)
+  writeFileSync(f.plist.replace('.plist', '.plist.recovery.json'), '{"transaction":"synthetic-backup"}')
+  await assert.rejects(f.service.detectExistingBridge(), { code: 'existing_bridge_invalid' })
+  assert.equal(f.calls.length, 0, 'recovery marker blocks job inspection, bootstrap and SSH')
+})
 
 test('local detection reads plist/settings/pins only, resolves hashed pins, and never creates managed keys or contacts SSH', async t => {
   const f = fixture(t)
@@ -341,6 +369,27 @@ test('adoption returns only missing repair steps and keeps the existing tunnel r
   assert.equal(f.calls.some(c => c.file === 'python3' || c.file === 'launchctl' && c.args[0] !== 'print'), false)
 })
 
+test('adopted bridge retains failed phone-site error in durable setup state', async t => {
+  for (const issue of [
+    { caddy: { configured: false, active: false }, missing: ['phone_route_missing'], code: 'phone_route_missing' },
+    { caddy: { configured: true, active: false }, missing: ['phone_route_missing'], code: 'phone_route_missing' },
+    { listeners: [2222], code: 'mac_tunnel_stopped' },
+    { stopped: true, code: 'mac_tunnel_stopped' }
+  ]) {
+    const f = fixture(t); f.verification = { ...report(), ...issue }; if (issue.stopped) f.running = false
+    const result = await f.service.adoptExistingBridge({ acceptedFingerprint: m.fingerprint(hostKey) })
+    const saved = (await f.service.state()).machines.find(machine => machine.id === result.machineId)
+    assert.equal(saved.bridgeSetup.error.code, issue.code)
+    assert.equal(m.bridgeStatus(saved, { total: 0, online: 0 }).tone, 'bad')
+    f.service.dispose()
+    const restarted = new m.MachinesService({ home: f.home, userData: f.userData, run: f.run, tcp: async () => 1 })
+    t.after(() => restarted.dispose())
+    const reloaded = (await restarted.state()).machines.find(machine => machine.id === result.machineId)
+    assert.equal(reloaded.bridgeSetup.error.code, issue.code)
+    assert.equal(m.bridgeStatus(reloaded, { total: 0, online: 0 }).tone, 'bad')
+  }
+})
+
 test('one-shot scratch bootstrap uses pinned password SSH once, emits progress and configures a local tunnel; password is not persisted', async t => {
   const f = fixture(t, { existing: false })
   const password = 'one-time-fixture-password'
@@ -411,6 +460,33 @@ test('explicit repair adds home-machine grants on reserved-safe ports and instal
   assert.equal(manifests.some(d => d.action === 'setup'), false)
   assert.equal(readFileSync(f.plist, 'utf8'), plist)
   assert.ok(manifests.find(d => d.action === 'repair').origin === publicUrl)
+})
+
+test('repair keeps an adopted stopped tunnel red until all post-repair checks pass', async t => {
+  const f = fixture(t); f.running = false
+  const adopted = await f.service.adoptExistingBridge({ acceptedFingerprint: m.fingerprint(hostKey) })
+  const bridge = async service => (await service.state()).machines.find(machine => machine.id === adopted.machineId)
+  const before = await bridge(f.service)
+  assert.equal(before.bridgeSetup.error.code, 'mac_tunnel_stopped')
+  assert.equal(m.bridgeStatus(before, { total: 0, online: 0 }).tone, 'bad')
+  const repaired = await f.service.repairExistingBridge({ machineId: adopted.machineId, acceptedFingerprint: m.fingerprint(hostKey), confirmed: true })
+  assert.equal(repaired.steps.find(step => step.step === 'mac_tunnel').error.code, 'mac_tunnel_stopped')
+  const after = await bridge(f.service)
+  assert.equal(after.bridgeSetup.state, 'failed')
+  assert.equal(after.bridgeSetup.error.code, 'mac_tunnel_stopped')
+  const card = m.bridgeStatus(after, { total: 0, online: 0 })
+  assert.equal(card.tone, 'bad'); assert.match(card.text, /tunnel to the bridge is stopped/)
+  f.service.dispose()
+  const restarted = new m.MachinesService({ home: f.home, userData: f.userData, run: f.run, tcp: async () => 1 })
+  t.after(() => restarted.dispose())
+  assert.equal((await bridge(restarted)).bridgeSetup.error.code, 'mac_tunnel_stopped')
+  assert.equal(m.bridgeStatus(await bridge(restarted), { total: 0, online: 0 }).tone, 'bad')
+  f.running = true
+  const recovered = await restarted.repairExistingBridge({ machineId: adopted.machineId, acceptedFingerprint: m.fingerprint(hostKey), confirmed: true })
+  assert.ok(recovered.steps.every(step => step.state === 'done'), JSON.stringify(recovered))
+  const working = await bridge(restarted)
+  assert.equal(working.bridgeSetup.state, 'ready'); assert.equal(working.bridgeSetup.error, undefined)
+  assert.equal(m.bridgeStatus(working, { total: 0, online: 0 }).tone, 'ok')
 })
 
 test('repair accepts a one-use administrator password and stays unupgraded if Caddy rejects safe integration', async t => {
@@ -540,4 +616,109 @@ test('Found password rejection is sanitized, unselected and retryable; login val
   r = await f.service.adoptExistingBridge({ user: 'root', password: 'fixture-once', acceptedFingerprint: m.fingerprint(hostKey) })
   assert.equal(r.steps[0].error.code, 'password_rejected'); assert.doesNotMatch(JSON.stringify(r), /confidential remote detail|fixture-once/)
   assert.equal((await f.service.state()).bridgeMachineId, null)
+})
+
+
+test('phone movement verifies route, keeps generated key restricted, and rolls back exact helper transaction on settings failure', async t => {
+  const f=fixture(t),events=[]
+  const adopted=await f.service.adoptExistingBridge({acceptedFingerprint:m.fingerprint(hostKey)})
+  f.service.options.platform='darwin'
+  let allowed = false
+  f.service.options.phoneOriginTransition = async url => { assert.equal(url, publicUrl); events.push('origins'); allowed = true; return async committed => { events.push(committed ? 'commit-origin' : 'rollback-origin'); allowed = false } }
+  const base=f.service.run
+  f.service.run=async(file,args,options)=>{
+    if(file==='python3'){
+      const manifest=JSON.parse(readFileSync(args[1],'utf8'));events.push(manifest.action)
+      assert.equal(options.timeoutMs,90000)
+      if(manifest.action==='move-phone'){
+        assert.equal(allowed, true, 'new Host must be allowed before helper verification')
+        assert.equal(manifest.hostKeyAlias,`[${host}]:${port}`)
+        assert.match(manifest.keyPath,/phone-tunnel-/)
+        assert.equal(manifest.forwards[0].listenPort,8780)
+        return ok('DROVER_MAC_BRIDGE_REPORT '+JSON.stringify({moved:true,verified:true,tunnelRunning:true,phoneTunnelRunning:true,missing:[],backupPath:'/synthetic/transaction'}))
+      }
+      return ok('DROVER_MAC_BRIDGE_REPORT '+JSON.stringify({recovered:true,moved:true,verified:true,tunnelRunning:true,phoneTunnelRunning:true,missing:[]}))
+    }
+    return base(file,args,options)
+  }
+  f.service.options.configurePhone=async()=>{events.push('settings');throw Error('synthetic save failure')}
+  const before=f.calls.length
+  await assert.rejects(f.service.movePhoneToBridge(adopted.machineId,{confirmed:'true'}),{code:'confirmation_required'})
+  assert.equal(f.calls.length,before)
+  await assert.rejects(f.service.movePhoneToBridge(adopted.machineId,{confirmed:true}),{code:'phone_settings_failed'})
+  assert.deepEqual(events,['origins','move-phone','settings','rollback-phone','rollback-origin'])
+  assert.equal(allowed, false)
+  const grant=f.calls.find(c=>c.input?.includes('DROVER_PHONE_GRANT'))
+  assert.match(grant.input,/restrict,port-forwarding,permitlisten="127\.0\.0\.1:8780"/)
+  assert.doesNotMatch(grant.input,/sshd -t|systemctl|useradd/)
+  events.length=0
+  f.service.options.configurePhone=async()=>events.push('settings')
+  await f.service.movePhoneToBridge(adopted.machineId,{confirmed:true})
+  assert.deepEqual(events,['origins','move-phone','settings','finish-phone','commit-origin'])
+  assert.equal(allowed, false)
+})
+
+test('phone helper probe reaches real Host guard before origin commit and both settings/tunnel roll back on finish failure', async t => {
+  const f = fixture(t), adopted = await f.service.adoptExistingBridge({ acceptedFingerprint: m.fingerprint(hostKey) })
+  const reserve = createServer().listen(0, '127.0.0.1'); await once(reserve, 'listening'); const port = reserve.address().port
+  await new Promise(resolve => reserve.close(resolve))
+  const webRoot = join(f.home, 'web'); mkdirSync(join(webRoot, 'auth'), { recursive: true }); writeFileSync(join(webRoot, 'auth/index.html'), 'synthetic phone page')
+  const old = 'https://old.example.test'
+  let settings = { remoteEnabled: true, remotePort: port, remotePublicUrl: old, remoteBehindProxy: true }
+  const remote = new m.RemoteServer({ webRoot, userData: f.userData, handlers: new m.RpcHandlers(), settings: () => settings, saveSettings: next => { settings = next }, statusChanged: () => {} })
+  t.after(() => remote.stop()); await remote.sync()
+  const probe = host => new Promise((resolve, reject) => { const req = request({ host: '127.0.0.1', port, path: '/pair', headers: { Host: host } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)) }); req.on('error', reject); req.end() })
+  assert.equal(await probe(new URL(publicUrl).host), 403)
+  f.service.options.platform = 'darwin'
+  f.service.options.phoneOriginTransition = async url => remote.beginPublicOriginMove(url)
+  f.service.options.configurePhone = async url => { await remote.configure({ remotePublicUrl: url }) }
+  const runner = f.service.run, actions = []
+  let failFinish = true
+  f.service.run = async (file, args, options) => {
+    if (file !== 'python3') return runner(file, args, options)
+    const manifest = JSON.parse(readFileSync(args[1], 'utf8')); actions.push(manifest.action)
+    if (manifest.action === 'move-phone') { assert.equal(settings.remotePublicUrl, old); assert.equal(await probe(new URL(manifest.publicUrl).host), 200) }
+    if (manifest.action === 'finish-phone') { assert.equal(await probe(new URL(old).host), 200); if (failFinish) return ok('DROVER_MAC_BRIDGE_REPORT ' + JSON.stringify({ verified: false, missing: ['transaction_cleanup_failed'] })) }
+    return ok('DROVER_MAC_BRIDGE_REPORT ' + JSON.stringify({ moved: true, verified: true, recovered: true, phoneTunnelRunning: true, missing: [], backupPath: '/synthetic/transaction' }))
+  }
+  await assert.rejects(f.service.movePhoneToBridge(adopted.machineId, { confirmed: true }), { code: 'phone_recovery_incomplete' })
+  assert.deepEqual(actions, ['move-phone', 'finish-phone', 'rollback-phone'])
+  assert.equal(settings.remotePublicUrl, old); assert.equal(await probe(new URL(publicUrl).host), 403)
+  failFinish = false; actions.length = 0
+  await f.service.movePhoneToBridge(adopted.machineId, { confirmed: true })
+  assert.deepEqual(actions, ['move-phone', 'finish-phone'])
+  assert.equal(settings.remotePublicUrl, publicUrl); assert.equal(await probe(new URL(old).host), 403); assert.equal(await probe(new URL(publicUrl).host), 200)
+})
+
+test('phone key additive primitive preserves mixed newline foreign keys and unterminated final bytes', t => {
+  const dir=mkdtempSync(join(tmpdir(),'drover-phone-grant-test-'));t.after(()=>rmSync(dir,{recursive:true,force:true}))
+  const input=join(dir,'authorized_keys'),output=join(dir,'out')
+  const foreign=`  ${key(3)} personal\r\nrestrict,command="printf foreign" ${key(4)} other\n# tail without newline`
+  writeFileSync(input,foreign)
+  const options='restrict,port-forwarding,permitlisten="127.0.0.1:8780"'
+  execFileSync('python3',['remote/machines/bridge-data.py','additive-key',input,options,key(5),output])
+  assert.equal(readFileSync(output,'utf8'),foreign+'\n'+options+' '+key(5)+' drover-machines\n')
+  const original=readFileSync(output)
+  execFileSync('python3',['remote/machines/bridge-data.py','additive-key',output,options,key(5),input])
+  assert.deepEqual(readFileSync(input),original)
+})
+
+test('phone key grant extension preserves managed line endings and all foreign bytes', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'drover-phone-grant-test-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const input = join(dir, 'authorized_keys'), output = join(dir, 'out')
+  const existing = 'restrict,port-forwarding,permitlisten="127.0.0.1:2222"'
+  const addition = ',permitlisten="127.0.0.1:8780"', options = existing + addition
+  const foreign = `  ${key(3)} personal\r\nrestrict,command="printf foreign" ${key(4)} other\n`
+  for (const ending of ['\r\n', '\n', '']) {
+    const tail = ending ? '# foreign tail without newline' : ''
+    const original = Buffer.from(foreign + existing + '\t' + key(5) + ' managed comment' + ending + tail)
+    const expected = Buffer.from(original.toString().replace(existing, options))
+    writeFileSync(input, original)
+    execFileSync('python3', ['remote/machines/bridge-data.py', 'additive-key', input, options, key(5), output])
+    assert.deepEqual(readFileSync(input), original, 'input remains unchanged')
+    assert.deepEqual(readFileSync(output), expected, 'only the missing grant is inserted')
+    execFileSync('python3', ['remote/machines/bridge-data.py', 'additive-key', output, options, key(5), input])
+    assert.deepEqual(readFileSync(input), expected, 'grant extension is byte-idempotent')
+  }
 })

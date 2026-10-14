@@ -7,7 +7,8 @@ These helpers are optional system configuration scripts. Run Mac commands as you
 | Path | Runs on | Purpose |
 | --- | --- | --- |
 | `install.sh` | Mac | Keys, pinned VPS host key, LaunchAgent, optional SSH config/hardening, status/uninstall |
-| `bridge/dev.drover.bridge.plist.template` | Mac | Reverse forwards: VPS 8780 → Mac 7780, VPS 2222 → Mac SSH 22 |
+| `bridge/dev.drover.bridge.plist.template` | Mac | Machine tunnel: VPS 2222 → Mac SSH 22 |
+| `bridge/dev.drover.bridge.phone.plist.template` | Mac | Independent phone tunnel: VPS 8780 → Mac 7780 |
 | `bridge/vps-setup.sh`, `hub-config.py`, `lib.sh` | VPS | Restricted accounts/keys, validated SSH policy and transactional rollback |
 | `bridge/vps-web.sh` | VPS | Caddy installation and HTTPS proxy for an IP-derived sslip.io hostname |
 | `bridge/vps-firewall.sh` | VPS | UFW configuration, five-minute rollback, confirmation from a new SSH session |

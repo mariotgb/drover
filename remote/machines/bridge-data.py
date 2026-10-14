@@ -299,7 +299,10 @@ def additive_key(path, options, public, output):
     wanted = shlex.split(options)[0].split(',')
     permission = 'permitopen' if any(o.startswith('permitopen=') for o in wanted) else 'permitlisten'
     desired = {o for o in wanted if o.startswith(permission + '=')}
-    lines = p.read_text().splitlines(keepends=True) if p.exists() else []
+    lines = []
+    if p.exists():
+        with p.open('r', newline='') as source:
+            lines = source.read().splitlines(keepends=True)
     present = False
     for i, line in enumerate(lines):
         fields = shlex.split(line, comments=True)
@@ -321,7 +324,8 @@ def additive_key(path, options, public, output):
     if not present:
         if lines and not lines[-1].endswith('\n'): lines[-1] += '\n'
         lines.append(options + ' ' + public + ' drover-machines\n')
-    Path(output).write_text(''.join(lines))
+    with Path(output).open('w', newline='') as target:
+        target.write(''.join(lines))
 
 
 def ports_safe(manifest, state):

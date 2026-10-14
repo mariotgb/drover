@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
 const bundle = mkdtempSync(join(tmpdir(), 'drover-machines-bundle-'))
-await build({ stdin: { contents: `export * from './src/main/machines/service'; export * from './src/main/machines/ssh'; export * from './src/main/machines/permissions'; export * from './src/main/machines/sessions'; export * from './src/main/machines/awareness'; export * from './src/main/machines/launch'; export * from './src/main/machines/ipc';`, resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(bundle, 'test.cjs'), alias: { '@shared': resolve('src/shared') }, loader: { '.sh': 'text', '.py': 'text', '.ps1': 'text' }, logLevel: 'silent' })
+await build({ stdin: { contents: `export * from './src/main/machines/service'; export * from './src/main/machines/ssh'; export * from './src/main/machines/permissions'; export * from './src/main/machines/sessions'; export * from './src/main/machines/awareness'; export * from './src/main/machines/launch'; export * from './src/main/machines/ipc'; export * from './src/main/machines/herdr'; export * from './src/main/machines/helper'; export * from './src/main/office/collector';`, resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(bundle, 'test.cjs'), alias: { '@shared': resolve('src/shared') }, loader: { '.sh': 'text', '.py': 'text', '.ps1': 'text' }, logLevel: 'silent' })
 const m = createRequire(import.meta.url)(join(bundle, 'test.cjs'))
 rmSync(bundle, { recursive: true, force: true })
 const blob = seed => {
@@ -618,4 +618,351 @@ test('issued installer is tracked before target trust and key revoke keeps uncon
   f.managementFailure = true
   await f.service.revokeAgentsKey({ confirmed: true })
   assert.equal((await f.service.state()).machines.find(m => m.id === target.id).status.error.code, 'revocation_pending')
+})
+
+
+test('saved herdr import deduplicates endpoints and never configures or connects imported machines', async t => {
+  const rows = [
+    { id:'saved-a',label:'fixture-one',host:'10.8.0.21',port:22,user:'drover',target:'drover@10.8.0.21',session:'fixture',enabled:true },
+    { id:'saved-b',label:'fixture-two',host:'10.8.0.22',port:22,user:'drover',target:'drover@10.8.0.22',session:'fixture',enabled:true },
+    { id:'saved-c',label:'fixture-three',host:'10.8.0.23',port:22,user:'drover',target:'drover@10.8.0.23',session:'fixture',enabled:true }
+  ]
+  const writes=[], registry={ list:async()=>rows, statuses:async()=>rows.map(r=>({id:r.id,status:'reachable'})), snapshot:async()=>({version:'fixture',workspaces:[],panes:[],agents:[]}), workspaces:()=>[], add:async(...args)=>{writes.push(args);throw Error('not allowed')}, update:async(...args)=>writes.push(args), rename:async(...args)=>writes.push(args) }
+  const f=fixture(t,{herdr:registry})
+  const local=await f.service.add({name:'local',firstRoute:'lan',host:rows[0].host,user:'drover'})
+  let state=await f.service.state()
+  assert.equal(state.machines.length,3)
+  assert.equal(state.machines.find(r=>r.herdrId==='saved-a').id,local.id)
+  assert.deepEqual(state.machines.filter(r=>r.origin==='herdr').map(r=>r.status.state),['unknown','unknown'])
+  assert.ok(state.machines.filter(r=>r.origin==='herdr').every(r=>r.status.error.code==='key_not_installed'))
+  assert.equal(writes.length,0)
+  const before=f.calls.length
+  await f.service.check(state.machines.find(r=>r.origin==='herdr').id)
+  assert.equal(f.calls.length,before)
+  await assert.rejects(f.service.startHerdrAgent({machineId:'saved-b',agent:'codex'}),{code:'key_not_installed'})
+  await assert.rejects(f.service.syncHerdr({confirmed:'true'}),{code:'confirmation_required'})
+  const imported=state.machines.find(r=>r.herdrId==='saved-c')
+  registry.update=async(action,id)=>{writes.push([action,id]);if(action==='remove') rows.splice(rows.findIndex(r=>r.id===id),1)}
+  await f.service.remove(imported.id,{confirmed:true})
+  state=await f.service.state();assert.equal(state.machines.length,2)
+  assert.deepEqual(writes,[['remove','saved-c']])
+})
+
+test('internal herdr SSH retains Drover scoped aliases despite a later herdr config', async t => {
+  const f = fixture(t), machine = await f.direct('scoped-herdr'), project = join(f.dir, 'chosen')
+  await f.service.setPermissions(machine.id, { mode: 'projects', projects: [project] })
+  const configPath = join(f.service.root, 'herdr_ssh_config'), calls = []
+  const registry = new m.HerdrMachineRegistry({ root: f.service.root, userData: f.userData, configPath, env: () => ({ PATH: '/usr/bin:/bin' }), binary: () => 'fake-herdr', run: async (file, args, options) => { calls.push({ file, args, options }); return { code: 0, stdout: '[]', stderr: '' } } })
+  await registry.list()
+  assert.equal(calls[0].options.env.PATH.split(':')[0], join(f.service.root, 'herdr-bin'))
+  assert.equal(calls[0].options.env.SSH_ASKPASS_REQUIRE, 'never')
+  const foreign = join(f.dir, "herdr's config")
+  writeFileSync(foreign, `Host ${machine.alias}\n  HostName wrong.invalid\n  User wrong\n`)
+  const shim = join(f.service.root, 'herdr-bin/ssh')
+  for (const override of [['-F', foreign], ['-F' + foreign]]) {
+    const actual = execFileSync(shim, [...override, '-o', 'ControlMaster=no', '-T', '-G', machine.alias], { encoding: 'utf8' })
+    assert.match(actual, /^hostname 203\.0\.113\.5$/m)
+    assert.match(actual, /^user root$/m)
+    assert.match(actual, /^stricthostkeychecking true$/m)
+    assert.match(actual, /^batchmode yes$/m)
+    assert.match(actual, /^identityfile .*agents_ed25519$/m)
+    assert.doesNotMatch(actual, /management_ed25519|wrong\.invalid/)
+  }
+  const fakeSsh = join(f.dir, 'fake-ssh'), fakeShim = join(f.dir, 'fake-shim'), command = 'tool -F "keep this remote flag"'
+  writeFileSync(fakeSsh, '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o700 })
+  writeFileSync(fakeShim, readFileSync(shim, 'utf8').replace('exec /usr/bin/ssh', 'exec ' + m.quote(fakeSsh)), { mode: 0o700 })
+  const retained = execFileSync(fakeShim, ['-F', foreign, '-o', 'ControlPath=/tmp/herdr socket', '-T', machine.alias, command, '-F', 'remote-file'], { encoding: 'utf8' }).trim().split('\n')
+  assert.deepEqual(retained.slice(8), ['-o', 'ControlPath=/tmp/herdr socket', '-T', machine.alias, command, '-F', 'remote-file'])
+  assert.doesNotMatch(readFileSync(f.service.configPath, 'utf8'), new RegExp(`Host ${machine.alias}\\n`))
+  const terminal = await registry.remoteTerminalCommand({ target: machine.alias, session: 'fixture' })
+  assert.ok(terminal.includes(join(f.service.root, 'herdr-bin')))
+  assert.ok(terminal.includes(`--remote '${machine.alias}'`))
+})
+
+test('three imported machines connect with known-host confirmation, additive login keys and selected-project aliases', async t => {
+  const rows = [56, 72, 57].map((last, index) => ({ id: 'saved-' + index, label: 'fixture-' + index, host: '10.8.0.' + last, port: 22, user: 'drover', target: 'drover@10.8.0.' + last, session: 'fixture', enabled: true }))
+  const writes = [], probes = [], registry = {
+    list: async () => structuredClone(rows),
+    statuses: async ids => { probes.push([...ids]); return ids.map(id => ({ id, status: 'reachable' })) },
+    snapshot: async () => ({ workspaces: [], panes: [], agents: [] }), workspaces: () => [],
+    add: async (target, label, session) => { writes.push(['add', target]); const profile = { id: 'scoped-' + label, label, target, session, enabled: true, ...m.parseHerdrTarget(target) }; rows.push(profile); return profile },
+    update: async (action, id) => { writes.push([action, id]); if (action === 'remove') rows.splice(rows.findIndex(p => p.id === id), 1) },
+    rename: async () => { throw Error('Already named correctly') }
+  }
+  const f = fixture(t, { herdr: registry }), ssh = join(f.home, '.ssh'), selected = join(f.dir, 'chosen'), other = join(f.dir, 'other')
+  mkdirSync(ssh)
+  const originals = structuredClone(rows), accounts = new Map()
+  const foreign = `# Existing user key, preserve bytes\r\ncommand="echo hello world" ${publicKey(2)}\r\n${publicKey(3).replace('drover-test', 'drover-agents')}\n`
+  for (const profile of originals) {
+    const key = join(ssh, 'id_' + profile.host.replaceAll('.', '_'))
+    writeFileSync(key, 'PRIVATE LOGIN MUST NEVER BE READ', { mode: 0o600 }); writeFileSync(key + '.pub', publicKey(4))
+    const account = join(f.dir, profile.id); mkdirSync(join(account, '.ssh'), { recursive: true }); writeFileSync(join(account, '.ssh/authorized_keys'), foreign)
+    accounts.set(profile.host, account)
+  }
+  writeFileSync(join(ssh, 'known_hosts'), originals.map(p => `${p.host} ssh-ed25519 ${blob(7)}`).join('\n') + '\n', { mode: 0o644 })
+  const runner = f.service.run
+  f.service.run = async (file, args, options = {}) => {
+    if (file === 'ssh-keygen' && args.includes('-F')) return { code: 0, stdout: `${args[args.indexOf('-F') + 1]} ssh-ed25519 ${blob(7)}\n`, stderr: '' }
+    if (file === 'ssh' && options.input?.includes('drover-auth.')) {
+      const host = args.at(-2).startsWith('drover-') ? readFileSync(f.service.controlConfig, 'utf8').split(`Host ${args.at(-2)}\n`)[1].match(/HostName (\S+)/)[1] : args.at(-2)
+      execFileSync('/bin/sh', ['-s'], { input: options.input, env: { PATH: '/usr/bin:/bin', HOME: accounts.get(host) } })
+    }
+    return runner(file, args, options)
+  }
+  let state = await f.service.state()
+  assert.equal(state.machines.length, 3)
+  assert.ok(state.machines.every(p => p.status.state === 'unknown' && p.status.error.code === 'key_not_installed'))
+  assert.deepEqual(writes, []); assert.deepEqual(probes, [])
+  assert.deepEqual(await f.service.projectMachinePolicy(selected), { configureRoles: ['lead', 'orchestrator', 'devops'] })
+  await f.service.agentInstructions(selected); await f.service.agentInstructions(other)
+  for (const imported of state.machines) {
+    const probe = await f.service.probeHostKey(imported.host, 22, 'drover')
+    assert.equal(probe.known, true)
+    const [best] = await f.service.loginKeyCandidates(imported.host)
+    assert.equal(best.name, 'id_' + imported.host.replaceAll('.', '_'))
+    await assert.rejects(f.service.installKey(imported.id, { keyPath: best.path }), { code: 'host_key_unconfirmed' })
+    assert.equal(readFileSync(join(accounts.get(imported.host), '.ssh/authorized_keys'), 'utf8'), foreign)
+    await f.service.installKey(imported.id, { keyPath: best.path, acceptedFingerprint: probe.fingerprint })
+    await f.service.setPermissions(imported.id, { mode: 'projects', projects: [selected] })
+    assert.ok(readFileSync(join(accounts.get(imported.host), '.ssh/authorized_keys'), 'utf8').startsWith(foreign))
+  }
+  const before = structuredClone(writes)
+  await f.service.syncHerdr({ confirmed: true }); await f.service.state(); await f.service.herdrMachines()
+  assert.deepEqual(writes, before)
+  assert.equal(writes.filter(w => w[0] === 'add').length, 3)
+  state = await f.service.state(); assert.equal(state.machines.length, 3)
+  const chosenGuide = (await f.service.agentInstructions(selected)).match(/read (.+?\.md)\./)[1], otherGuide = (await f.service.agentInstructions(other)).match(/read (.+?\.md)\./)[1]
+  for (const imported of state.machines) {
+    assert.match(readFileSync(chosenGuide, 'utf8'), new RegExp(imported.alias))
+    assert.match(readFileSync(chosenGuide + '.ssh_config', 'utf8'), new RegExp(`Host ${imported.alias}\\n`))
+    for (const file of [otherGuide, otherGuide + '.ssh_config', f.service.configPath, join(f.service.root, 'MACHINES.md')]) assert.doesNotMatch(readFileSync(file, 'utf8'), new RegExp(imported.alias))
+  }
+  for (const call of f.calls.filter(c => c.args?.includes('-i'))) {
+    assert.ok(call.args.includes('BatchMode=yes')); assert.ok(call.args.includes('StrictHostKeyChecking=yes'))
+  }
+  assert.equal(statSync(join(ssh, 'known_hosts')).mode & 0o777, 0o644)
+  assert.doesNotMatch(readFileSync(join(f.userData, 'machines.json'), 'utf8'), /PRIVATE LOGIN|temporary-password|id_10_/)
+})
+
+test('one machine retains LAN login and falls back through bridge, then returns to LAN', async t => {
+  let failLan=false;const probes=[]
+  const f=fixture(t,{tcp:async(host,port,timeout)=>{probes.push({host,port,timeout});if(failLan&&host==='10.8.0.40')throw new m.MachinesFailure('timeout','LAN unavailable');return 4}})
+  const b=await f.direct('bridge');await f.connect(b);await f.service.setupBridge(b.id,{confirmed:true,caddy:false});await f.service.setBridge(b.id,{confirmed:true})
+  const home=await f.service.add({name:'home',firstRoute:'lan',host:'10.8.0.40',user:'drover',os:'linux'})
+  await f.connect(home)
+  await f.service.addRoute(home.id,{kind:'bridge',os:'linux'},{confirmed:true})
+  assert.deepEqual((await f.service.state()).machines.find(r=>r.id===home.id).routes.map(r=>r.kind),['lan','bridge'])
+  failLan=true
+  const fallback=await f.service.check(home.id)
+  assert.equal(fallback.activeRoute,'bridge');assert.equal(fallback.fallback,true)
+  assert.equal(fallback.routes[0].state,'down')
+  assert.match(readFileSync(f.service.configPath,'utf8'),new RegExp('Host drover-home\\n  HostName 127\\.0\\.0\\.1[\\s\\S]*User agent'))
+  failLan=false
+  const lan=await f.service.check(home.id)
+  assert.equal(lan.activeRoute,'lan');assert.equal(lan.fallback,false)
+  assert.match(readFileSync(f.service.configPath,'utf8'),/Host drover-home\n  HostName 10\.8\.0\.40\n  Port 22\n  User drover/)
+  assert.equal(probes.find(p=>p.host==='10.8.0.40').timeout,800)
+  const before=f.calls.length
+  await assert.rejects(f.service.removeRoute(home.id,'bridge',{confirmed:1}),{code:'confirmation_required'})
+  assert.equal(f.calls.length,before)
+  await f.service.removeRoute(home.id,'bridge',{confirmed:true})
+  await assert.rejects(f.service.removeRoute(home.id,'lan',{confirmed:true}),{code:'last_route'})
+})
+
+test('key revocation visits both route logins and retains an unreachable login for retry after restart', async t => {
+  const f = fixture(t), bridge = await f.direct('route-bridge')
+  await f.connect(bridge); await f.service.setupBridge(bridge.id, { confirmed: true, caddy: false }); await f.service.setBridge(bridge.id, { confirmed: true })
+  const home = await f.service.add({ name: 'two-logins', firstRoute: 'lan', host: '10.8.0.40', user: 'drover', os: 'linux' })
+  await f.connect(home); await f.service.addRoute(home.id, { kind: 'bridge', os: 'linux' }, { confirmed: true })
+  const old = (await f.service.state()).agentsKey.publicKey, runner = f.service.run, logins = []
+  let bridgeOffline = true
+  const run = async (file, args, options = {}) => {
+    if (file === 'ssh' && args.includes(`drover-management-${home.id}`) && options.input?.includes('awk -v agent=')) {
+      const login = readFileSync(f.service.controlConfig, 'utf8').split(`Host drover-management-${home.id}\n`)[1].match(/\n  User (\S+)/)[1]
+      logins.push(login)
+      if (login === 'agent' && bridgeOffline) return { code: 255, stdout: '', stderr: 'Connection timed out' }
+      assert.equal(options.input.includes('DROVER_SESSION_CLEANUP'), login === 'agent')
+    }
+    return runner(file, args, options)
+  }
+  f.service.run = run
+  const reports = await f.service.revokeAgentsKey({ confirmed: true })
+  assert.deepEqual(logins, ['drover', 'agent'])
+  assert.equal(reports.find(r => r.machineId === home.id).incomplete, true)
+  assert.ok(JSON.parse(readFileSync(join(f.userData, 'machines.json'))).revocations[home.id].includes(old))
+  assert.equal((await f.service.state()).machines.find(r => r.id === home.id).status.error.code, 'revocation_pending')
+  f.service.dispose(); bridgeOffline = false; logins.length = 0
+  const restarted = new m.MachinesService({ home: f.home, userData: f.userData, run, tcp: async () => 1, provisioner: { revokeBridgeKey: async () => {} } })
+  t.after(() => restarted.dispose())
+  const checked = await restarted.check(home.id)
+  assert.deepEqual(logins, ['agent'], 'only the pending login is retried')
+  assert.equal(JSON.parse(readFileSync(join(f.userData, 'machines.json'))).revocations[home.id], undefined)
+  assert.equal(checked.sessionCleanup.last.incomplete, true, 'supplied-account sessions cannot be declared terminated')
+  assert.equal(checked.sessionCleanup.last.terminated, 2)
+  assert.equal(checked.activeRoute, 'lan')
+})
+
+test('route deletion revokes the departing login first and keeps failed cleanup retryable', async t => {
+  const f = fixture(t), bridge = await f.direct('delete-bridge')
+  await f.connect(bridge); await f.service.setupBridge(bridge.id, { confirmed: true, caddy: false }); await f.service.setBridge(bridge.id, { confirmed: true })
+  const home = await f.service.add({ name: 'delete-login', firstRoute: 'lan', host: '10.8.0.41', user: 'drover', os: 'linux' })
+  await f.connect(home); await f.service.addRoute(home.id, { kind: 'bridge', os: 'linux' }, { confirmed: true })
+  const runner = f.service.run, events = []
+  let offline = true
+  f.service.run = async (file, args, options = {}) => {
+    if (file === 'ssh' && args.includes(`drover-management-${home.id}`) && options.input?.includes('awk -v agent=')) {
+      const block = readFileSync(f.service.controlConfig, 'utf8').split(`Host drover-management-${home.id}\n`)[1]
+      assert.match(block, /\n  User agent\n/)
+      events.push('revoke-login')
+      if (offline) return { code: 255, stdout: '', stderr: 'Connection timed out' }
+    }
+    return runner(file, args, options)
+  }
+  f.service.provisioner.removeTargets = async () => { events.push('remove-tunnel') }
+  await assert.rejects(f.service.removeRoute(home.id, 'bridge', { confirmed: true }), { code: 'timeout' })
+  assert.deepEqual(events, ['revoke-login'])
+  assert.deepEqual((await f.service.state()).machines.find(r => r.id === home.id).routes.map(r => r.user), ['drover', 'agent'])
+  assert.equal(JSON.parse(readFileSync(join(f.userData, 'machines.json'))).machines.find(r => r.id === home.id).routes.length, 2)
+  offline = false; events.length = 0
+  await f.service.removeRoute(home.id, 'bridge', { confirmed: true })
+  assert.deepEqual(events, ['revoke-login', 'remove-tunnel'])
+  assert.deepEqual((await f.service.state()).machines.find(r => r.id === home.id).routes.map(r => r.user), ['drover'])
+})
+
+test('offline first LAN login does not prevent bridge revocation and only pending login retries', async t => {
+  const f = fixture(t), bridge = await f.direct('offline-first-bridge')
+  await f.connect(bridge); await f.service.setupBridge(bridge.id, { confirmed: true, caddy: false }); await f.service.setBridge(bridge.id, { confirmed: true })
+  const home = await f.service.add({ name: 'offline-first', firstRoute: 'lan', host: '10.8.0.42', user: 'drover', os: 'linux' })
+  await f.connect(home); await f.service.addRoute(home.id, { kind: 'bridge', os: 'linux' }, { confirmed: true })
+  const runner = f.service.run, calls = [], attempts = [], old = (await f.service.state()).agentsKey.publicKey
+  let offline = true
+  const tcp = async host => { if (host === home.host) { attempts.push('lan'); if (offline) throw new m.MachinesFailure('timeout', 'LAN offline') } return 1 }
+  const run = async (file, args, options = {}) => {
+    if (file === 'ssh' && args.includes(`drover-management-${home.id}`) && options.input?.includes('awk -v agent=')) calls.push(readFileSync(f.service.controlConfig, 'utf8').split(`Host drover-management-${home.id}\n`)[1].match(/\n  User (\S+)/)[1])
+    return runner(file, args, options)
+  }
+  f.service.tcp = tcp; f.service.run = run
+  const reports = await f.service.revokeAgentsKey({ confirmed: true })
+  assert.ok(attempts.length); assert.deepEqual(calls, ['agent'])
+  assert.equal(reports.find(r => r.machineId === home.id).terminated, 2)
+  const stored = JSON.parse(readFileSync(join(f.userData, 'machines.json')))
+  assert.ok(stored.revocations[home.id].includes(old))
+  assert.deepEqual(stored.keyRemovalProgress[home.id][0].completedLogins, ['agent'])
+  f.service.dispose(); calls.length = 0; offline = false
+  const restarted = new m.MachinesService({ home: f.home, userData: f.userData, run, tcp, provisioner: { revokeBridgeKey: async () => {} } })
+  t.after(() => restarted.dispose())
+  const checked = await restarted.check(home.id)
+  assert.deepEqual(calls, ['drover'])
+  assert.equal(checked.sessionCleanup.last.terminated, 2)
+  assert.equal(checked.sessionCleanup.last.incomplete, true)
+  const finished = JSON.parse(readFileSync(join(f.userData, 'machines.json')))
+  assert.equal(finished.revocations[home.id], undefined); assert.equal(finished.keyRemovalProgress[home.id], undefined)
+})
+
+test('same login key revocation falls back after LAN SSH failure', async t => {
+  const f = fixture(t), machine = await f.direct('same-login'); await f.connect(machine)
+  const probe = await f.service.addRoute(machine.id, { kind: 'lan', host: '10.8.0.43' }, { confirmed: true })
+  await f.service.addRoute(machine.id, { kind: 'lan', host: '10.8.0.43', acceptedFingerprint: probe.fingerprint }, { confirmed: true })
+  const runner = f.service.run, hosts = []
+  f.service.run = async (file, args, options = {}) => {
+    if (file === 'ssh' && args.includes(`drover-management-${machine.id}`) && options.input?.includes('awk -v agent=')) {
+      const host = readFileSync(f.service.controlConfig, 'utf8').split(`Host drover-management-${machine.id}\n`)[1].match(/HostName (\S+)/)[1]
+      hosts.push(host)
+      if (host === '10.8.0.43') return { code: 255, stdout: '', stderr: 'Connection timed out' }
+    }
+    return runner(file, args, options)
+  }
+  await f.service.revokeAgentsKey({ confirmed: true })
+  assert.deepEqual(hosts, ['10.8.0.43', '203.0.113.5'])
+  assert.equal(JSON.parse(readFileSync(join(f.userData, 'machines.json'))).revocations[machine.id].length, 0)
+})
+
+test('punctuated imported herdr labels keep safe stable aliases and original display labels across refresh and restart', async t => {
+  const labels = ['!! Build Host', 'Build Host', '...', '😺', '-'.repeat(80), 'A'.repeat(100)]
+  const rows = labels.map((label, index) => ({ id: 'label-' + index, label, host: '10.8.1.' + (index + 1), port: 22, user: 'drover', target: 'drover@10.8.1.' + (index + 1), session: 'fixture', enabled: true }))
+  const registry = { list: async () => structuredClone(rows) }, f = fixture(t, { herdr: registry })
+  const first = await f.service.state(), names = first.machines.map(m => m.name)
+  assert.equal(new Set(names).size, rows.length)
+  assert.ok(names.every(name => /^[a-z0-9][a-z0-9-]{0,30}$/.test(name)))
+  assert.deepEqual(first.machines.map(m => m.herdrLabel), labels)
+  assert.deepEqual((await f.service.state()).machines.map(m => m.name), names)
+  f.service.dispose()
+  const restarted = new m.MachinesService({ home: f.home, userData: f.userData, herdr: registry, run: async () => { throw Error('Imports must not connect') } })
+  t.after(() => restarted.dispose())
+  const next = await restarted.state()
+  assert.deepEqual(next.machines.map(m => m.name), names)
+  assert.deepEqual(next.machines.map(m => m.herdrLabel), labels)
+  assert.deepEqual(next.machines.map(m => m.alias), names.map(name => 'drover-' + name))
+})
+
+test('route additions require a matching fresh fingerprint and purpose is metadata only', async t => {
+  const f=fixture(t), machine=await f.direct('first');await f.connect(machine)
+  const before=(await f.service.state()).machines[0].routes
+  await f.service.setPurpose(machine.id,'Build host')
+  const probe=await f.service.addRoute(machine.id,{kind:'lan',host:'10.8.0.50'},{confirmed:true})
+  assert.equal(probe.algorithm,'ssh-ed25519')
+  assert.deepEqual((await f.service.state()).machines[0].routes,before)
+  f.scan=`fixture ssh-ed25519 ${blob(8)}`
+  await assert.rejects(f.service.addRoute(machine.id,{kind:'lan',host:'10.8.0.50',acceptedFingerprint:probe.fingerprint},{confirmed:true}),{code:'host_key_changed'})
+  f.scan=hostKey
+  await f.service.addRoute(machine.id,{kind:'lan',host:'10.8.0.50',acceptedFingerprint:probe.fingerprint},{confirmed:true})
+  const state=await f.service.state()
+  assert.equal(state.machines[0].purpose,'Build host')
+  assert.deepEqual(state.machines[0].routes.map(r=>r.kind),['lan','internet'])
+})
+
+test('home first LAN without host uses installer locally even when a bridge exists', async t => {
+  const f=fixture(t),bridge=await f.direct('bridge');await f.connect(bridge);await f.service.setupBridge(bridge.id,{confirmed:true,caddy:false});await f.service.setBridge(bridge.id,{confirmed:true})
+  const home=await f.service.add({name:'installer-home',firstRoute:'lan',os:'linux',alsoBridge:false})
+  assert.deepEqual(home.routes.map(r=>r.kind),['lan']);assert.equal(home.routes[0].state,'setup')
+  await f.service.installCommand(home.id,'linux')
+  const ctx=f.calls.filter(c=>c.context).at(-1).context
+  assert.equal(ctx.bridge,null)
+  await ctx.onReport({machineId:home.id,os:'linux',state:'installed',hostKey:publicKey(7),lanHost:'10.8.0.60'})
+  assert.equal((await f.service.state()).machines.find(r=>r.id===home.id).routes[0].host,'10.8.0.60')
+})
+
+test('key-only login bootstrap shows user known_hosts match but still requires explicit confirmation', async t => {
+  const f=fixture(t),machine=await f.service.add({name:'imported',firstRoute:'lan',host:'10.8.0.70',user:'drover'})
+  mkdirSync(join(f.home,'.ssh'));const known=join(f.home,'.ssh/known_hosts'),key=join(f.home,'.ssh/id_fixture')
+  writeFileSync(known,`10.8.0.70 ssh-ed25519 ${blob(7)}\n`,{mode:0o644});writeFileSync(key,'not read by Drover',{mode:0o600})
+  const base=f.service.run
+  f.service.run=async(file,args,opts)=>file==='ssh-keygen'&&args.includes('-F')?{code:0,stdout:readFileSync(known,'utf8'),stderr:''}:base(file,args,opts)
+  const probe=await f.service.probeHostKey(machine.host,22,'drover')
+  assert.equal(probe.known,true);assert.equal(statSync(known).mode&0o777,0o644)
+  await assert.rejects(f.service.installKey(machine.id,{keyPath:key}),{code:'host_key_unconfirmed'})
+  await f.service.installKey(machine.id,{keyPath:key,acceptedFingerprint:probe.fingerprint})
+  const login=f.calls.find(c=>c.args?.includes(key))
+  assert.ok(login);assert.ok(login.args.includes('BatchMode=yes'));assert.ok(login.input.includes('drover-agents'))
+  assert.doesNotMatch(readFileSync(join(f.userData,'machines.json'),'utf8'),/not read by Drover|id_fixture/)
+})
+
+
+test('helper checks the live bound role, native approval and incarnation before performing metadata changes', async t => {
+  const f=fixture(t),machine=await f.direct('helper-host')
+  let role=null,approve=true,agent={pane_id:'w1:p1',terminal_id:'fixture-terminal',agent:'codex',name:'devops',cwd:'/fixture',agent_session:{value:'fixture-incarnation'}}
+  let confirmations=0
+  const helper=new m.MachineHelper({root:f.service.root,runtime:process.execPath,session:()=> 'fixture',service:f.service,agent:async()=>agent,role:async()=>role,writable:()=>true,confirm:async()=>{confirmations++;return approve}})
+  await helper.start();t.after(()=>helper.dispose())
+  const config=JSON.parse(readFileSync(join(f.service.root,'helper/runtime.json'),'utf8'))
+  const request={token:config.token,session:'fixture',paneId:'w1:p1',action:'set-purpose',args:[machine.id,'Build host'],role:'lead'}
+  await assert.rejects(helper.dispatch(request),{code:'role_denied'});assert.equal(confirmations,0)
+  role='devops';approve=false
+  await assert.rejects(helper.dispatch(request),{code:'confirmation_required'})
+  assert.equal((await f.service.state()).machines[0].purpose,undefined)
+  approve=true;await helper.dispatch(request)
+  assert.equal((await f.service.state()).machines[0].purpose,'Build host')
+  helper.options.confirm=async()=>{agent={...agent,terminal_id:'replacement-terminal'};return true}
+  await assert.rejects(helper.dispatch({...request,args:[machine.id,'Changed']}),{code:'unauthorized'})
+  assert.equal((await f.service.state()).machines[0].purpose,'Build host')
+})
+
+test('office infrastructure projection includes routes, purpose, phones and remote agents without paths or secrets', t => {
+  const office=new m.OfficeCollector({session:()=> 'fixture',snapshot:()=>null,settings:()=>({roles:[],projectLeads:{}})},()=>{})
+  t.after(()=>office.dispose())
+  office.onInfrastructure([{id:'fixture-id',name:'build-host',alias:'drover-build-host',purpose:'Build jobs',status:{state:'online'},activeRoute:'bridge',fallback:true,routes:[{kind:'lan',state:'down',host:'10.8.0.99',error:{detail:'/private/key'}},{kind:'bridge',state:'ok',latencyMs:18}]}],[{id:'phone',name:'My phone',lastSeenAt:1,online:true}],[{id:'saved',droverMachineId:'fixture-id',session:'fixture',workspaces:[{agents:[{paneId:'w1:p1',name:'builder',agent:'codex',status:'working',cwd:'/private/project'}]}]}])
+  const state=office.getState(),node=state.externalNodes.find(n=>n.kind==='machine')
+  assert.equal(node.purpose,'Build jobs');assert.equal(node.fallback,true);assert.equal(node.routes[1].latencyMs,18)
+  assert.equal(node.remoteAgents[0].status,'working');assert.equal(state.externalNodes[0].phones[0].online,true)
+  assert.doesNotMatch(JSON.stringify(state),/10\.8\.0\.99|private\/key|private\/project/)
 })

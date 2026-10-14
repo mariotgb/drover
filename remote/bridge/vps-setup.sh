@@ -39,14 +39,19 @@ spec() {
 }
 HUB_USERS="bridge-mac bridge-pc bridge-home jump"
 
+keepalive() {
+  if [ "$1" = bridge-mac ]; then printf '15 2\n'; else printf '30 3\n'; fi
+}
+
 render_dropin() {
-  local u s mode open listen
+  local u s mode open listen alive_interval alive_count
   printf '%s\n' \
     '# Managed by vps-setup.sh — edit the script, not this file.' \
     '# One restricted user per machine. MaxSessions 0 forbids shells, commands and' \
     '# SFTP; only the forwarding listed per user remains.'
   for u in $HUB_USERS; do
     s="$(spec "$u")"; mode="${s%%|*}"; s="${s#*|}"; open="${s%%|*}"; listen="${s#*|}"
+    s="$(keepalive "$u")"; alive_interval="${s%% *}"; alive_count="${s#* }"
     printf '\nMatch User %s\n' "$u"
     printf '    %s\n' \
       "PubkeyAuthentication yes" \
@@ -64,8 +69,8 @@ render_dropin() {
       "X11Forwarding no" \
       "PermitTTY no" \
       "MaxSessions 0" \
-      "ClientAliveInterval 30" \
-      "ClientAliveCountMax 3"
+      "ClientAliveInterval $alive_interval" \
+      "ClientAliveCountMax $alive_count"
   done
   if [ "$RETIRE_LEGACY" = 1 ]; then
     printf '\nMatch User bridge\n    DenyUsers bridge\n    AuthenticationMethods any\n    HostbasedAuthentication no\n    GSSAPIAuthentication no\n    PubkeyAuthentication no\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    DisableForwarding yes\n    MaxSessions 0\n'
@@ -95,9 +100,10 @@ $HUB_CONTEXTS"
   done <<< "$HUB_CONTEXTS"
 }
 verify_hub() {
-  local c="$1" u s mode open listen port addr laddr host out label
+  local c="$1" u s mode open listen port addr laddr host out label alive_interval alive_count
   for u in $HUB_USERS; do
     s="$(spec "$u")"; mode="${s%%|*}"; s="${s#*|}"; open="${s%%|*}"; listen="${s#*|}"
+    s="$(keepalive "$u")"; alive_interval="${s%% *}"; alive_count="${s#* }"
     while IFS=, read -r host addr laddr port; do
       [ -n "$host" ] || continue
       label="$u host=$host client=$addr local=$laddr:$port"
@@ -112,8 +118,8 @@ verify_hub() {
       expect_eq "$out" pubkeyauthentication yes "$label"
       expect_eq "$out" passwordauthentication no "$label"
       expect_eq "$out" kbdinteractiveauthentication no "$label"
-      expect_eq "$out" clientaliveinterval 30 "$label"
-      expect_eq "$out" clientalivecountmax 3 "$label"
+      expect_eq "$out" clientaliveinterval "$alive_interval" "$label"
+      expect_eq "$out" clientalivecountmax "$alive_count" "$label"
       expect_eq "$out" disableforwarding no "$label"
       expect_eq "$out" allowagentforwarding no "$label"
       expect_eq "$out" x11forwarding no "$label"

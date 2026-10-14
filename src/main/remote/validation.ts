@@ -145,6 +145,7 @@ export function validateRpcArgs(method: string, args: unknown[]): void {
     case 'removeTask': positional(args, [path, str(200, 1)]); return
     case 'setAgentModel': positional(args, [id, oneOf('claude', 'codex'), model]); return
     case 'sendPrompt': positional(args, [shape({ paneId: id, target: id, agentKind: nullable(kind), text: str(256 * 1024), imagePaths: array(path, 32), isShell: bool }, ['paneId', 'target', 'agentKind', 'text', 'imagePaths', 'isShell'])]); if ((args[0] as { paneId: string }).paneId !== (args[0] as { target: string }).target) invalid(); return
+    case 'answerAgentQuestion': positional(args, [shape({ paneId: id, questionId: id, choiceId: id }, ['paneId', 'questionId', 'choiceId'])]); return
     case 'createAgent': positional(args, [shape({ roleId: v => str(200, 1)(v) && /^(?:project|custom|starter):[A-Za-z0-9._/-]+$/.test(v as string) && !(v as string).includes('..'), workspaceId: nullable(id), folder: nullable(path), workspaceLabel: label, kind: nullable(kind), name: nullable(name), placement: oneOf('tab', 'split-right', 'split-down', 'workspace-root', 'existing'), splitTarget: nullable(id), tabLabel: nullable(label), args: array(str(8192), 100), prompt: str(256 * 1024), worktreeBranch: nullable(str(200, 1)) }, ['workspaceId', 'folder', 'kind', 'name', 'placement', 'args'])]); return
     case 'savePushSubscription': positional(args, [v => plain(v)]); validatePushSubscription(args[0]); return
     case 'deletePushSubscription': positional(args, [optional(str(4096, 1))], 0); return

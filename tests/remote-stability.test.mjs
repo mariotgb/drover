@@ -31,7 +31,7 @@ const call = (method, args = [], id = method) => ({ t: 'call', id, method, args 
 const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
 
 function client(t) {
-  const timers = [], globals = ['WebSocket', 'window', 'document', 'location', 'fetch', 'setTimeout', 'clearTimeout'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)])
+  const timers = [], events = new Map(), globals = ['WebSocket', 'window', 'document', 'location', 'fetch', 'setTimeout', 'clearTimeout'].map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)])
   t.after(() => { for (const [k, d] of globals) { if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k] } })
   class Socket {
     static OPEN = 1; static CONNECTING = 0; static all = []
@@ -43,12 +43,45 @@ function client(t) {
     receive(value) { this.onmessage?.({ data: JSON.stringify(value) }) }
     reply(method, value, ok = true, stateRevision) { const c = this.sent.findLast(c => c.method === method); assert.ok(c, method); this.receive(ok ? { t: 'result', id: c.id, ok, value, stateRevision } : { t: 'result', id: c.id, ok, error: value }) }
   }
-  Object.assign(globalThis, { WebSocket: Socket, window: { addEventListener() {} }, document: { documentElement: { classList: { add() {} } } }, location: { protocol: 'https:', host: 'test.invalid', replace() { throw new Error('Unexpected auth redirect') } }, fetch: async () => ({ ok: true, status: 200, json: async () => ({ authenticated: true }) }),
+  const addEventListener = (name, fn) => events.set(name, fn)
+  Object.assign(globalThis, { WebSocket: Socket, window: { addEventListener }, document: { addEventListener, visibilityState: 'visible', documentElement: { classList: { add() {} } } }, location: { protocol: 'https:', host: 'test.invalid', replace() { throw new Error('Unexpected auth redirect') } }, fetch: async () => ({ ok: true, status: 200, json: async () => ({ authenticated: true }) }),
     setTimeout(fn, delay) { const timer = { fn, delay, cleared: false }; timers.push(timer); return timer }, clearTimeout(timer) { if (timer) timer.cleared = true } })
   const api = m.createRemoteApi(), socket = Socket.all[0]; socket.open()
   const fire = async predicate => { const timer = timers.find(t => !t.cleared && predicate(t.delay)); assert.ok(timer, 'timer exists'); timer.cleared = true; timer.fn(); await settle() }
-  return { api, socket, Socket, timers, fire }
+  return { api, socket, Socket, timers, fire, events }
 }
+
+test('an unresponsive opening socket is replaced without waiting for its close callback', async t => {
+  const { socket, Socket, timers, fire } = client(t)
+  socket.close(); await fire(delay => delay < 1000)
+  const stuck = Socket.all.at(-1)
+  stuck.close = () => { stuck.readyState = 2 }
+  await fire(delay => delay === 15_000)
+  assert.equal(m.getRemoteConnection(), 'offline')
+  await fire(delay => delay < 2100)
+  const fresh = Socket.all.at(-1)
+  assert.notEqual(fresh, stuck); fresh.open()
+  stuck.onopen?.(); stuck.onclose?.()
+  assert.equal(m.getRemoteConnection(), 'connected')
+  assert.ok(timers.some(timer => timer.delay === 15_000 && timer.cleared))
+})
+
+test('foreground/network resume probes live sockets and dead paths restore without replay', async t => {
+  const { api, socket, Socket, fire, events } = client(t)
+  events.get('visibilitychange')()
+  const ping = socket.sent.at(-1); assert.equal(ping.t, 'ping')
+  socket.receive({ t: 'pong', id: ping.id })
+  assert.equal(m.getRemoteConnection(), 'connected')
+  events.get('online')()
+  const command = api.sendPrompt('w1:p1', 'NEVER REPLAY')
+  socket.close = () => { socket.readyState = 2 }
+  await fire(delay => delay === 10_000)
+  assert.equal((await command).code, 'disconnected')
+  await fire(delay => delay < 1000)
+  const fresh = Socket.all.at(-1); fresh.open()
+  assert.equal(fresh.sent.some(c => c.method === 'sendPrompt'), false)
+  socket.onclose?.(); assert.equal(m.getRemoteConnection(), 'connected')
+})
 
 test('new transcript events survive a late subscribe snapshot; reset clears only a newer conversation', () => {
   let state = m.mergeTranscript(undefined, update(1, true, ['a'])).next
@@ -204,8 +237,12 @@ test('real WS: slow reads/bursts preserve connection and timeout diagnostics hav
   const server = new m.RemoteServer({ userData: root, webRoot: root, attachmentsDir: join(root, 'attachments'), handlers, settings: () => settings, saveSettings: s => { settings = s }, statusChanged() {} })
   t.after(() => server.stop()); await server.sync()
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin, headers: { Host: `localhost:${port}`, Cookie: `drover_session=${token}` } }); t.after(() => ws.terminate()); await once(ws, 'open')
+  assert.equal(ws.extensions, '', 'private RPC sockets must decline permessage-deflate')
+  const wire = []
+  ws._socket.on('data', data => wire.push(Buffer.from(data)))
   const responses = []; ws.on('message', d => responses.push(JSON.parse(d)))
   ws.send(JSON.stringify(call('discoverRoles', ['/SECRET'], 'slow')))
+  ws.send(JSON.stringify({ t: 'ping', id: 'health' }))
   ws.send(JSON.stringify(call('transcriptSubscribe', ['w1:p1'], 'sub')))
   for (let i = 0; i < 48; i++) ws.send(JSON.stringify(call('init', [], String(i))))
   ws.send(JSON.stringify(call('request', ['pane.focus', { pane_id: 'w1:p1' }], 'error')))
@@ -213,6 +250,23 @@ test('real WS: slow reads/bursts preserve connection and timeout diagnostics hav
   for (let i = 0; i < 100 && responses.length < 50; i++) await new Promise(r => setTimeout(r, 10))
   assert.equal(responses.filter(r => r.ok).length, 49)
   assert.ok(!responses.some(r => r.id === 'slow'))
+  assert.ok(responses.some(r => r.t === 'pong' && r.id === 'health'), 'heartbeat bypasses slow RPC work')
+  const raw = Buffer.concat(wire)
+  let offset = 0, secretFrame = false
+  while (offset + 2 <= raw.length) {
+    const first = raw[offset], second = raw[offset + 1]
+    let length = second & 127, header = 2
+    if (length === 126) { length = raw.readUInt16BE(offset + 2); header = 4 }
+    if (length === 127) { length = Number(raw.readBigUInt64BE(offset + 2)); header = 10 }
+    const payload = raw.subarray(offset + header, offset + header + length)
+    if (payload.toString().includes('SECRET CHAT')) {
+      secretFrame = true
+      assert.equal(first & 0x40, 0, 'secret-bearing transcript response has RSV1 clear')
+      assert.ok(JSON.parse(payload).value.items.some(item => item.text === 'SECRET CHAT'))
+    }
+    offset += header + length
+  }
+  assert.ok(secretFrame, 'raw secret-bearing response was checked')
   ws.send(JSON.stringify({ t: 'timeout', id: 'slow' }))
   ws.send(JSON.stringify({ t: 'timeout', id: 'slow' }))
   ws.send(JSON.stringify({ t: 'timeout', id: 'SECRET UNTRACKED' }))

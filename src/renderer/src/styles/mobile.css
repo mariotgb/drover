@@ -84,3 +84,5 @@
   .welcome-inner h1 { font-size: 26px; }
   .welcome-actions { flex-wrap: wrap; }
 }
+.mw-question { flex: none; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--bg); }
+.mobile-quick-replies .aq, .mw-question .aq { max-height: 46vh; overflow-y: auto; }

@@ -9,6 +9,7 @@ import {
 } from '@shared/types'
 import { AGENT_NAME_RE, toAgentName } from '@shared/agents'
 import type { HerdrService } from './herdr/service'
+import { blockingDialog } from './agentQuestions'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -116,17 +117,22 @@ export async function waitUntilInteractive(
   service: Pick<HerdrService, 'request'>,
   paneId: string,
   timeoutMs: number,
-  intervalMs = 150
+  intervalMs = 150,
+  verifyScreen = false
 ): Promise<Readiness> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     try {
       const { agent: a } = await service.request<{ agent: AgentProbe }>('agent.get', { target: paneId }, 5000)
       if (a?.agent_status === 'blocked') return 'blocked'
+      if (verifyScreen && a?.agent) {
+        const { read } = await service.request<{ read: { text: string } }>('pane.read', { pane_id: paneId, source: 'visible', format: 'text' }, 3000)
+        if (blockingDialog(read.text, a.agent)) return 'blocked'
+      }
       if (a?.agent_status === 'idle' || a?.agent_status === 'done') {
         if (a.interactive_ready) return 'ready'
         // No longer managed: either still running as a detected agent or gone.
-        if (!a.launch_pending) return a.agent ? 'ready' : 'exited'
+        if (!a.launch_pending && !verifyScreen) return a.agent ? 'ready' : 'exited'
       }
     } catch (e) {
       if (e instanceof HerdrApiError && (e.code === 'restart_session_changed' || e.code === 'session_changed')) throw e

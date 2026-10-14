@@ -50,7 +50,7 @@ async function publicKey(file: string): Promise<Pick<BridgeKeyCandidate, 'algori
   } catch { return undefined }
 }
 /** A regular private-file candidate plus its public metadata; never open the private file. */
-async function adminKeyCandidates(options: ExistingBridgeOptions, host: string, tunnelKey?: string): Promise<BridgeKeyCandidate[]> {
+export async function adminKeyCandidates(options: ExistingBridgeOptions, host: string, tunnelKey?: string): Promise<BridgeKeyCandidate[]> {
   const { home } = options
   const directory = join(home, '.ssh'), candidates: BridgeKeyCandidate[] = []
   let names: string[]
@@ -159,6 +159,10 @@ async function localPin(files: string[], host: string, port: number, alias?: str
   return undefined
 }
 export async function detectLocalBridge(options: ExistingBridgeOptions): Promise<LocalBridge | null> {
+  try {
+    await lstat(join(options.home, 'Library/LaunchAgents/dev.drover.bridge.plist.recovery.json'))
+    throw new MachinesFailure('existing_bridge_invalid', 'Bridge recovery is incomplete; retain the transaction backups and restore the original jobs before retrying.')
+  } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
   let remote = options.remoteSettings
   if (!remote) { const raw = await metadata(join(options.userData, 'settings.json')); try { const data = raw ? JSON.parse(raw) : {}; remote = { remotePublicUrl: data.remotePublicUrl, remotePort: data.remotePort } } catch { remote = {} } }
   const publicUrl = origin(remote.remotePublicUrl)
@@ -169,10 +173,27 @@ export async function detectLocalBridge(options: ExistingBridgeOptions): Promise
     try { const data = JSON.parse(result.stdout); if (result.code || data.Label !== 'dev.drover.bridge') throw Error(); transport = parseBridgeArguments(data.ProgramArguments, options.home) }
     catch { throw new MachinesFailure('existing_bridge_invalid', 'The bridge LaunchAgent has invalid SSH metadata.') }
   }
+  const phonePlist = join(options.home, 'Library/LaunchAgents/dev.drover.bridge.phone.plist')
+  let splitPhone = false
+  let phoneTransport: ReturnType<typeof parseBridgeArguments> | undefined
+  if (transport && await metadata(phonePlist) !== null) {
+    const result = await options.run('plutil', ['-convert', 'json', '-o', '-', phonePlist], { env: options.env })
+    try {
+      const data = JSON.parse(result.stdout)
+      if (result.code || data.Label !== 'dev.drover.bridge.phone') throw Error()
+      const phone = parseBridgeArguments(data.ProgramArguments, options.home)
+      if (phone.forwards.some(f => f.targetPort === 22) || !phone.forwards.length) throw Error()
+      const sameDestination = phone.host === transport.host && phone.port === transport.port
+      if (sameDestination && phone.forwards.some(f => transport!.forwards.some(m => m.listenPort === f.listenPort))) throw Error()
+      phoneTransport = phone
+      if (sameDestination) transport.forwards.push(...phone.forwards)
+      splitPhone = true
+    } catch { throw new MachinesFailure('existing_bridge_invalid', 'The phone LaunchAgent has conflicting SSH metadata.') }
+  }
   const host = transport?.host ?? sslipHost(publicUrl)
   if (!host) return null
   validHost(host)
-  if (transport && sslipHost(publicUrl) && sslipHost(publicUrl) !== host) throw new MachinesFailure('bridge_state_conflict', 'The phone URL and local tunnel point to different servers.')
+  if (transport && sslipHost(publicUrl) && sslipHost(publicUrl) !== (phoneTransport?.host ?? host)) throw new MachinesFailure('bridge_state_conflict', 'The phone URL and local tunnel point to different servers.')
   let admin = options.admin
   if (!admin) { const raw = await metadata(join(options.userData, 'bridge-admin.json')); try { admin = raw ? JSON.parse(raw) : undefined } catch { /* Absent configuration. */ } }
   if (admin && (!userPattern.test(admin.user) || admin.host && admin.host !== host || admin.port !== undefined && admin.port !== (transport?.port ?? 22))) admin = undefined
@@ -183,13 +204,23 @@ export async function detectLocalBridge(options: ExistingBridgeOptions): Promise
   if (transport) {
     const result = await options.run('launchctl', ['print', `gui/${process.getuid?.() ?? 0}/dev.drover.bridge`], { env: options.env })
     tunnelRunning = result.code === 0 && /\bstate\s*=\s*running\b/.test(result.stdout) && /\bpid\s*=\s*[1-9]\d*/.test(result.stdout)
+    if (splitPhone) {
+      const phone = await options.run('launchctl', ['print', `gui/${process.getuid?.() ?? 0}/dev.drover.bridge.phone`], { env: options.env })
+      tunnelRunning &&= phone.code === 0 && /\bstate\s*=\s*running\b/.test(phone.stdout) && /\bpid\s*=\s*[1-9]\d*/.test(phone.stdout)
+    }
   }
   const port = transport?.port ?? 22
   const candidates = await adminKeyCandidates(options, host, transport?.keyPath)
   const hostKey = await localPin([...(transport?.knownHostsPath ? [transport.knownHostsPath] : []), join(options.home, '.ssh/mac_bridge_known_hosts'), join(options.home, '.ssh/known_hosts'), join(options.home, '.drover/machines/known_hosts')], host, port, transport?.hostKeyAlias)
-  return { ...(transport ?? { tunnelUser: 'bridge-mac', forwards: [] }), host, port, users: [...new Set([transport?.tunnelUser ?? 'bridge-mac', 'jump'])], ...(publicUrl ? { publicUrl, phoneUrl: publicUrl } : {}), tunnelRunning, macTunnel: transport ? tunnelRunning ? 'running' : 'stopped' : 'missing', adminKey, adminKeyCandidates: candidates, ...(adminKeyPath ? { adminKeyPath } : {}), ...(admin ? { admin } : {}), ...(hostKey ? { hostKey } : {}), ...(options.machines?.find(m => m.kind === 'direct' && m.host === host && m.port === port) ? { machineId: options.machines.find(m => m.kind === 'direct' && m.host === host && m.port === port)!.id } : {}) }
+  const evidence: NonNullable<ExistingBridge['evidence']> = []
+  if (transport) evidence.push({ signal: 'launchagent', detail: 'Machine SSH tunnel configured locally' })
+  if (splitPhone) evidence.push({ signal: 'phone_launchagent', detail: 'Separate phone SSH tunnel configured locally' })
+  if (publicUrl) evidence.push({ signal: 'phone_url', detail: 'Phone HTTPS site configured in Drover' })
+  if (hostKey?.known) evidence.push({ signal: 'host_pin', detail: 'Host key matches a local known_hosts entry' })
+  if (adminKey) evidence.push({ signal: 'admin_reference', detail: 'Administrator key reference available locally' })
+  return { ...(transport ?? { tunnelUser: 'bridge-mac', forwards: [] }), host, port, users: [...new Set([transport?.tunnelUser ?? 'bridge-mac', 'jump'])], ...(publicUrl ? { publicUrl, phoneUrl: publicUrl } : {}), tunnelRunning, macTunnel: transport ? tunnelRunning ? 'running' : 'stopped' : 'missing', adminKey, adminKeyCandidates: candidates, evidence, ...(adminKeyPath ? { adminKeyPath } : {}), ...(admin ? { admin } : {}), ...(hostKey ? { hostKey } : {}), ...(options.machines?.find(m => m.kind === 'direct' && m.host === host && m.port === port) ? { machineId: options.machines.find(m => m.kind === 'direct' && m.host === host && m.port === port)!.id } : {}) }
 }
 export function publicExistingBridge(local: LocalBridge): ExistingBridge {
-  const { host, port, users, publicUrl, phoneUrl, tunnelRunning, macTunnel, adminKey, adminKeyPath, adminKeyCandidates, machineId, hostKey } = local
-  return { host, port, users, publicUrl, phoneUrl, tunnelRunning, macTunnel, adminKey, adminKeyPath, adminKeyCandidates, machineId, hostKey }
+  const { host, port, users, publicUrl, phoneUrl, tunnelRunning, macTunnel, adminKey, adminKeyPath, adminKeyCandidates, machineId, hostKey, evidence } = local
+  return { host, port, users, publicUrl, phoneUrl, tunnelRunning, macTunnel, adminKey, adminKeyPath, adminKeyCandidates, machineId, hostKey, evidence }
 }

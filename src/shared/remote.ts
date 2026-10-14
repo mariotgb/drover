@@ -52,7 +52,7 @@ export const REMOTE_METHOD_CHANNELS = {
   request: 'herdr:request', sessions: 'herdr:sessions', startServer: 'herdr:start-server',
   reconnect: 'herdr:reconnect', herdrVersion: 'herdr:version', agentKinds: 'agents:kinds',
   limits: 'limits:get', refreshLimits: 'limits:refresh', previewServers: 'preview:servers',
-  discoverRoles: 'roles:discover', sendPrompt: 'agent:send', createAgent: 'agent:create',
+  discoverRoles: 'roles:discover', sendPrompt: 'agent:send', answerAgentQuestion: 'agent:answer-question', createAgent: 'agent:create',
   modelCatalog: 'models:catalog', watchTasks: 'tasks:watch', unwatchTasks: 'tasks:unwatch',
   ensureBoard: 'tasks:ensure', addTask: 'tasks:add', updateTask: 'tasks:update', removeTask: 'tasks:remove',
   setAgentModel: 'agent:set-model', termOpen: 'term:open', termInput: 'term:input',
@@ -104,8 +104,10 @@ export type RemoteResult =
 export interface RemoteEvent { t: 'event'; channel: RemoteEventChannel; args: unknown[]; stateRevision?: number }
 /** Diagnostic only: reports a client deadline, never cancels/replays the command. */
 export interface RemoteTimeout { t: 'timeout'; id: string }
-export type RemoteClientMessage = RemoteCall | RemoteTimeout
-export type RemoteServerMessage = RemoteResult | RemoteEvent
+export interface RemotePing { t: 'ping'; id: string }
+export interface RemotePong { t: 'pong'; id: string }
+export type RemoteClientMessage = RemoteCall | RemoteTimeout | RemotePing
+export type RemoteServerMessage = RemoteResult | RemoteEvent | RemotePong
 /** termOpen(id, ...) subscribes this WS to id; termClose(id) releases it.
  * Terminal IDs are owned per connection; other connections cannot write/close them.
  * No global subscription is needed for the other allowlisted event channels.

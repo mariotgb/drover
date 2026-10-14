@@ -41,10 +41,46 @@ could undo that setting.
 Copy the tree into a temporary build context excluding `.git`, `.drover`,
 `node_modules`, `out` and `release`; never copy host dependency directories.
 Build with `scripts/linux/Dockerfile`. Run the container with an output mount
-for `/build/release`; `npm run dist:linux -- --x64` or `--arm64` selects one
-architecture. Build/test containers must use synthetic CLIs and isolated
+for `/build/release`; `npm run dist:linux -- AppImage deb --x64` or `--arm64`
+selects one architecture and overrides the configured multi-architecture targets.
+Build/test containers must use synthetic CLIs and isolated
 profiles, not mounted home directories or live herdr sockets. The image builds
 packages; it never installs or starts Drover on the host.
+
+## Remote Linux build
+
+On an authorized x86_64 Linux host, install Docker, buildx, git and rsync. Keep
+the public checkout separate from build snapshots (`git clone
+https://github.com/mariotgb/drover ~/drover`). Node runs inside
+`scripts/linux/Dockerfile`; a host Node installation is unnecessary.
+
+```sh
+DROVER_LINUX_HOST=user@linux-host scripts/linux/remote-build.sh
+```
+
+The script syncs tracked and non-ignored uncommitted files into a new remote
+snapshot, excluding host dependencies, outputs, local agent state and secrets.
+It runs native x64 Docker typecheck/tests, builds AppImage/deb, and runs synthetic
+Xvfb smoke without network access. If buildx advertises arm64 (QEMU/binfmt), it
+also builds and smokes arm64 there. The arm64 smoke normalizes AppImage's ELF
+padding in a disposable copy for QEMU/binfmt; delivered artifacts are unchanged.
+`DROVER_LINUX_ARM64=required` fails if arm64
+is unavailable; `off` skips it. In auto/off mode, matching previous local arm64
+packages are required before the output directory is replaced.
+
+Artifacts are copied back with SHA-256 verification to
+`~/remote-mac/linux-packages`; logs are saved beside it. Optional environment
+variables: `DROVER_LINUX_DIR` (relative remote build directory),
+`DROVER_LINUX_OUTPUT` (local destination), and `DROVER_LINUX_SSH_CONFIG`
+(SSH config file). SSH host-key checks stay enabled. The script never installs
+binfmt, changes host configuration, or launches agents.
+
+For an authorized, isolated Xorg/GNOME desktop check, run the smoke container
+with its X11 socket and dedicated Xauthority file mounted, set `DISPLAY` and
+`XAUTHORITY`, and pass `--desktop`. It targets only the fixture Drover window and
+uses `xdotool` XTest keyboard input for Ctrl+Shift+B and readline keys; shortcut
+failure is an assertion instead of falling back to menu dispatch. The desktop
+session must be separate from any user or default herdr session.
 
 ## Optional Linux desktop SSH bridge
 

@@ -31,6 +31,7 @@ import { t, tp, isMac, keys } from '../i18n'
 import { splitByLead, projectKey } from '../leads'
 import { isRemote } from '../api'
 import { BossBroadcastDialog, BossDialog } from './BossDialogs'
+import { MachinesSidebar } from './MachinesSidebar'
 
 export function Sidebar() {
   const { groups, threads } = useModel()
@@ -115,6 +116,7 @@ export function Sidebar() {
         {connection.status === 'connected' && !groups.length && (
           <div className="sidebar-empty">{t('No projects yet. Create an agent to get started.')}</div>
         )}
+        {!isRemote && <MachinesSidebar />}
       </nav>
 
       {!isRemote && <CodexIntegrationWarning />}
@@ -312,7 +314,9 @@ export const ThreadRow = memo(function ThreadRow({ thread: th, nested, showProje
           <span className="name">{th.name}</span>
           {lead && <Crown size={12} className="lead-crown" aria-label={t('Project lead')} />}
           {th.pane.bypass && <ShieldOff size={12} className="bypass-icon" aria-label={t('Skip permission prompts')}><title>{t('Skip permission prompts')}</title></ShieldOff>}
-          {th.status === 'blocked' && <span className="pill pill-blocked">{t('input')}</span>}
+          {th.pane.restore_state === 'failed' ? <span className="pill pill-failed">{t('did not start')}</span>
+            : th.pane.restore_state === 'starting' ? <span className="pill pill-starting">{t('starting')}</span>
+            : th.status === 'blocked' && <span className="pill pill-blocked">{th.pane.agent_question ? t('question') : t('input')}</span>}
         </div>
         <div className="thread-sub">{showProject ? `${th.workspace.label} · ${th.subtitle}` : th.subtitle}</div>
       </div>

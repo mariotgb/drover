@@ -7,8 +7,14 @@ import { toast, useModel } from '../store'
 import { Spinner } from './primitives'
 import { AddMachineWizard, BridgedHostKey, HostKeyCard, InstallCommandPanel } from './AddMachineWizard'
 import { BridgeChecklist, BridgeWizard, UpgradeBridge, useBridgeJob } from './BridgeWizard'
+import { PurposeField, RoutesSection } from './MachineRoutesSection'
+import { EmptyMachinesMap, MachinesMap, MapLegend, useMapOpen } from './MachinesMap'
+import { MachinesHelp } from './MachinesHelp'
+import { MachinesRolesBlock } from './MachinesRolesBlock'
+import { ConnectMachineWizard, needsConnect } from './ConnectMachineWizard'
 import type { MachineChecks } from '@shared/machines'
-import { ago, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, phoneOnlyBridge, type BridgeAdoptOptions, type BridgeKeyCandidate, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
+import { activeRoute, hasRoute, isFallback, purposeOf, routeChip, routeName, routesOf } from '../machineRoutes'
+import { ago, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, bridgeStatus, phoneOnlyBridge, type BridgeAdoptOptions, type BridgeKeyCandidate, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
 
 export function MachinesSettings() {
   const machines = machinesApi()
@@ -19,6 +25,8 @@ export function MachinesSettings() {
   const [notes, setNotes] = useState<CleanupNote[]>([])
   const [bridgeWizard, setBridgeWizard] = useState(false)
   const [bridgeReport, setBridgeReport] = useState<BridgeProgress[] | null>(null)
+  const [help, setHelp] = useState(false)
+  const [connecting, setConnecting] = useState<string | null>(null)
   useEffect(() => {
     if (!machines) return
     void machines.state().then(setState, (e) => setError(errorText(e)))
@@ -28,6 +36,7 @@ export function MachinesSettings() {
   if (!state) return <div className="settings-section machines">{error ? <p role="alert" className="form-error">{error}</p> : <Spinner />}</div>
   if (adding) return <AddMachineWizard api={machines} state={state} onClose={(id) => { setAdding(false); if (id) setOpen(id) }} />
   if (bridgeWizard) return <BridgeWizard api={machines} onClose={() => setBridgeWizard(false)} />
+  if (connecting) return <ConnectMachineWizard api={machines} state={state} machineId={connecting} onClose={() => { const id = connecting; setConnecting(null); setOpen(id) }} />
   const bridge = state.machines.find((m) => m.id === state.bridgeMachineId) ?? null
   return (
     <div className="settings-section machines">
@@ -36,22 +45,35 @@ export function MachinesSettings() {
           <h3>{t('Machines')}</h3>
           <p className="setting-hint">{t('Computers your agents can reach over SSH. Agents learn about them automatically and connect with their own key; passwords are never stored.')}</p>
         </div>
-        <button type="button" className="btn btn-sm btn-primary" onClick={() => setAdding(true)}><Plus size={13} />{t('Add machine')}</button>
+        <div className="machines-head-actions">
+          <button type="button" className="btn btn-sm" onClick={() => setHelp(true)}>{t('How it works')}</button>
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => setAdding(true)}><Plus size={13} />{t('Add machine')}</button>
+        </div>
       </div>
+      {help && <MachinesHelp onClose={() => setHelp(false)} onAdd={() => setAdding(true)} />}
       {notes.length > 0 && <CleanupNotes notes={notes} onDismiss={() => setNotes([])} />}
+      {state.machines.length > 0 && <Overview api={machines} state={state} onOpen={(id) => { setOpen(id); requestAnimationFrame(() => document.getElementById(`machine-${id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })) }} />}
       <BridgeCard api={machines} state={state} bridge={bridge} report={bridgeReport} onReport={setBridgeReport} onOpen={setOpen} onSetup={() => setBridgeWizard(true)} />
       {state.machines.length ? (
         <div className="machine-list" role="list">
           {state.machines.map((m) => (
-            <MachineRow key={m.id} api={machines} machine={m} bridge={bridge} via={state.machines.find((x) => x.id === (m.bridgeMachineId ?? state.bridgeMachineId)) ?? null} homes={state.machines.filter((x) => x.kind === 'bridged').length} isBridge={m.id === state.bridgeMachineId} onNotes={setNotes} open={open === m.id} onToggle={() => setOpen(open === m.id ? null : m.id)} />
+            <MachineRow key={m.id} api={machines} machine={m} bridge={bridge} via={state.machines.find((x) => x.id === (m.bridgeMachineId ?? state.bridgeMachineId)) ?? null} homes={state.machines.filter((x) => x.kind === 'bridged').length} isBridge={m.id === state.bridgeMachineId} onNotes={setNotes} open={open === m.id} onToggle={() => setOpen(open === m.id ? null : m.id)} onConnect={() => setConnecting(m.id)} />
           ))}
         </div>
       ) : (
-        <div className="machines-empty">
-          <Server size={22} strokeWidth={1.6} />
-          <p>{t('No machines yet. Add a VPS, a home server or another computer, and your agents can work on it.')}</p>
+        <div className="machines-first">
+          <EmptyMachinesMap />
+          <div className="machines-first-card">
+            <strong>{t('Only this computer so far')}</strong>
+            <p>{t('Add a machine and your agents can work on it: build projects, run tests, read logs. It takes a couple of minutes.')}</p>
+            <div className="machine-actions">
+              <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}><Plus size={14} />{t('Add your first machine')}</button>
+              <button type="button" className="btn" onClick={() => setHelp(true)}>{t('How it works')}</button>
+            </div>
+          </div>
         </div>
       )}
+      <MachinesRolesBlock api={machines} />
       <SshIncludeBlock api={machines} state={state} />
       <AgentsKeyBlock api={machines} state={state} onNotes={setNotes} />
     </div>
@@ -99,7 +121,7 @@ function useDetectBridge(api: BridgeApi, skip: boolean) {
 function BridgeFacts({ url, tunnel, children }: { url?: string; tunnel: 'running' | 'stopped' | 'missing'; children?: React.ReactNode }) {
   return (
     <ul className="bridge-facts">
-      <li className={url ? 'ok' : 'off'}>{url ? <Check size={12} strokeWidth={2.6} /> : <Minus size={12} />}<span>{t('Phone site')}</span>{url ? <code>{url}</code> : <span className="dim">{t('not set up')}</span>}</li>
+      <li className={url ? 'ok' : 'off'}>{url ? <Check size={12} strokeWidth={2.6} /> : <Minus size={12} />}<span>{t('Web access')}</span>{url ? <code>{url}</code> : <span className="dim">{t('not set up')}</span>}</li>
       <li className={tunnel === 'running' ? 'ok' : 'warn'}>{tunnel === 'running' ? <Check size={12} strokeWidth={2.6} /> : <TriangleAlert size={12} />}<span>{t('Computer tunnel')}</span><span className="dim">{tunnel === 'running' ? t('running') : tunnel === 'stopped' ? t('stopped') : t('not set up')}</span></li>
       {children}
     </ul>
@@ -108,18 +130,18 @@ function BridgeFacts({ url, tunnel, children }: { url?: string; tunnel: 'running
 
 /** A bridge connected from the phone setup keeps its own accounts; Drover does not change them yet. */
 function PhoneOnlyNote() {
-  return <p className="machine-note"><Smartphone size={13} /><span>{t('For now this bridge only serves your phone. Home machines can connect through it after you upgrade it.')}</span></p>
+  return <p className="machine-note"><Smartphone size={13} /><span>{t('For now this bridge only gives web access. Machines can connect through it once you connect them.')}</span></p>
 }
 
-const WHY = () => t('A bridge is a small server with a public IP (a VPS), so your machines and phone can reach this computer from anywhere.')
+const WHY = () => t('A bridge is a small server on the internet. Through it any of your devices and machines away from home reach this computer.')
 
 function BridgeCard({ api, state, bridge, report, onReport, onOpen, onSetup }: { api: BridgeApi; state: MachinesState; bridge: Machine | null; report: BridgeProgress[] | null; onReport: (steps: BridgeProgress[] | null) => void; onOpen: (id: string) => void; onSetup: () => void }) {
   const detect = useDetectBridge(api, !!bridge)
   const homes = state.machines.filter((m) => m.kind === 'bridged')
   const homesOnline = homes.filter((m) => m.status.state === 'online').length
   if (bridge) {
-    const setup = bridge.bridgeSetup
-    const working = bridge.status.state === 'online' && setup?.state === 'ready'
+    const status = bridgeStatus(bridge, { total: homes.length, online: homesOnline })
+    const running = status.tone === 'wait'
     return (
       <div className="bridge-card">
         <span className="bridge-icon"><Cable size={16} /></span>
@@ -128,20 +150,16 @@ function BridgeCard({ api, state, bridge, report, onReport, onOpen, onSetup }: {
             {t('Bridge')} <button type="button" className="link-btn" onClick={() => onOpen(bridge.id)}>{bridge.name}</button>
             <span className="dim">{bridge.host}</span>
           </div>
-          <div className="setting-hint">
-            {setup?.state === 'running' ? t('Setting up: {step}', { step: setup.step ?? '…' })
-              : working && phoneOnlyBridge(bridge) ? t('Your phone reaches this computer through it.')
-              : working ? `${t('Your machines and phone reach this computer through it — no router setup needed.')} ${homes.length ? tp({ one: '{online} of {n} home machine connected.', other: '{online} of {n} home machines connected.' }, homes.length, { online: homesOnline }) : ''}`
-              : machineErrorText(bridge.status.error ?? setup?.error ?? { code: 'bridge_down' }, bridge, bridge.name)}
-          </div>
+          <div className="setting-hint">{status.text}</div>
           <PhoneTunnelNote machine={bridge} />
           {bridge.bridgeConnection && <>
             <BridgeFacts url={bridge.bridgeConnection.publicUrl} tunnel={bridge.bridgeConnection.macTunnel} />
             {phoneOnlyBridge(bridge) && <>
-              <PhoneOnlyNote />
+              {status.tone !== 'phone' && <PhoneOnlyNote />}
               <UpgradeBridge api={api} machine={bridge} onDone={onReport} />
             </>}
           </>}
+          {status.tone !== 'wait' && <BridgeWhy api={api} state={state} bridge={bridge} />}
           {report && (
             <div className="bridge-result">
               <BridgeChecklist steps={report} label={t('Bridge connected')} />
@@ -149,9 +167,9 @@ function BridgeCard({ api, state, bridge, report, onReport, onOpen, onSetup }: {
             </div>
           )}
         </div>
-        <span className={clsx('bridge-state', working ? 'ok' : setup?.state === 'running' ? 'wait' : 'bad')}>
-          {setup?.state === 'running' ? <Spinner size={11} /> : <span className="conn-dot" />}
-          {setup?.state === 'running' ? t('Setting up') : working ? t('Working') : t('Not working')}
+        <span className={clsx('bridge-state', status.tone)}>
+          {running ? <Spinner size={11} /> : <span className="conn-dot" />}
+          {status.label}
         </span>
       </div>
     )
@@ -364,28 +382,45 @@ function NoBridge({ api, state, onSetup, onAgain, detectError }: { api: BridgeAp
   )
 }
 
-function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, open, onToggle }: { api: MachinesApi; machine: Machine; bridge: Machine | null; via: Machine | null; homes: number; isBridge: boolean; onNotes: (notes: CleanupNote[]) => void; open: boolean; onToggle: () => void }) {
+function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, open, onToggle, onConnect }: { api: MachinesApi; machine: Machine; bridge: Machine | null; via: Machine | null; homes: number; isBridge: boolean; onNotes: (notes: CleanupNote[]) => void; open: boolean; onToggle: () => void; onConnect: () => void }) {
   const { busy, error, run } = useAction()
   const checking = busy === 'check' || m.status.state === 'checking'
-  const reason = needsHostKey(m) ? (isLan(m) ? t('{name} answers on your home network: its SSH port is reachable. Confirm its key to finish.', { name: m.name }) : t('{name} reached the bridge. Confirm its key to finish.', { name: m.name })) : m.status.state === 'offline' || m.status.state === 'waiting' ? machineErrorText(m.status.error, m, via?.name) : ''
-  const where = m.kind === 'direct' ? `${m.user}@${m.host}${m.port && m.port !== 22 ? `:${m.port}` : ''}` : via ? t('Through {bridge}', { bridge: via.name }) : m.host ? t('Home network · {address}', { address: m.host }) : t('Home network')
+  const unconnected = needsConnect(m)
+  const reason = unconnected ? t('Not connected yet: Drover’s agents cannot sign in here until you connect it.') : needsHostKey(m) ? (isLan(m) ? t('{name} answers on your home network: its SSH port is reachable. Confirm its key to finish.', { name: m.name }) : t('{name} reached the bridge. Confirm its key to finish.', { name: m.name })) : m.status.state === 'offline' || m.status.state === 'waiting' ? machineErrorText(m.status.error, m, via?.name) : ''
+  const routes = routesOf(m)
+  const active = activeRoute(m)
+  const purpose = purposeOf(m)
+  const where = m.host ? `${m.user}@${m.host}${m.port && m.port !== 22 ? `:${m.port}` : ''}` : ''
+  const fallbackNote = !reason && m.status.state === 'online' && isFallback(m) && active
+    ? t('Working through a backup route: {route} is not answering.', { route: routeName(routes[0].kind) })
+    : ''
+  // A bridge exists but this machine has no route through it: it works at home only.
+  const homeOnly = !!bridge && !isBridge && !hasRoute(m, 'bridge') && !hasRoute(m, 'internet')
   return (
-    <div className={clsx('machine', open && 'open', m.status.state === 'offline' && 'is-offline')} role="listitem">
+    <div id={`machine-${m.id}`} className={clsx('machine', open && 'open', m.status.state === 'offline' && 'is-offline')} role="listitem">
       <div className="machine-head">
         <button type="button" className="machine-toggle" aria-expanded={open} onClick={onToggle}>
           <ChevronRight size={13} className="machine-chev" />
           <MachineDot machine={m} />
-          <span className="machine-icon">{m.kind === 'direct' ? <Server size={14} /> : <House size={14} />}</span>
+          <span className="machine-icon">{routes[0]?.kind === 'internet' ? <Server size={14} /> : <House size={14} />}</span>
           <span className="machine-text">
             <span className="machine-name">
               {m.name}
               {isBridge && <span className="machine-badge">{t('Bridge')}</span>}
+
               {m.needsReinstall && <span className="machine-badge warn">{t('Needs update')}</span>}
             </span>
-            <span className="machine-sub">{[m.kind === 'direct' && t('Direct'), where, m.osLabel || osName(m.os)].filter(Boolean).join(' · ')}</span>
-            {reason && <span className={clsx('machine-reason', needsHostKey(m) && 'warn')}>{reason}</span>}
+            <span className="machine-sub">{[purpose, where, m.osLabel || osName(m.os)].filter(Boolean).join(' · ')}</span>
+            {reason && <span className={clsx('machine-reason', (needsHostKey(m) || unconnected) && 'warn')}>{reason}</span>}
+            {fallbackNote && <span className="machine-reason note">{fallbackNote}</span>}
+            <span className="mroutes">
+              {routes.map((r) => <span key={r.kind} className={clsx('mroute', `k-${r.kind}`, `s-${r.state}`, r.kind === active && 'now')}><i />{routeChip(r, r.kind === active)}</span>)}
+              {/* Inside the row's toggle button: clicking opens the details, where the route is set up. */}
+              {homeOnly && <span className={clsx('mroute off', !open && 'action')}><i />{t('{route} — not set up', { route: routeName('bridge') })}{!open && <b>{t('Set up')}</b>}</span>}
+            </span>
           </span>
         </button>
+        {unconnected && <button type="button" className="btn btn-sm btn-primary machine-next" onClick={onConnect}>{t('Connect')}</button>}
         <span className="machine-meta">
           <span className="machine-latency">{m.status.state === 'online' && m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : stateLabel(m.status.state)}</span>
           <span className="machine-ago">{ago(m.status.checkedAt)}</span>
@@ -414,6 +449,8 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
         <span className="machine-field-label">{t('Agents connect with')}</span>
         <CopyCode text={`ssh ${m.alias}`} />
       </div>
+      <PurposeField api={api} machine={m} />
+      <RoutesSection api={api} machine={m} bridge={bridge} isBridge={isBridge} />
       {m.kind === 'bridged' && isLan(m) && (
         <div className="machine-field">
           <span className="machine-field-label">{t('Home network')}</span>
@@ -433,7 +470,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
         </div>
       )}
       {phoneOnlyBridge(m)
-        ? <div className="machine-section"><div className="machine-section-title">{t('What agents may do')}</div><p className="setting-hint">{t('Access to this bridge can be changed after you upgrade it for home machines.')}</p></div>
+        ? <div className="machine-section"><div className="machine-section-title">{t('What agents may do')}</div><p className="setting-hint">{t('Access to this bridge can be changed once machines connect through it.')}</p></div>
         : <AccessEditor api={api} machine={m} />}
       <LastCleanup machine={m} />
 
@@ -461,7 +498,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
                   <p>{setup?.state === 'ready'
                     ? t('Check and repair {name}? Drover rewrites the bridge users, SSH access rules and firewall on the server to match what home machines need.', { name: m.name })
                     : t('Set up {name} as the bridge? Drover writes the bridge users, SSH access rules and firewall on the server.', { name: m.name })}
-                    {' '}{caddy ? t('It also updates the phone site setup; the phone site keeps working.') : t('The phone site keeps working.')}</p>
+                    {' '}{caddy ? t('It also updates the web access setup; web access keeps working.') : t('Web access keeps working.')}</p>
                   <PhoneSiteCheck value={caddy} onChange={setCaddy} />
                   <div className="machine-actions">
                     <button type="button" className="btn btn-sm" onClick={() => setConfirmRepair(false)}>{t('Cancel')}</button>
@@ -484,7 +521,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
               <p>{bridge
                 ? t('Make {name} the bridge instead of {bridge}? Drover sets it up, then moves {n} home machines to it. Machines it cannot reach will need their setup command run again.', { name: m.name, bridge: bridge.name, n: homes })
                 : t('Make {name} the bridge? Drover creates the bridge users, sets up the firewall and checks that it works.', { name: m.name })}
-                {bridge?.bridgeConnection && ` ${t('Your phone site stays on {bridge}: this computer’s phone tunnel keeps running there.', { bridge: bridge.name })}`}</p>
+                {bridge?.bridgeConnection && ` ${t('Web access stays on {bridge}: this computer’s tunnel keeps running there.', { bridge: bridge.name })}`}</p>
               <PhoneSiteCheck value={caddy} onChange={setCaddy} />
               <div className="machine-actions">
                 <button type="button" className="btn btn-sm" onClick={() => setConfirmBridge(false)}>{t('Cancel')}</button>
@@ -494,7 +531,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
               </div>
             </div>
           ) : bridge && phoneOnlyBridge(bridge) ? (
-            <p className="setting-hint">{t('This server has a public IP. To switch bridges, first upgrade {bridge} for home machines.', { bridge: bridge.name })}</p>
+            <p className="setting-hint">{t('This server has a public IP. To switch bridges, first connect machines through {bridge}.', { bridge: bridge.name })}</p>
           ) : (
             <>
               <p className="setting-hint">{t('This server has a public IP, so it can link home machines that sit behind a router.')}</p>
@@ -509,7 +546,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
       <div className="machine-section machine-remove">
         {confirmRemove ? (
           <div className="machine-confirm danger">
-            <p>{phoneOnlyBridge(m) ? t('Drover forgets {name}. Nothing changes on the server, and the phone tunnel on this computer keeps running.', { name: m.name }) : m.bridgeConnection ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge. The phone tunnel on this computer keeps running.', { name: m.name }) : isBridge ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge.', { name: m.name }) : t('Remove {name}? Agents lose access to it. Nothing on the machine is deleted.', { name: m.name })}</p>
+            <p>{phoneOnlyBridge(m) ? t('Drover forgets {name}. Nothing changes on the server, and web access from this computer keeps running.', { name: m.name }) : m.bridgeConnection ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge. Web access from this computer keeps running.', { name: m.name }) : isBridge ? t('{name} is the bridge. Removing it disconnects every home machine until you choose another bridge.', { name: m.name }) : t('Remove {name}? Agents lose access to it. Nothing on the machine is deleted.', { name: m.name })}</p>
             {suppliedAccount(m) && <SuppliedWarning name={m.name} />}
             <div className="machine-actions">
               <button type="button" className="btn btn-sm" onClick={() => setConfirmRemove(false)}>{t('Cancel')}</button>
@@ -518,7 +555,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
           </div>
         ) : (
           m.bridgeConnection?.source === 'scratch' && phoneOnlyBridge(m)
-            ? <p className="setting-hint">{t('This bridge runs the phone tunnel Drover set up. Finish its setup for home machines before removing it.')}</p>
+            ? <p className="setting-hint">{t('This bridge carries the web access Drover set up. Finish its setup for machines before removing it.')}</p>
             : <button type="button" className="link-btn danger" onClick={() => setConfirmRemove(true)}>{phoneOnlyBridge(m) ? t('Forget this bridge…') : t('Remove machine…')}</button>
         )}
       </div>
@@ -564,7 +601,7 @@ function CleanupNotes({ notes, onDismiss }: { notes: CleanupNote[]; onDismiss: (
 function PhoneSiteCheck({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
   return (
     <span className="phone-site">
-      <label className="check"><input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />{t('Also serve the phone site (HTTPS)')}</label>
+      <label className="check"><input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />{t('Also set up web access (HTTPS)')}</label>
       {value && <span className="setting-hint">{t('Sets up the HTTPS address on the bridge. Linking this computer to it is still done in Settings › Remote access.')}</span>}
     </span>
   )
@@ -575,7 +612,7 @@ function PhoneTunnelNote({ machine: m }: { machine: Machine }) {
   return (
     <p className="machine-note warn">
       <TriangleAlert size={13} />
-      <span>{t('Caddy route is ready. Finish this computer’s reverse tunnel in Remote access (docs/remote-access.md) to make the phone site reachable.')}</span>
+      <span>{t('Caddy route is ready. Finish this computer’s reverse tunnel in Remote access (docs/remote-access.md) to make web access reachable.')}</span>
     </p>
   )
 }
@@ -605,7 +642,7 @@ const access = (m: Machine): { id: MachineAccess; label: string; hint: string; u
   ]
 }
 
-function AccessEditor({ api, machine: m }: { api: MachinesApi; machine: Machine }) {
+export function AccessEditor({ api, machine: m }: { api: MachinesApi; machine: Machine }) {
   const groups = useModel((model) => model.groups)
   const projects = useMemo(() => {
     const seen = new Map<string, string>()
@@ -749,5 +786,73 @@ function AgentsKeyBlock({ api, state, onNotes }: { api: MachinesApi; state: Mach
       )}
       {error && <p role="alert" className="form-error">{error}</p>}
     </div>
+  )
+}
+
+/** The map at the top of Machines; it folds away once everything works and stays as the viewer left it. */
+function Overview({ api, state, onOpen }: { api: MachinesApi; state: MachinesState; onOpen: (id: string) => void }) {
+  const [open, setOpen] = useMapOpen(state)
+  return (
+    <div className="machines-overview">
+      <div className="machines-overview-bar">
+        {open ? <MapLegend /> : <span />}
+        <button type="button" className="link-btn" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? t('Hide map') : t('Show map')}</button>
+      </div>
+      {open && <MachinesMap api={api} state={state} onOpen={onOpen} />}
+    </div>
+  )
+}
+
+/** "Why is this my bridge?": how Drover found it, plus switching to another server and moving the phone. */
+function BridgeWhy({ api, state, bridge }: { api: BridgeApi; state: MachinesState; bridge: Machine }) {
+  const [switching, setSwitching] = useState(false)
+  const [confirmPhone, setConfirmPhone] = useState(false)
+  const { busy, error, run } = useAction()
+  const conn = bridge.bridgeConnection
+  // The phone stays on its old bridge until the user moves it: find where its site lives now.
+  const phoneHome = state.machines.find((m) => m.bridgeConnection?.publicUrl) ?? null
+  const phoneElsewhere = phoneHome && phoneHome.id !== bridge.id
+  const candidates = state.machines.filter((m) => m.id !== bridge.id && m.publicIp)
+  const [pick, setPick] = useState(candidates[0]?.id ?? '')
+  const reasons: string[] = []
+  if (conn?.publicUrl) reasons.push(t('Your web access address {url} points to this server.', { url: conn.publicUrl }))
+  if (conn?.macTunnel === 'running') reasons.push(t('This computer keeps a tunnel to it, which is how your devices reach Drover in a browser.'))
+  if (bridge.hostKeyPinnedAt) reasons.push(t('You confirmed the server’s key on {date}.', { date: new Date(bridge.hostKeyPinnedAt).toLocaleDateString(locale(), { day: 'numeric', month: 'long' }) }))
+  reasons.push(bridge.discoveredFrom === 'existing' ? t('Drover found it on this computer: it had been set up earlier.')
+    : bridge.discoveredFrom === 'scratch' ? t('You set it up from Drover.')
+    : t('You chose it as the bridge in Machines.'))
+  return (
+    <details className="bridge-why">
+      <summary>{t('Why is this my bridge?')}</summary>
+      <ul>{reasons.map((r) => <li key={r}><Check size={12} strokeWidth={2.6} /><span>{r}</span></li>)}</ul>
+      <p className="setting-hint">{t('Drover changes nothing on the server without your confirmation.')}</p>
+      {phoneElsewhere && !confirmPhone && (
+        <p className="machine-note warn"><Smartphone size={13} /><span>{t('Web access still goes through {old}.', { old: phoneHome!.name })} <button type="button" className="link-btn" onClick={() => setConfirmPhone(true)}>{t('Move web access to {bridge}…', { bridge: bridge.name })}</button></span></p>
+      )}
+      {confirmPhone && (
+        <div className="machine-confirm">
+          <p>{t('Move web access to {bridge}? It gets a new address on {bridge}; open it once on each device and sign in again with your passkey.', { bridge: bridge.name })}</p>
+          <div className="machine-actions">
+            <button type="button" className="btn btn-sm" onClick={() => setConfirmPhone(false)}>{t('Cancel')}</button>
+            <button type="button" className="btn btn-sm btn-primary" disabled={busy !== null} onClick={() => void run('phone', async () => { await api.movePhoneToBridge(bridge.id, { confirmed: true }); setConfirmPhone(false) })}>{busy === 'phone' && <Spinner size={12} />}{t('Move web access')}</button>
+          </div>
+        </div>
+      )}
+      {!switching ? (
+        candidates.length > 0 && <div className="machine-actions"><button type="button" className="btn btn-sm" onClick={() => setSwitching(true)}>{t('Use another server as bridge…')}</button></div>
+      ) : (
+        <div className="machine-confirm">
+          <p>{t('Drover sets up the chosen server and moves home machines to it. Web access stays on {bridge} until you move it.', { bridge: bridge.name })}</p>
+          <select className="input select" value={pick} onChange={(e) => setPick(e.target.value)} aria-label={t('Bridge server')}>
+            {candidates.map((m) => <option key={m.id} value={m.id}>{m.name}{m.host ? ` · ${m.host}` : ''}</option>)}
+          </select>
+          <div className="machine-actions">
+            <button type="button" className="btn btn-sm" onClick={() => setSwitching(false)}>{t('Cancel')}</button>
+            <button type="button" className="btn btn-sm btn-primary" disabled={!pick || busy !== null} onClick={() => void run('switch', async () => { await api.setupBridge(pick, { caddy: false, confirmed: true }); await api.setBridge(pick, { confirmed: true }); setSwitching(false) })}>{busy === 'switch' && <Spinner size={12} />}{t('Switch bridge')}</button>
+          </div>
+        </div>
+      )}
+      {error && <p role="alert" className="form-error">{error}</p>}
+    </details>
   )
 }

@@ -74,7 +74,7 @@ test('repeated resume errors keep the buffer across retries, including RPC timeo
   transcriptEvent(socket, 3, ['c'])
   await retrySubscribe(fire)
   assert.deepEqual(socket.sent.at(-1).args, ['w1:p1'])
-  await fire(delay => delay > 10_000)
+  await fire(delay => delay === 60_000)
   transcriptEvent(socket, 4, ['d'])
   assert.equal(events.length, 0)
   await retrySubscribe(fire)

@@ -42,8 +42,13 @@ navigator.serviceWorker?.addEventListener('message', (event) => {
 })
 async function start() {
   try {
-    const res = await fetch(REMOTE_AUTH_ROUTES.session, { credentials: 'same-origin', cache: 'no-store' })
-    if (res.status === 401 || (res.ok && !(await res.json()).authenticated)) { location.replace(pendingPane ? `/login?pane=${encodeURIComponent(pendingPane)}` : '/login'); return }
+    const controller = new AbortController()
+    const deadline = setTimeout(() => controller.abort(), 10_000)
+    try {
+      const res = await fetch(REMOTE_AUTH_ROUTES.session, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal })
+      if (res.status === 401 || (res.ok && !(await res.json()).authenticated)) { location.replace(pendingPane ? `/login?pane=${encodeURIComponent(pendingPane)}` : '/login'); return }
+      if (!res.ok) throw new Error('Session check failed')
+    } finally { clearTimeout(deadline) }
     const [{ App }, { bootstrap, getModel, select, useStore }] = await Promise.all([import('./components/App'), import('./store')])
     await bootstrap()
     openPane = (paneId) => {

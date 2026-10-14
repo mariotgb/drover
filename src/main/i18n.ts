@@ -39,7 +39,8 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     'herdr Documentation': 'Документация herdr',
     'Show Window': 'Показать окно',
     '{name} finished': '{name} закончил',
-    '{name} needs your input': '{name} ждёт вашего ответа'
+    '{name} needs your input': '{name} ждёт вашего ответа',
+    'did not start': 'не запустился'
   },
   es: {
     "Remote access stopped": "Acceso remoto detenido",
@@ -74,7 +75,8 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     'herdr Documentation': 'Documentación de herdr',
     'Show Window': 'Mostrar ventana',
     '{name} finished': '{name} ha terminado',
-    '{name} needs your input': '{name} necesita tu respuesta'
+    '{name} needs your input': '{name} necesita tu respuesta',
+    'did not start': 'no se inició'
   },
   de: {
     "Remote access stopped": "Fernzugriff gestoppt",
@@ -109,7 +111,8 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     'herdr Documentation': 'herdr-Dokumentation',
     'Show Window': 'Fenster anzeigen',
     '{name} finished': '{name} ist fertig',
-    '{name} needs your input': '{name} braucht deine Antwort'
+    '{name} needs your input': '{name} braucht deine Antwort',
+    'did not start': 'nicht gestartet'
   },
   zh: {
     "Remote access stopped": "远程访问已停止",
@@ -144,7 +147,8 @@ const DICT: Record<Exclude<Lang, 'en'>, Record<string, string>> = {
     'herdr Documentation': 'herdr 文档',
     'Show Window': '显示窗口',
     '{name} finished': '{name} 已完成',
-    '{name} needs your input': '{name} 需要你的回复'
+    '{name} needs your input': '{name} 需要你的回复',
+    'did not start': '未启动'
   }
 }
 

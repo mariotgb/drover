@@ -12,13 +12,14 @@ import type {
 } from '@shared/types'
 import { agentKindDef } from '@shared/agents'
 import { api } from '../api'
-import { useMobileWeb } from '../mobile'
+import { useMobile, useMobileWeb } from '../mobile'
 import { watchMobileTranscript } from '../mobile-transcripts'
 import { sendKeys } from '../actions'
 import { formatDuration, type Thread } from '../model'
 import { applyTranscript, toggleDrawer, useStore } from '../store'
 import { AssistantMessage, EventRow, ToolGroup, UserMessage } from './Messages'
 import { Spinner, useTicker } from './primitives'
+import { QuestionCard, RestoreBanner } from './AgentQuestion'
 
 export type Block =
   | { type: 'user'; id: string; item: TranscriptUser }
@@ -50,6 +51,7 @@ const PAGE = 120
 
 export function ChatView({ thread }: { thread: Thread }) {
   const mobileWeb = useMobileWeb()
+  const phone = useMobile()
   const paneId = thread.paneId
   const ts = useStore((s) => s.transcripts[paneId])
   const pending = useStore((s) => s.pending[paneId])
@@ -177,6 +179,7 @@ export function ChatView({ thread }: { thread: Thread }) {
             />
           ))}
           {thread.status === 'working' && <WorkingIndicator thread={thread} />}
+          <RestoreBanner thread={thread} onTerminal={phone ? undefined : () => toggleDrawer(thread.paneId, true)} />
           {thread.status === 'blocked' && <BlockedBanner thread={thread} />}
           <div className="chat-end" />
         </div>
@@ -216,6 +219,7 @@ export function WorkingIndicator({ thread }: { thread: Thread }) {
 
 function BlockedBanner({ thread }: { thread: Thread }) {
   const drawerOpen = useStore((s) => !!s.drawer[thread.paneId])
+  const phone = useMobile()
   const keys: { label: string; keys: string[] }[] = [
     { label: '1', keys: ['1'] },
     { label: '2', keys: ['2'] },
@@ -225,6 +229,15 @@ function BlockedBanner({ thread }: { thread: Thread }) {
     { label: 'Enter', keys: ['enter'] },
     { label: 'Esc', keys: ['esc'] }
   ]
+  const terminalButton = (
+    <button type="button" className={clsx('btn btn-sm', !drawerOpen && !thread.pane.agent_question && 'btn-primary')} onClick={() => toggleDrawer(thread.paneId)}>
+      <SquareTerminal size={14} /> {drawerOpen ? t('Hide terminal') : t('Show terminal')}
+    </button>
+  )
+  // A dialog Drover recognised gets real buttons; otherwise keys go to the terminal as before.
+  // On a phone the card sits by the composer (QuickReplies), so the chat does not repeat it.
+  if (thread.pane.agent_question && phone) return null
+  if (thread.pane.agent_question) return <QuestionCard thread={thread} footer={<div className="aq-footer">{terminalButton}</div>} />
   return (
     <div className="blocked">
       <div className="blocked-head">

@@ -166,7 +166,9 @@ The installer scans the VPS host key and asks you to verify its fingerprint. Obt
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-Only accept a match. The installer pins the key in `~/.ssh/mac_bridge_known_hosts`, installs `~/Library/LaunchAgents/dev.drover.bridge.plist` and loads it for the current user. launchd restarts the tunnel when it exits. Logs: `~/Library/Logs/dev.drover.bridge.log`.
+Only accept a match. The installer pins the key in `~/.ssh/mac_bridge_known_hosts` and installs independent `dev.drover.bridge.plist` (port 2222) and `dev.drover.bridge.phone.plist` (port 8780) jobs under `~/Library/LaunchAgents`. A 2222 bind failure cannot close the phone tunnel; launchd retries each process at intervals of at least 10 seconds. Logs: `~/Library/Logs/dev.drover.bridge.log` and `dev.drover.bridge.phone.log`. Explicit `install.sh bridge` stages and parses both plists before unloading, retains originals in a unique `.drover-bridge-*` directory (`backupPath` in its report), and verifies exact loaded SSH arguments. Ordinary Drover detection does not restart a running legacy job.
+
+If maintenance fails and rollback succeeds, correct the reported cause and rerun the same command; each attempt retains its own backup. If the report contains `mac_bridge_recovery_incomplete`, keep the backup and `dev.drover.bridge.plist.recovery.json` marker and coordinate recovery with the operator. The marker blocks automatic retries. Inspect `transaction.json` and the exact `launchctl print gui/$(id -u)/<label>` arguments; unload and confirm the absence of every replacement job before restoring original files. Remove a phone plist only if that transaction created it. Restore originals from that transaction, bootstrap only jobs recorded as previously loaded, and compare both file bytes and loaded arguments with the originals before removing the marker. Never copy a combined plist over a surviving machine-only job or treat its PID as proof that port 8780 was restored.
 
 The LaunchAgent runs after you log in, not before. After a reboot with FileVault, someone must unlock the disk and log in; start Drover again (optionally add Drover to macOS Login Items).
 
@@ -181,7 +183,7 @@ On the **Mac**, open Drover → Settings → **Remote access**:
 3. Enable **Works through a proxy (Caddy on VPS)**.
 4. Click **Save**, then turn on **Enable remote access**. Confirm **Remote access is running**.
 
-Keep port 7780 for this guide. If you choose another port, also change the Mac target in `bridge/dev.drover.bridge.plist.template` (`127.0.0.1:8780:127.0.0.1:7780`) and re-run `install.sh bridge`. Keep VPS listener 8780 in sync with Caddy and the VPS policy.
+Keep port 7780 for this guide. If you choose another port in Drover, pass `DROVER_REMOTE_PORT=<port>` when re-running `install.sh bridge`. This explicit maintenance command changes the phone target transactionally; on an already-split installation it preserves the machine job. A failed change restores the old phone target, so restore Drover's old port too before retrying. Ordinary setup/verify still reject mismatched routes. VPS listener 8780 stays unchanged and must match Caddy and the VPS policy.
 
 Caddy's default [forwarded-header handling](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers) discards untrusted incoming forwarded values. Drover's proxy setting trusts a single client IP from the local tunnel so visitors have separate rate limits. If adding another proxy in front, preserve the public Host/Origin and ensure the final proxy **replaces** `X-Forwarded-For` with one verified client IP; do not simply append browser-supplied values.
 
