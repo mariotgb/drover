@@ -1,3 +1,4 @@
+import { withoutMachinePointer } from './machines/launch'
 import { bypassArgs, modelArgs, type ModelChoice } from '@shared/models'
 import type { AgentLaunch } from '@shared/agentRestart'
 
@@ -46,7 +47,7 @@ export function restartArgs(kind: 'claude' | 'codex', original: string[], sessio
   const replace = kind === 'claude'
     ? new Set(['-c', '--continue', '-r', '--resume', '--session-id', '--model', '--effort', '--permission-mode', '--fork-session', '--from-pr', '-p', '--print', '--output-format', '--input-format', '--allow-dangerously-skip-permissions'])
     : new Set(['--last', '--all', '-m', '--model', '-a', '--ask-for-approval', '--approval-policy', '-s', '--sandbox', '-i', '--image', '--worktree'])
-  for (const option of launchOptions(kind, original)) {
+  for (const option of launchOptions(kind, withoutMachinePointer(kind, original))) {
     if (permissionFlags.has(option.flag) || replace.has(option.flag)) continue
     if (kind === 'codex' && ['-c', '--config'].includes(option.flag) && /^(model|model_reasoning_effort|approval_policy|sandbox_mode)\s*=/.test(option.value ?? '')) continue
     rest.push(...option.tokens)
@@ -94,7 +95,7 @@ export function sanitizeLaunchArgs(kind: Kind, original: string[]): { args: stri
   const args: string[] = []
   let unavailable = false
   const selectors = new Set(kind === 'claude' ? ['-c', '--continue', '-r', '--resume', '--session-id', '--fork-session', '--from-pr', '-p', '--print', '--output-format', '--input-format', '--json-schema'] : ['--last', '--all'])
-  for (const option of launchOptions(kind, original)) {
+  for (const option of launchOptions(kind, withoutMachinePointer(kind, original))) {
     const { flag, value, tokens } = option
     if (selectors.has(flag)) continue
     if (kind === 'codex' && ['-c', '--config'].includes(flag)) {

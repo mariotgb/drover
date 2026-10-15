@@ -323,7 +323,7 @@ export function createMachineProvisioner(options: ProvisionOptions) {
     // Clipboard/history and sudo argv contain only the one-time URL. The
     // installer fetches credentials separately; consumption precedes key bytes.
     if (os === 'windows') return `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${ps(url + '/script')}).Content))`
-    return `curl --fail --silent --show-error ${sh(url + '/script')} | sudo /bin/bash`
+    return `curl --fail --silent --show-error ${sh(url + '/script')} | { if [ "$(id -u)" = 0 ]; then /bin/bash; else sudo /bin/bash; fi; }`
   }
   async function revokeInstallers(bridge: Machine | null): Promise<void> {
     capabilities.clear()

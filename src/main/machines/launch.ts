@@ -1,3 +1,20 @@
+/** Recognize only Drover's complete generated prose, never user instructions. */
+export function withoutMachinePointer(kind: string, args: string[]): string[] {
+  const out: string[] = []
+  const generated = (value: string) => /^(?:Before using remote machines for this project, read [^\r\n]+\/(?:agents|projects)\/[a-f0-9]{64}\.md\. Use only (?:its listed aliases and respect permissions and who may use each machine\. Do not read or use management\/tunnel keys\. Selected-project scope and machine usage rules are advisory\.|its listed aliases and respect permissions\. Do not read or use management\/tunnel keys\. Selected-project scope is advisory\.) )?Machine configuration requests use '[^\r\n]+'; Drover checks your project role and asks the desktop user for confirmation\.$/.test(value)
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i]
+    let value: string | undefined
+    if (kind === 'claude' && flag === '--append-system-prompt') value = args[i + 1]
+    if (kind === 'codex' && ['-c', '--config'].includes(flag) && args[i + 1]?.startsWith('developer_instructions=')) {
+      try { const parsed = JSON.parse(args[i + 1].slice('developer_instructions='.length)); if (typeof parsed === 'string') value = parsed } catch { /* user TOML remains subject to normal sanitization */ }
+    }
+    if (value && generated(value.trim())) { i++; continue }
+    out.push(flag)
+  }
+  return out
+}
+
 /** Preserve user-supplied native system instructions when appending the
  * project-scoped machine pointer. No prompt is sent to an existing agent.
  */

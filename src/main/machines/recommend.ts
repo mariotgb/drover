@@ -11,6 +11,7 @@ export function machineNextActions(machine: Machine): MachineNextAction[] {
   if (machine.enabled === false) return ['enable']
   if (machine.herdrSyncError) return ['sync_herdr']
   if (machine.bridgeSetup?.error || machine.bridgeSetup?.state === 'failed') return ['repair_bridge']
+  if (['auth_failed', 'host_key_unconfirmed', 'key_not_installed'].includes(machine.status.error?.code ?? '')) return ['confirm_host_key', 'install_key']
   if (machine.status.state === 'online') return ['open_agents', 'check']
   if (machine.status.error?.code === 'host_key_unconfirmed' || machine.status.error?.code === 'key_not_installed' || machine.origin === 'herdr' && !machine.status.checks?.auth) return ['confirm_host_key', 'install_key']
   if (machine.needsReinstall || machine.status.state === 'waiting') return ['run_installer', 'check']

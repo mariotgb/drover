@@ -37,12 +37,18 @@ function machineCodeText(error: MachineError, machine?: Pick<Machine, 'name'> & 
     case 'timeout': return t('The machine did not answer in time. It may be off, asleep or behind a firewall.')
     case 'refused': return t('The machine answered but no SSH server is listening on this port.')
     case 'dns': return t('This address does not resolve. Check for typos.')
+    case 'ssh_penalty': return t('The server is temporarily blocking this computer after too many quick connections (OpenSSH protection). Wait a minute and try again, or exempt your home network on the server.')
+    case 'host_key_unknown': return t('Drover has no confirmed server key for this address yet. Confirm the server key to connect.')
+    case 'connection_closed': return t('The machine closed the connection while signing in. Its SSH server may not accept this login key.')
     case 'host_key_changed': return t('The machine’s key changed since you confirmed it. This can mean a reinstall — or someone in the middle. Drover will not connect until you check it.')
     // Backend details carry facts the generic line cannot (e.g. cleanup still pending on a retired bridge).
     case 'no_bridge': return withDetail(t('Home machines need a bridge: a server with a public IP. Add one and set it up as the bridge.'), error.detail)
     case 'bridge_down': return t('The bridge {bridge} is not reachable, so home machines cannot connect.', { bridge: bridge ?? t('server') })
     case 'tunnel_down': return t('{name} has not connected to the bridge. Check that it is on and online.', { name })
-    case 'host_key_unconfirmed': return !machine ? t('Confirm the server’s key to continue.') : machine.kind === 'bridged' && !machine.bridgeMachineId
+    case 'host_key_unconfirmed': return !machine ? t('Confirm the server’s key to continue.')
+      // A direct machine (for example after its address changed) is not "reached the bridge".
+      : machine.kind === 'direct' ? t('Confirm the server key of {name} to connect it.', { name })
+      : machine.kind === 'bridged' && !machine.bridgeMachineId
       ? t('{name} answers on your home network: its SSH port is reachable. Confirm its key to finish.', { name })
       : t('{name} reached the bridge. Confirm its key to finish.', { name })
     case 'revocation_pending': return withDetail(t('The new agents key is in use, but the old one is still on {name} because it is offline. Drover removes it when {name} is back.', { name }), error.detail)

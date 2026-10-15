@@ -16,7 +16,7 @@ import { bridgeKeyPath, detectLocalBridge, keyExists, publicExistingBridge, type
 import type { HerdrMachineRegistry } from './herdr'
 import { recommendMachineMethod, machineNextActions } from './recommend'
 import { orderedRoutes, validateRoute } from './routes'
-import type { MachineUsage, MachineConnectResult, MachineConnectProgress, AddMachineRoute, BridgeKeyCandidate, DirectDraft, BridgedDraft, MachineKeyInstallOptions, MachinePhone, MachineRoute, MachineRouteKind } from '@shared/machines'
+import type { MachineRouteAddress, MachineUsage, MachineConnectResult, MachineConnectProgress, AddMachineRoute, BridgeKeyCandidate, DirectDraft, BridgedDraft, MachineKeyInstallOptions, MachinePhone, MachineRoute, MachineRouteKind } from '@shared/machines'
 import { adminKeyCandidates } from './existing-bridge'
 import { linuxTunnelAsset, phoneKeyGrantScript } from './provision'
 
@@ -33,6 +33,10 @@ export interface MachineProvisioner {
   setupScratchBridge?(machine: Machine, keys: { tunnel: string; agents: string; management: string }, options: BridgeOptions, onStep: (step: BridgeStepId, state: 'running' | 'done' | 'skipped') => Promise<void>): Promise<void>
   repairBridge?(machine: Machine, targets: Machine[], agentsPublicKey: string, options: BridgeOptions, onStep: (step: string) => Promise<void>): Promise<void>
 }
+export interface ApprovedRouteAddress {
+  readonly machineId: string; readonly name: string; readonly kind: MachineRouteKind; readonly tuple: string
+  readonly previous: Readonly<MachineRouteAddress>; readonly address: Readonly<MachineRouteAddress>
+}
 export interface ApprovedMachineConnect {
   readonly machineId: string; readonly name: string; readonly host: string; readonly port: number; readonly user: string
   readonly tuple: string; readonly hostKey: Readonly<HostKey>
@@ -48,6 +52,8 @@ export interface MachinesOptions {
   provisioner?: MachineProvisioner
   confirmInclude?: () => Promise<boolean>
   periodMs?: number
+  /** Tests: flat delay between empty host-key scans instead of 500 ms × 4^attempt. */
+  scanBackoffMs?: number
   assetsDir?: string
   /** Optional advertised LAN address for isolated tests or explicit routing. */
   lanHost?: string
@@ -95,6 +101,13 @@ export class MachinesService {
   private readonly bridgeCleanup: BridgeCleanupQueue
   private polling = false
   private projects = new Set<string>()
+  /** Host keys scanned during the current connect/install operation (host:port → key). OpenSSH 9.8+
+   * PerSourcePenalties blocks a computer after a burst of unauthenticated connections (each keyscan is one),
+   * so one operation scans each endpoint once; the SSH login itself still enforces the pinned key. */
+  private scanMemo: Map<string, { key: string; at: number }> | null = null
+  private scanDepth = 0
+  /** Short-lived password-method probes (UI re-probes while typing a login). */
+  private passwordProbes = new Map<string, { allowed: boolean | undefined; at: number }>()
   /** Agents that got a per-agent guide; their guides are re-rendered on change. Bounded, newest last. */
   private agentGuides = new Map<string, { cwd: string; name?: string; role?: string | null }>()
   private installerAttempts = new Map<string, symbol>()
@@ -254,18 +267,32 @@ export class MachinesService {
     for (const profile of profiles) {
       const m = this.d.machines.find(m => m.herdrId === profile.id || m.host?.toLowerCase() === profile.host?.toLowerCase() && (m.port ?? 22) === profile.port || profile.host === m.alias)
       if (m) {
+        const targetChanged = m.herdrTarget !== undefined && m.herdrTarget !== profile.target
+        const incomingAddress = JSON.stringify([profile.host, profile.port ?? 22, profile.user ?? m.user])
+        const addressChanged = (m.herdrAddress ?? JSON.stringify([m.host, m.port ?? 22, m.user])) !== incomingAddress
+        m.herdrAddress = incomingAddress
         m.herdrId = profile.id; m.herdrLabel = profile.label; m.herdrTarget = profile.target; m.herdrSession = profile.session
         if (!m.herdrSyncError) { m.herdrSynced = true; m.enabled = profile.enabled }
-        if (m.origin === 'herdr' && !this.d.installed.includes(m.id)) {
+        if (m.origin === 'herdr') {
           const normalized = this.importedName(profile.label, m.id)
           if (m.name !== normalized) { m.name = normalized; m.alias = 'drover-' + normalized }
-          m.host = profile.host; m.port = profile.port; m.user = profile.user ?? m.user
-          if (!m.routes?.some(r => r.host === profile.host && (r.port ?? 22) === (profile.port ?? 22))) m.routes = undefined
+          // Managed aliases point back into Drover; they are not a new endpoint.
+          if ((targetChanged || addressChanged) && profile.host !== m.alias) {
+            const route = orderedRoutes(m).find(r => r.kind !== 'bridge' && r.host === m.host) ?? orderedRoutes(m).find(r => r.kind !== 'bridge')
+            if (route) {
+              const address = { host: profile.host!, port: profile.port ?? 22, user: profile.user ?? m.user }
+              this.validateAddress(route.kind, address)
+              if (this.d.installed.includes(m.id)) {
+                if (route.host === address.host && (route.port ?? 22) === address.port && (route.user ?? m.user) === address.user) delete m.pendingAddressChange
+                else m.pendingAddressChange = { source: 'herdr', kind: route.kind, previous: { host: route.host!, port: route.port ?? 22, user: route.user ?? m.user }, address }
+              } else this.applyRouteAddress(m, route.kind, address)
+            }
+          }
           orderedRoutes(m)
         }
       } else {
         const name = this.importedName(profile.label)
-        this.d.machines.push({ id: randomUUID(), name, alias: 'drover-' + name, kind: 'direct', host: profile.host!, port: profile.port!, user: profile.user ?? this.env().USER ?? 'drover', publicIp: publicAddress(profile.host!), origin: 'herdr', enabled: profile.enabled, herdrId: profile.id, herdrLabel: profile.label, herdrTarget: profile.target, herdrSession: profile.session, herdrSynced: true, permissions: { mode: 'full', projects: [] }, status: { state: 'unknown' } })
+        this.d.machines.push({ id: randomUUID(), name, alias: 'drover-' + name, kind: 'direct', host: profile.host!, port: profile.port!, user: profile.user ?? this.env().USER ?? 'drover', publicIp: publicAddress(profile.host!), origin: 'herdr', enabled: profile.enabled, herdrId: profile.id, herdrLabel: profile.label, herdrTarget: profile.target, herdrAddress: JSON.stringify([profile.host, profile.port ?? 22, profile.user ?? this.env().USER ?? 'drover']), herdrSession: profile.session, herdrSynced: true, permissions: { mode: 'full', projects: [] }, status: { state: 'unknown' } })
       }
     }
     for (const m of [...this.d.machines]) if (m.herdrId && !profiles.some(p => p.id === m.herdrId)) {
@@ -488,6 +515,51 @@ export class MachinesService {
     if (directPin === pin || old.split('\n').some(line => line.startsWith(pin + ' '))) return
     const key = old.split('\n').find(line => line.startsWith(directPin + ' '))?.split(/\s+/).slice(1, 3).join(' ')
     if (key) await privateWrite(this.knownHosts, old.trimEnd() + `\n${pin} ${key}\n`)
+  }
+  private validateAddress(kind: MachineRouteKind, address: MachineRouteAddress): void {
+    if (!['lan', 'internet'].includes(kind)) throw new MachinesFailure('invalid_route', 'Tunnel routes do not have an editable SSH address.')
+    if (!address || typeof address.user !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(address.user)) throw new MachinesFailure('invalid_user', 'Enter a valid SSH login name.')
+    validHost(address.host); validPort(address.port)
+  }
+  private applyRouteAddress(m: Machine, kind: MachineRouteKind, address: MachineRouteAddress): void {
+    this.validateAddress(kind, address)
+    const route = orderedRoutes(m).find(r => r.kind === kind)
+    delete m.pendingAddressChange
+    if (!route) throw new MachinesFailure('invalid_route', 'This machine does not have that route.')
+    if (route.host === address.host && (route.port ?? 22) === address.port && (route.user ?? m.user) === address.user) return
+    Object.assign(route, address, { address: `${address.host}:${address.port}`, state: 'unknown', hostKeyReset: true })
+    delete route.error; delete route.checkedAt; delete route.latencyMs
+    m.host = address.host; m.port = address.port; m.user = address.user; m.publicIp = publicAddress(address.host)
+    delete m.activeRoute; delete m.fallback; delete m.hostKeyPinnedAt; delete m.installReport
+    // Pins are keyed by endpoint. Retain the old entry for other routes and
+    // never copy it to the new endpoint (or erase an existing mismatch there).
+    m.status = { state: 'checking', error: { code: this.d.installed.includes(m.id) ? 'host_key_unconfirmed' : 'key_not_installed' } }
+  }
+  async prepareRouteAddress(id: string, kind: MachineRouteKind, address: MachineRouteAddress): Promise<ApprovedRouteAddress> {
+    this.validateAddress(kind, address)
+    return this.serial(async () => {
+      const m = this.machine(id), route = orderedRoutes(m).find(r => r.kind === kind)
+      if (!route) throw new MachinesFailure('invalid_route', 'This machine does not have that route.')
+      return Object.freeze({ machineId: id, name: m.name, kind, tuple: this.connectTuple(m),
+        previous: Object.freeze({ host: route.host!, port: route.port ?? 22, user: route.user ?? m.user }), address: Object.freeze({ host: address.host, port: address.port, user: address.user }) })
+    })
+  }
+  async setRouteAddress(id: string, kind: MachineRouteKind, address: MachineRouteAddress, options: MachineConfirmationOptions, approved?: ApprovedRouteAddress, caller?: () => Promise<MachineAgent>): Promise<Machine> {
+    this.requireConfirmation(options)
+    const plan = approved ?? await this.prepareRouteAddress(id, kind, address)
+    return this.serial(async () => {
+      const m = this.machine(id)
+      if (plan.machineId !== id || plan.kind !== kind || JSON.stringify([plan.address.host, plan.address.port, plan.address.user]) !== JSON.stringify([address.host, address.port, address.user]) || this.connectTuple(m) !== plan.tuple) throw new MachinesFailure('connect_plan_changed', 'The machine address changed. Review the change again.')
+      if (caller) {
+        const agent = await caller()
+        if (!machineInProject(m, agent.project) || !machineUsable(m, agent)) throw new MachinesFailure('usage_denied', 'This machine is no longer available to the requesting agent.')
+        if (!agent.role || !this.policy(agent.project).configureRoles.includes(agent.role)) throw new MachinesFailure('role_denied', 'The project machine policy changed after approval.')
+      }
+      if (this.connectTuple(this.machine(id)) !== plan.tuple) throw new MachinesFailure('connect_plan_changed', 'The machine changed after confirmation.')
+      this.applyRouteAddress(m, kind, plan.address)
+      await this.changed()
+      return this.checkInternal(m)
+    })
   }
   async addRoute(id: string, draft: AddMachineRoute, options: MachineConfirmationOptions): Promise<HostKey | InstallCommand> {
     this.requireConfirmation(options)
@@ -818,7 +890,7 @@ export class MachinesService {
     if (selected.kind !== 'bridge' && !selected.host) return ''
     const key = management ? this.d.bridgeConnections?.[m.id]?.adminKeyPath ?? this.keyPath('management_ed25519') : this.keyPath()
     const user = selected.user ?? m.user
-    if (selected.kind !== 'bridge') return this.sshBlock(alias, selected.host!, selected.port ?? 22, user, key, m.kind === 'bridged' ? this.pinName(m) : `[${selected.host}]:${selected.port ?? 22}`, undefined, management && !!this.d.bridgeConnections?.[m.id]?.adminKeyPath && !this.d.bridgeConnections[m.id].adminManaged).replace('ConnectTimeout 5', selected.kind === 'lan' ? 'ConnectTimeout 1' : 'ConnectTimeout 5')
+    if (selected.kind !== 'bridge') return this.sshBlock(alias, selected.host!, selected.port ?? 22, user, key, m.kind === 'bridged' && !selected.hostKeyReset ? this.pinName(m) : `[${selected.host}]:${selected.port ?? 22}`, undefined, management && !!this.d.bridgeConnections?.[m.id]?.adminKeyPath && !this.d.bridgeConnections[m.id].adminManaged).replace('ConnectTimeout 5', selected.kind === 'lan' ? 'ConnectTimeout 1' : 'ConnectTimeout 5')
     const bridge = this.d.machines.find(b => b.id === (selected.bridgeMachineId ?? m.bridgeMachineId))
     if (!bridge) return ''
     return this.sshBlock(alias, '127.0.0.1', selected.port ?? m.bridgePort!, user, key, this.pinName(m), `drover-${management ? 'management' : 'jump'}-${bridge.id}`)
@@ -917,9 +989,18 @@ export class MachinesService {
       this.startPeriodic()
       return this.clone(m)
   }
+  private async scanScope<T>(action: () => Promise<T>): Promise<T> {
+    if (this.scanDepth++ === 0) this.scanMemo = new Map()
+    try { return await action() } finally { if (--this.scanDepth === 0) this.scanMemo = null }
+  }
   private async scan(host: string, port: number, machine?: Pick<Machine, 'kind' | 'host' | 'port' | 'bridgeMachineId'>): Promise<string> {
+    const memoKey = machine?.kind === 'bridged' ? undefined : `${host}:${port}`
+    const memo = memoKey ? this.scanMemo?.get(memoKey) : undefined
+    if (memo && Date.now() - memo.at < 120_000) return memo.key
+    let closed = false
     for (let attempt = 0; attempt < 3; attempt++) {
       let result: CommandResult | undefined
+      const started = Date.now()
       try {
         if (machine?.kind === 'bridged') {
           const b = this.d.machines.find(b => b.id === machine.bridgeMachineId)
@@ -929,12 +1010,29 @@ export class MachinesService {
         } else result = await this.run('ssh-keyscan', ['-T', '5', '-t', 'ed25519', '-p', String(port), host], { timeoutMs: 10_000, env: this.env() })
       } catch (error) { if (sshError(error).code !== 'timeout') throw error }
       const key = result?.stdout.split('\n').find(line => !line.startsWith('#') && line.split(/\s+/)[1] === 'ssh-ed25519')
-      if (key) { fingerprint(key); return key.trim() }
-      if (attempt < 2) await delay(250 * (attempt + 1))
+      if (key) { fingerprint(key); if (memoKey) this.scanMemo?.set(memoKey, { key: key.trim(), at: Date.now() }); return key.trim() }
+      // A server dropping us right after accept (no banner, no timeout) is the PerSourcePenalties pattern.
+      closed ||= !!result && (/Connection closed|Connection reset|kex_exchange_identification/i.test(result.stderr) || Date.now() - started < 2000)
+      // Exponential back-off: each retry is another unauthenticated connection to the server.
+      if (attempt < 2) await delay(this.options.scanBackoffMs ?? 500 * 4 ** attempt)
     }
-    throw new MachinesFailure(machine?.kind === 'bridged' ? 'tunnel_down' : 'host_unreachable', machine?.kind === 'bridged' ? 'The home machine has not connected its tunnel to the bridge.' : 'Could not read an SSH host key. Check the address, port and firewall. The server may be briefly busy; try again in a minute.')
+    if (machine?.kind === 'bridged') throw new MachinesFailure('tunnel_down', 'The home machine has not connected its tunnel to the bridge.')
+    if (closed) {
+      let open = false
+      try { await this.tcp(host, port, 3000); open = true } catch { /* not reachable at all */ }
+      if (open) throw new MachinesFailure('ssh_penalty', 'The SSH server accepts connections but closes them before sending its host key: it is probably blocking this computer for a while after too many quick connections (OpenSSH PerSourcePenalties). Wait a minute and try again, or exempt your LAN on the server (PerSourcePenaltyExemptList).')
+    }
+    throw new MachinesFailure('host_unreachable', 'Could not read an SSH host key. Check the address, port and firewall. The server may be briefly busy; try again in a minute.')
   }
   private async passwordAllowed(host: string, port: number, key: string, user: string): Promise<boolean | undefined> {
+    const probeKey = JSON.stringify([host, port, user, fingerprint(key)]), cached = this.passwordProbes.get(probeKey)
+    if (cached && Date.now() - cached.at < 60_000) return cached.allowed
+    const allowed = await this.passwordProbe(host, port, key, user)
+    if (this.passwordProbes.size > 200) this.passwordProbes.clear()
+    this.passwordProbes.set(probeKey, { allowed, at: Date.now() })
+    return allowed
+  }
+  private async passwordProbe(host: string, port: number, key: string, user: string): Promise<boolean | undefined> {
     const scratch = await mkdtemp(join(tmpdir(), 'drover-auth-probe-'))
     try {
       const pins = join(scratch, 'known_hosts')
@@ -955,7 +1053,27 @@ export class MachinesService {
     return (field?.slice(field.indexOf(' ') + 1).split(/\s+/) ?? []).map(path => path.replace(/^~(?=\/)/, this.options.home).replace(/%d/g, this.options.home).replace(/%h/g, host).replace(/%p/g, String(port)))
       .filter(path => path.startsWith('/') && !/[\r\n\0%]/.test(path))
   }
-  async probeHostKey(host: string, port: number, user?: string): Promise<HostKey> {
+  private async userTrust(host: string, port: number, user: string, key: string): Promise<boolean> {
+    const pin = `[${host}]:${port}`
+    let userKnown = false
+    const machine = this.d.machines.find(m => m.host === host && (m.port ?? 22) === port)
+    const files = [...new Set([join(this.options.home, '.ssh', 'known_hosts'), ...await this.loginKnownHosts(host, port, user), ...(machine && this.options.herdrKnownHosts ? await this.options.herdrKnownHosts(machine) : [])])]
+    for (const file of files) {
+      let stat
+      try { stat = await lstat(file) } catch { continue }
+      if (!stat.isFile() || stat.isSymbolicLink()) continue
+      for (const name of port === 22 ? [host, pin] : [pin]) {
+        const found = await this.run('ssh-keygen', ['-F', name, '-f', file], { env: this.env(), timeoutMs: 5000 })
+        const lines = found.stdout.split('\n').filter(line => !line.startsWith('#') && line.trim())
+        if (lines.length && !lines.some(line => fingerprint(line) === fingerprint(key))) throw new MachinesFailure('host_key_changed', 'The SSH host key does not match known_hosts. Verify the server through a trusted channel; connecting is blocked.')
+        userKnown ||= lines.some(line => fingerprint(line) === fingerprint(key))
+      }
+    }
+    return userKnown
+  }
+  async probeHostKey(host: string, port: number, user?: string): Promise<HostKey> { return this.probeHostKeyInternal(host, port, user, true) }
+  /** One-click connect never needs the password-method probe (an extra failed-auth connection). */
+  private async probeHostKeyInternal(host: string, port: number, user: string | undefined, passwordProbe: boolean): Promise<HostKey> {
     if (user !== undefined && (typeof user !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(user))) throw new MachinesFailure('invalid_user', 'Enter a valid administrator SSH login.')
     return this.serial(async () => {
       const m = this.d.machines.find(m => m.alias === host && m.kind === 'bridged')
@@ -967,25 +1085,10 @@ export class MachinesService {
       const managedLines = (await privateRead(this.knownHosts) ?? '').split('\n').filter(line => line.split(/\s+/)[0] === pin)
       const managedKnown = managedLines.some(line => fingerprint(line) === fingerprint(key))
       if (managedLines.length && !managedKnown) throw new MachinesFailure('host_key_changed', 'The SSH host key changed from its confirmed fingerprint. Connecting is blocked.')
-      let userKnown = false
-      if (!m) {
-        const machine = this.d.machines.find(m => m.host === host && (m.port ?? 22) === port)
-        const files = [...new Set([join(this.options.home, '.ssh', 'known_hosts'), ...await this.loginKnownHosts(host, port, user ?? machine?.user ?? 'root'), ...(machine && this.options.herdrKnownHosts ? await this.options.herdrKnownHosts(machine) : [])])]
-        for (const file of files) {
-          let stat
-          try { stat = await lstat(file) } catch { continue }
-          if (!stat.isFile() || stat.isSymbolicLink()) continue
-          for (const name of port === 22 ? [host, pin] : [pin]) {
-            const found = await this.run('ssh-keygen', ['-F', name, '-f', file], { env: this.env(), timeoutMs: 5000 })
-            const lines = found.stdout.split('\n').filter(line => !line.startsWith('#') && line.trim())
-            if (lines.length && !lines.some(line => fingerprint(line) === fingerprint(key))) throw new MachinesFailure('host_key_changed', 'The SSH host key does not match known_hosts. Verify the server through a trusted channel; connecting is blocked.')
-            userKnown ||= lines.some(line => fingerprint(line) === fingerprint(key))
-          }
-        }
-      }
+      const userKnown = !m && await this.userTrust(host, port, user ?? 'root', key)
       const known = managedKnown || userKnown
       const login = user ?? this.d.machines.find(m => m.kind === 'direct' && m.host === host && m.port === port)?.user ?? 'root'
-      const passwordAllowed = m ? undefined : await this.passwordAllowed(host, port, key, login)
+      const passwordAllowed = m || !passwordProbe ? undefined : await this.passwordAllowed(host, port, key, login)
       return { algorithm: 'ssh-ed25519', fingerprint: fingerprint(key), known, ...(passwordAllowed !== undefined ? { passwordAllowed } : {}) }
     })
   }
@@ -995,7 +1098,10 @@ export class MachinesService {
     const key = m.host && savedMachine?.activeRoute !== 'bridge' ? await this.scan(m.host, m.port ?? 22) : await this.scan(m.alias, m.bridgePort!, m)
     if (fingerprint(key) !== accepted) throw new MachinesFailure('host_key_changed', 'The host key changed after it was shown. Check it again through a trusted channel.')
     const old = await privateRead(this.knownHosts) ?? ''
-    const pin = this.pinName(m)
+    const resetRoute = savedMachine?.routes?.find(r => r.host === m.host && (r.port ?? 22) === (m.port ?? 22) && r.hostKeyReset)
+    const pin = resetRoute ? `[${m.host}]:${m.port ?? 22}` : this.pinName(m)
+    const previous = old.split('\n').filter(line => line.split(/\s+/)[0] === pin)
+    if (previous.length && !previous.some(line => fingerprint(line) === accepted)) throw new MachinesFailure('host_key_changed', 'The SSH host key does not match the saved pin. Connecting is blocked.')
     const lines = old.split('\n').filter(line => line && line.split(/\s+/)[0] !== pin)
     lines.push(`${pin} ${key.split(/\s+/).slice(1, 3).join(' ')}`)
     await privateWrite(this.knownHosts, lines.join('\n') + '\n')
@@ -1124,7 +1230,7 @@ export class MachinesService {
     if (machine.enabled === false) throw new MachinesFailure('machine_disabled', 'Enable this machine before connecting.')
     if (!machine.host || machine.kind !== 'direct') throw new MachinesFailure('connect_requires_installer', 'Use the machine installer to connect this route.')
     const tuple = this.connectTuple(machine)
-    const hostKey = await this.probeHostKey(machine.host, machine.port ?? 22, machine.user)
+    const hostKey = await this.probeHostKeyInternal(machine.host, machine.port ?? 22, machine.user, false)
     await this.serial(async () => {
       if (this.connectTuple(this.machine(id)) !== tuple) throw new MachinesFailure('connect_plan_changed', 'The machine changed. Review Connect again.')
     })
@@ -1144,6 +1250,9 @@ export class MachinesService {
     if (current.enabled === false || this.connectTuple(current) !== plan.tuple) throw new MachinesFailure('connect_plan_changed', 'The approved machine changed. Review Connect again.')
   }
   async connectTrusted(id: string, options: MachineConfirmationOptions, approved?: ApprovedMachineConnect, caller?: () => Promise<MachineAgent>): Promise<MachineConnectResult> {
+    return this.scanScope(() => this.connectTrustedInternal(id, options, approved, caller))
+  }
+  private async connectTrustedInternal(id: string, options: MachineConfirmationOptions, approved?: ApprovedMachineConnect, caller?: () => Promise<MachineAgent>): Promise<MachineConnectResult> {
     this.requireConfirmation(options)
     const emit = (phase: MachineConnectProgress['phase']) => this.options.connectProgress?.({ machineId: id, phase })
     try {
@@ -1153,7 +1262,7 @@ export class MachinesService {
       const hostKey = plan.hostKey
       if (!hostKey.known) return { machineId: id, state: 'host_key_confirmation', hostKey }
       const guard = () => this.validateConnect(plan, caller)
-      if (await this.serial(async () => { await guard(); return this.d.installed.includes(id) })) {
+      if (await this.serial(async () => { await guard(); return this.d.installed.includes(id) && this.machine(id).status.checks?.auth === true })) {
         emit('done'); return { machineId: id, state: 'connected' }
       }
       emit('login')
@@ -1164,6 +1273,8 @@ export class MachinesService {
           await this.pin(live, hostKey.fingerprint)
           await guard()
           const result = await this.run('ssh', [...this.existingLoginArgs(live), plan.host, 'true'], { env: this.env(), timeoutMs: 15000 })
+          // Re-scan once after the login (not at every guard) to catch a key swapped meanwhile.
+          this.scanMemo?.delete(`${plan.host}:${plan.port}`)
           this.requireSuccess(result)
         })
       } catch (error) {
@@ -1193,7 +1304,7 @@ export class MachinesService {
   }
   /** Machines connectAll would try (same filter), for the agent helper's confirmation dialog. */
   async connectCandidates(): Promise<Machine[]> {
-    return this.serial(async () => this.d.machines.filter(m => m.enabled !== false && m.kind === 'direct' && m.host && !this.d.installed.includes(m.id)).map(m => this.clone(m)))
+    return this.serial(async () => this.d.machines.filter(m => m.enabled !== false && m.kind === 'direct' && m.host && (!this.d.installed.includes(m.id) || m.status.checks?.auth !== true)).map(m => this.clone(m)))
   }
   private existingLoginArgs(m: Machine): string[] {
     // Keep the user's existing default identities and SSH agent for this explicit UI login.
@@ -1201,6 +1312,9 @@ export class MachinesService {
     return ['-p', String(m.port ?? 22), '-l', m.user, '-o', `UserKnownHostsFile=${this.knownHosts}`, '-o', 'GlobalKnownHostsFile=/dev/null', '-o', `HostKeyAlias=${this.pinName(m)}`, '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes', '-o', 'PreferredAuthentications=publickey', '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no', '-o', 'ConnectTimeout=5']
   }
   async installKey(id: string, options: MachineKeyInstallOptions, guard?: () => Promise<void>): Promise<Machine> {
+    return this.scanScope(() => this.installKeyScoped(id, options, guard))
+  }
+  private async installKeyScoped(id: string, options: MachineKeyInstallOptions, guard?: () => Promise<void>): Promise<Machine> {
     await this.serial(async () => {
       try { return await this.installKeyInternal(id, options, guard) }
       catch (error) {
@@ -1284,6 +1398,8 @@ export class MachinesService {
   async check(id: string): Promise<Machine> { return this.serial(async () => { await this.bridgeCleanup.runOnce(); return this.checkInternal(this.machine(id)) }) }
   private async selectRoute(m: Machine, skip = new Set<MachineRouteKind>()): Promise<number> {
     const routes = orderedRoutes(m)
+    const edited = routes.find(r => r.hostKeyReset && r.host === m.host && (r.port ?? 22) === (m.port ?? 22))
+    if (edited) routes.sort((a, b) => a === edited ? -1 : b === edited ? 1 : 0)
     let last: unknown = new MachinesFailure('no_route', 'No connection route is available.')
     for (const route of routes) {
       if (skip.has(route.kind)) continue
@@ -1344,7 +1460,13 @@ export class MachinesService {
       latencyMs = await this.selectRoute(m)
       tcp = true
       const active = m.routes?.find(r => r.kind === m.activeRoute)
-      const pin = m.kind === 'direct' && active?.host ? `[${active.host}]:${active.port ?? 22}` : this.pinName(m)
+      const pin = (m.kind === 'direct' || active?.hostKeyReset) && active?.host ? `[${active.host}]:${active.port ?? 22}` : this.pinName(m)
+      if (active?.hostKeyReset && active.host) {
+        const key = await this.scan(active.host, active.port ?? 22)
+        const lines = (await privateRead(this.knownHosts) ?? '').split('\n').filter(line => line.split(/\s+/)[0] === pin)
+        if (lines.length && !lines.some(line => fingerprint(line) === fingerprint(key))) throw new MachinesFailure('host_key_changed', 'The SSH host key does not match the saved pin. Connecting is blocked.')
+
+      }
       if (!(await privateRead(this.knownHosts) ?? '').split('\n').some(line => line.split(/\s+/)[0] === pin)) throw new MachinesFailure('host_key_unconfirmed', 'The SSH port is reachable. Confirm this machine’s host-key fingerprint before signing in.')
       const pending = this.d.revocations[m.id] ?? []
       if (this.d.credentialRemovals[m.id]) await this.finishCredentialRemoval(m)

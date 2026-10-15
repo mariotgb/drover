@@ -429,3 +429,25 @@ button.mmap-node:focus-visible .mmap-disc { outline: 2px solid var(--accent); ou
 .usage-mode.on { color: var(--text); font-weight: 500; }
 .usage-mode input { margin: 0; accent-color: var(--accent); }
 .usage-agents { align-self: stretch; width: 100%; box-sizing: border-box; }
+
+/* Route address editor (0.8.6) and the step that follows a change. */
+.machine-user { width: 140px; flex: none; }
+.route-edit .field-row { flex-wrap: wrap; }
+.route-next { grid-column: 1 / -1; margin: 6px 0 2px; }
+.route-next .btn { margin-left: 4px; }
+/* Keep the address readable when a row also offers "Change address" and "Remove". */
+.route-row { grid-template-columns: 10px 130px minmax(120px, 1fr) auto; }
+.route-tail { flex-wrap: wrap; justify-content: flex-end; row-gap: 2px; }
+.machine-later { flex: none; }
+/* The card's one action may be long ("Confirm server key…", a countdown): wrap it rather than squeeze the text. */
+.machine-head .machine-next, .machine-head .machine-later { max-width: 168px; white-space: normal; text-align: center; line-height: 1.25; }
+.machine-head .machine-next { height: auto; min-height: 28px; padding-top: 4px; padding-bottom: 4px; }
+.machine-head .machine-later { flex-wrap: nowrap; text-align: left; font-size: 12px; }
+
+/* herdr reports a new address for an imported machine: shown until the user applies it. */
+.machine-pending { display: flex; align-items: center; gap: 12px; margin: 0 12px 10px 44px; padding: 9px 12px; border-radius: var(--radius); background: color-mix(in srgb, var(--blocked) 10%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blocked) 30%, transparent); font-size: 12.5px; color: var(--text-2); }
+.machine-pending p { flex: 1; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 3px; line-height: 1.4; }
+.machine-pending-addr { font-size: 12px; color: var(--text); }
+.machine-pending-addr code { font-family: var(--font-mono); font-size: 11.5px; }
+.machine-pending .btn { flex: none; }
+.machine-pending .form-error { flex-basis: 100%; }

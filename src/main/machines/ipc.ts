@@ -16,6 +16,7 @@ export function registerMachinesIpc(ipc: Pick<IpcMain, 'handle'>, service: Machi
     'machines:open-herdr-agent': (machineId, paneId) => service.openHerdrAgent(machineId, paneId),
     'machines:rename': (id, name, options) => service.rename(id, name, options),
     'machines:set-purpose': (id, purpose) => service.setPurpose(id, purpose),
+    'machines:set-route-address': (id, kind, address, options) => service.setRouteAddress(id, kind, address, options),
     'machines:add-route': (id, route, options) => service.addRoute(id, route, options),
     'machines:remove-route': (id, kind, options) => service.removeRoute(id, kind, options),
     'machines:sync-herdr': options => service.syncHerdr(options),

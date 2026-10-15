@@ -25,6 +25,13 @@ export function needsConnect(m: Machine): boolean {
   return !!m.host && m.status.error?.code === 'key_not_installed'
 }
 
+/** A direct machine Drover connected before, now refusing the agents key or showing a new server key (for example
+ * after its address changed). One-click connect repairs it; the wizard opens only for the step that needs the user. */
+export function needsRepair(m: Machine): boolean {
+  const code = m.status.error?.code
+  return m.kind === 'direct' && !!m.host && (code === 'auth_failed' || code === 'connection_closed' || code === 'host_key_unconfirmed' || code === 'host_key_unknown')
+}
+
 /** Connected means Drover's agents key signed in. For a not-connected machine "online" only means its port answers. */
 export function signedIn(m: Machine): boolean {
   return m.status.state === 'online' && m.status.checks?.auth === true && m.status.error?.code !== 'key_not_installed'

@@ -7,13 +7,13 @@ import { toast, useModel } from '../store'
 import { Spinner } from './primitives'
 import { AddMachineWizard, BridgedHostKey, HostKeyCard, InstallCommandPanel } from './AddMachineWizard'
 import { BridgeChecklist, BridgeWizard, UpgradeBridge, useBridgeJob } from './BridgeWizard'
-import { PurposeField, RoutesSection } from './MachineRoutesSection'
+import { PendingAddressBanner, PurposeField, RoutesSection } from './MachineRoutesSection'
 import { EmptyMachinesMap, MachinesMap, MapLegend, useMapOpen } from './MachinesMap'
 import { MachinesHelp } from './MachinesHelp'
 import { MachinesRolesBlock } from './MachinesRolesBlock'
-import { ConnectMachineWizard, needsConnect } from './ConnectMachineWizard'
+import { ConnectMachineWizard, needsConnect, needsRepair } from './ConnectMachineWizard'
 import { MachineUsageField } from './MachineUsageField'
-import { ConnectAllBar, ConnectRunLine, useMachineConnect, type ConnectRun, type WizardStart } from './MachineConnect'
+import { ConnectAllBar, ConnectRunLine, RetryInAMinute, runAction, type MachineAction, useMachineConnect, type ConnectRun, type WizardStart } from './MachineConnect'
 import type { MachineChecks } from '@shared/machines'
 import { activeRoute, hasRoute, isFallback, purposeOf, routeChip, routeName, routesOf } from '../machineRoutes'
 import { ago, isTurnedOff, pendingConnect, pendingConnectLabel, cleanupNote, isLan, machineErrorText, suppliedAccount, type CleanupNote, machinesApi, needsHostKey, osName, type Machine, type MachineAccess, type MachinesApi, type MachinesState, ADOPT_STEPS, bridgeStatus, phoneOnlyBridge, type BridgeAdoptOptions, type BridgeKeyCandidate, type BridgeApi, type BridgeProgress, type ExistingBridge, type HostKey } from '../machines'
@@ -399,6 +399,13 @@ function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, op
   const { busy, error, run } = useAction()
   const checking = busy === 'check' || m.status.state === 'checking'
   const unconnected = needsConnect(m), pending = pendingConnect(m.status)
+  // One action per card, from the running one-click result first, else from the machine's own error.
+  const code = m.status.error?.code
+  const cardAction: MachineAction | null = isTurnedOff(m) ? null
+    : code === 'ssh_penalty' ? 'later'
+    : m.kind === 'direct' && (code === 'host_key_unknown' || code === 'host_key_unconfirmed') ? 'key'
+    : unconnected || needsRepair(m) ? 'connect' : null
+  const action = (connectRun && runAction(connectRun)) || cardAction
   const reason = unconnected && pending === 'unreachable' ? t('Drover cannot reach {name} right now. Check that it is turned on and on the network, then connect it.', { name: m.name })
     : unconnected && pending === 'checking' ? t('Checking whether {name} answers…', { name: m.name })
     : unconnected ? t('Not connected yet: Drover’s agents cannot sign in here until you connect it.') : needsHostKey(m) ? (isLan(m) ? t('{name} answers on your home network: its SSH port is reachable. Confirm its key to finish.', { name: m.name }) : t('{name} reached the bridge. Confirm its key to finish.', { name: m.name })) : isTurnedOff(m) ? machineErrorText({ code: 'machine_disabled' }, m) : m.status.state === 'offline' || m.status.state === 'waiting' ? machineErrorText(m.status.error, m, via?.name) : ''
@@ -427,8 +434,8 @@ function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, op
               {m.needsReinstall && <span className="machine-badge warn">{t('Needs update')}</span>}
             </span>
             <span className="machine-sub">{[purpose, where, m.osLabel || osName(m.os)].filter(Boolean).join(' · ')}</span>
-            {connectRun ? <ConnectRunLine machine={m} run={connectRun} onRetry={onConnect} onWizard={onWizard} />
-              : reason && <span className={clsx('machine-reason', (needsHostKey(m) || unconnected) && 'warn')}>{reason}</span>}
+            {connectRun ? <ConnectRunLine machine={m} run={connectRun} />
+              : reason && <span className={clsx('machine-reason', (needsHostKey(m) || unconnected || action === 'key') && 'warn')}>{reason}</span>}
             {fallbackNote && <span className="machine-reason note">{fallbackNote}</span>}
             <span className="mroutes">
               {routes.map((r) => <span key={r.kind} className={clsx('mroute', `k-${r.kind}`, `s-${r.state}`, r.kind === active && 'now')}><i />{routeChip(r, r.kind === active)}</span>)}
@@ -437,7 +444,12 @@ function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, op
             </span>
           </span>
         </button>
-        {unconnected && !isTurnedOff(m) && <button type="button" className={clsx('btn btn-sm machine-next', pending !== 'unreachable' && 'btn-primary')} disabled={batchBusy || (!!connectRun && connectRun.phase !== 'failed' && !connectRun.result)} onClick={onConnect}>{t('Connect machine')}</button>}
+        {action === 'later' ? <RetryInAMinute onRetry={connectRun ? onConnect : () => void run('check', () => api.check(m.id))} />
+          // Through one-click connect: a key the user's known_hosts already trusts connects at once; an unknown one opens the confirm step.
+          : action === 'key' ? <button type="button" className="btn btn-sm btn-primary machine-next" disabled={batchBusy || (!!connectRun && !connectRun.result && connectRun.phase !== 'failed')} onClick={connectRun?.result?.state === 'host_key_confirmation' ? () => onWizard(1) : onConnect}>{t('Confirm server key…')}</button>
+          : action === 'login' ? <button type="button" className="btn btn-sm btn-primary machine-next" disabled={batchBusy} onClick={() => onWizard(2)}>{t('Choose key…')}</button>
+          : action === 'retry' ? <button type="button" className="btn btn-sm machine-next" disabled={batchBusy} onClick={onConnect}>{t('Try again')}</button>
+          : action === 'connect' && <button type="button" className={clsx('btn btn-sm machine-next', pending !== 'unreachable' && 'btn-primary')} disabled={batchBusy || (!!connectRun && !connectRun.result && connectRun.phase !== 'failed')} onClick={onConnect}>{t('Connect machine')}</button>}
         <span className="machine-meta">
           <span className={clsx('machine-latency', pending && `is-${pending}`)}>{pending ? pendingConnectLabel(pending) : isTurnedOff(m) ? t('Turned off') : m.status.state === 'online' && m.status.latencyMs !== undefined ? t('{n} ms', { n: m.status.latencyMs }) : stateLabel(m.status.state)}</span>
           <span className="machine-ago">{ago(m.status.checkedAt)}</span>
@@ -446,13 +458,14 @@ function MachineRow({ api, machine: m, bridge, via, homes, isBridge, onNotes, op
           {checking ? <Spinner size={12} /> : <RefreshCw size={13} />}
         </button>
       </div>
+      <PendingAddressBanner api={api} machine={m} />
       {error && !open && <p role="alert" className="form-error machine-error">{error}</p>}
-      {open && <MachineDetails api={api} machine={m} bridge={bridge} homes={homes} isBridge={isBridge} onNotes={onNotes} />}
+      {open && <MachineDetails api={api} machine={m} bridge={bridge} homes={homes} isBridge={isBridge} onNotes={onNotes} onConnect={onConnect} onWizard={onWizard} />}
     </div>
   )
 }
 
-function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: { api: MachinesApi; machine: Machine; bridge: Machine | null; homes: number; isBridge: boolean; onNotes: (notes: CleanupNote[]) => void }) {
+function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes, onConnect, onWizard }: { api: MachinesApi; machine: Machine; bridge: Machine | null; homes: number; isBridge: boolean; onNotes: (notes: CleanupNote[]) => void; onConnect: () => void; onWizard: (step: 1 | 2) => void }) {
   const { busy, error, run } = useAction()
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [confirmBridge, setConfirmBridge] = useState(false)
@@ -467,7 +480,7 @@ function MachineDetails({ api, machine: m, bridge, homes, isBridge, onNotes }: {
         <CopyCode text={`ssh ${m.alias}`} />
       </div>
       <PurposeField api={api} machine={m} />
-      <RoutesSection api={api} machine={m} bridge={bridge} isBridge={isBridge} />
+      <RoutesSection api={api} machine={m} bridge={bridge} isBridge={isBridge} onConnect={onConnect} onWizard={onWizard} />
       {m.kind === 'bridged' && isLan(m) && (
         <div className="machine-field">
           <span className="machine-field-label">{t('Home network')}</span>

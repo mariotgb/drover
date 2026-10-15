@@ -122,12 +122,15 @@ export function sshError(error: unknown, password = false): MachineError {
   if (error instanceof MachinesFailure) return { code: error.code, detail: error.message }
   if (error instanceof Error && typeof (error as { code?: unknown }).code === 'string' && !/^(?:E[A-Z]+)$/.test(String(code))) return { code: String(code), detail: error.message }
   const message = error instanceof Error ? error.message : String(error)
+  // Strict checking with no pinned key also ends in "Host key verification failed"; keep that distinct from a real change.
+  if (/No \S+ host key is known for/i.test(message) && !/REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(message)) return { code: 'host_key_unknown', detail: 'Drover has no confirmed host key for this address. Confirm it in Machines first.' }
   if (/REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|host key.*mismatch/i.test(message)) return { code: 'host_key_changed', detail: 'The SSH host key changed. Confirm it through a trusted channel before reconnecting.' }
-  if (/Permission denied|Authentication failed/i.test(message)) return { code: password ? 'password_rejected' : 'auth_failed', detail: password ? 'The one-time password was rejected.' : 'The machine refused the agents key.' }
+  if (/Permission denied|Authentication failed|Too many authentication failures/i.test(message)) return { code: password ? 'password_rejected' : 'auth_failed', detail: password ? 'The one-time password was rejected.' : 'The machine refused the agents key.' }
   if (code === 'ECONNREFUSED' || /Connection refused/i.test(message)) return { code: 'refused', detail: 'The host answered, but no SSH server is listening on this port.' }
   if (code === 'ENOTFOUND' || /resolve hostname|Name or service not known/i.test(message)) return { code: 'dns', detail: 'This address does not resolve.' }
   if (code === 'ETIMEDOUT' || /timed out/i.test(message)) return { code: 'timeout', detail: 'The machine did not answer in time.' }
   if (/bwrap|sandbox/i.test(message)) return { code: 'permission_unavailable', detail: 'Restricted access needs a working Linux bubblewrap sandbox. Install it before choosing this permission.' }
-  if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH' || /No route to host/i.test(message)) return { code: 'host_unreachable', detail: 'There is no route to the machine.' }
+  if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH' || /No route to host|Network is unreachable/i.test(message)) return { code: 'host_unreachable', detail: 'There is no route to the machine.' }
+  if (/Connection closed by|Connection reset by/i.test(message)) return { code: 'connection_closed', detail: 'The machine closed the connection during login. Its SSH server may not accept this login key.' }
   return { code: 'ssh_failed', detail: 'SSH could not complete the operation. Check the machine account and SSH service.' }
 }

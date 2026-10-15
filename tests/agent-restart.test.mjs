@@ -238,3 +238,24 @@ test('a session switch during the persistence hook cannot start the next project
   assert.equal(results[0].code,'restart_session_changed');assert.equal(results[1].code,'restart_session_changed')
   assert.ok(!f.calls.some(c=>c.method==='agent.start' && c.params.pane_id==='p2'))
 })
+
+test('restart recognizes only its generated per-agent pointer and never duplicates it on repeated bypass toggles',async()=>{
+ const launch=createRequire(import.meta.url)(launchFile)
+ const pointer=`Before using remote machines for this project, read /tmp/Проект 'quoted'/.drover/machines/agents/${'a'.repeat(64)}.md. Use only its listed aliases and respect permissions and who may use each machine. Do not read or use management/tunnel keys. Selected-project scope and machine usage rules are advisory. Machine configuration requests use '/tmp/Проект/helper/drover-machines'; Drover checks your project role and asks the desktop user for confirmation.`
+ for(const kind of ['claude','codex'])for(const bypass of [true,false]){
+  const original=launch.machineLaunchArgs(kind,restartArgs(kind,[],'session',{},bypass),pointer)
+  const stripped=launch.withoutMachinePointer(kind,original)
+  assert.deepEqual(stripped,restartArgs(kind,[],'session',{},bypass))
+  assert.deepEqual(restartArgs(kind,original,'session',{},!bypass),restartArgs(kind,[],'session',{},!bypass))
+  const {restart}=fixture([{pane_id:'p1',agent:kind,agent_session:{agent:kind,kind:'id',value:'session'}}])
+  // Exact real process argv as captured after Drover launches; no saved launch record.
+  const request=restart.service.request.bind(restart.service)
+  restart.service.request=async(method,params)=>method==='pane.process_info'?{process_info:{shell_pid:1,foreground_processes:[{pid:2,name:kind,argv:[kind,...original]}]}}:request(method,params)
+  const plan=await restart.plan({paneId:'p1',bypass:!bypass})
+  assert.equal(plan.agents.length,1);assert.equal(plan.skipped.length,0)
+  assert.equal(plan.bypass,!bypass)
+ }
+ for(const [kind,args] of [['claude',['--append-system-prompt','user secret instructions']],['codex',['-c','developer_instructions="user instructions"']]]){
+  assert.deepEqual(launch.withoutMachinePointer(kind,args),args)
+ }
+})

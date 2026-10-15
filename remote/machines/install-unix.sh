@@ -8,10 +8,21 @@ KEY_URL='__DROVER_KEY_URL__'
 case "$OS:$(uname -s)" in linux:Linux|macos:Darwin) ;; *) echo 'Installer does not match this operating system.' >&2; exit 1;; esac
 if [ "$OS" = linux ]; then
   command -v systemctl >/dev/null || { echo 'Linux installer needs systemd.' >&2; exit 1; }
-  if ! command -v python3 >/dev/null || ! command -v ssh >/dev/null || ! command -v sudo >/dev/null; then
-    if command -v apt-get >/dev/null; then apt-get update -qq; apt-get install -y python3 openssh-server openssh-client sudo curl ca-certificates;
-    elif command -v dnf >/dev/null; then dnf install -y python3 openssh-server openssh-clients sudo curl ca-certificates;
-    else echo 'Install Python 3, OpenSSH, sudo and curl first.' >&2; exit 1; fi
+  packages=()
+  command -v python3 >/dev/null || packages+=(python3)
+  command -v ssh >/dev/null || packages+=(openssh-client)
+  command -v sshd >/dev/null || packages+=(openssh-server)
+  # Policy tools grant the dedicated agent access; root runs the installer directly.
+  command -v visudo >/dev/null || packages+=(sudo)
+  command -v curl >/dev/null || packages+=(curl ca-certificates)
+  if [ "${#packages[@]}" -gt 0 ]; then
+    if command -v apt-get >/dev/null; then
+      apt-get update -qq || echo 'Package indexes could not fully update; trying available indexes.' >&2
+      apt-get install -y "${packages[@]}"
+    elif command -v dnf >/dev/null; then
+      for i in "${!packages[@]}"; do [ "${packages[$i]}" != openssh-client ] || packages[$i]=openssh-clients; done
+      dnf install -y "${packages[@]}"
+    else echo 'Install the missing Python 3, OpenSSH, sudo policy tools and curl first.' >&2; exit 1; fi
   fi
 else
   command -v python3 >/dev/null || { echo 'Install Python 3 before running this macOS installer.' >&2; exit 1; }
@@ -83,7 +94,7 @@ fi
 # file ownership and the forced-command path refer to agent, never root.
 if [ -s "$work/policy.sh" ]; then
   policy=$(cat "$work/policy.sh")
-  printf '%s\n' "$policy" | sudo -u agent env HOME="$account_home" /bin/bash -s
+  printf '%s\n' "$policy" | runuser -u agent -- env HOME="$account_home" /bin/bash -s
 else
   if grep -q 'command=' "$work/authorized_key"; then echo 'Missing server-enforced key policy.' >&2; exit 1; fi
   tmp=$(mktemp "$account_home/.ssh/.drover-auth.XXXXXX")

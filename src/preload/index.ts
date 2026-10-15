@@ -31,6 +31,7 @@ const api = {
     openHerdrAgent: (machineId, paneId) => ipcRenderer.invoke('machines:open-herdr-agent', machineId, paneId),
     rename: (id, name, options) => ipcRenderer.invoke('machines:rename', id, name, options),
     setPurpose: (id, purpose) => ipcRenderer.invoke('machines:set-purpose', id, purpose),
+    setRouteAddress: (id, kind, address, options) => ipcRenderer.invoke('machines:set-route-address', id, kind, address, options),
     addRoute: (id, route, options) => ipcRenderer.invoke('machines:add-route', id, route, options),
     removeRoute: (id, kind, options) => ipcRenderer.invoke('machines:remove-route', id, kind, options),
     syncHerdr: options => ipcRenderer.invoke('machines:sync-herdr', options),

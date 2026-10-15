@@ -7,6 +7,7 @@ import type { AgentLaunch, RestartCandidate, RestartPlan, RestartResult, Restart
 import type { HerdrService } from './herdr/service'
 import { waitUntilInteractive } from './actions'
 import { bypassFlags, launchChoice, restartArgs, sanitizeAgentLaunch, sanitizeLaunchArgs, safeLaunchChoice } from './agentLaunchArgs'
+import { withoutMachinePointer } from './machines/launch'
 import { AgentRestore, writeRestoreJson } from './agentRestore'
 import type { RestoreTarget } from './agentQuestions'
 export { launchChoice, restartArgs, resumeArgs } from './agentLaunchArgs'
@@ -199,8 +200,8 @@ export class AgentRestartService {
       const foregroundPid = process?.pid ?? info.process_info.foreground_processes?.find(p => p.pid !== info.process_info.shell_pid)?.pid
       const shellPid = info.process_info.shell_pid
       if (!foregroundPid || !shellPid) { skipped.push({ paneId: a.pane_id, name: a.name || a.agent, reason: 'agent_not_ready' }); continue }
-      const args = process?.args ?? saved?.args ?? []
-      if (saved?.restoreUnavailable || sanitizeLaunchArgs(a.agent, args).unavailable) { skipped.push({ paneId: a.pane_id, name: a.name || a.agent, reason: 'restore_unavailable' }); continue }
+      const args = withoutMachinePointer(a.agent, process?.args ?? saved?.args ?? [])
+      if ((!process && saved?.restoreUnavailable) || sanitizeLaunchArgs(a.agent, args).unavailable) { skipped.push({ paneId: a.pane_id, name: a.name || a.agent, reason: 'restore_unavailable' }); continue }
       const meta = await this.transcript(a.pane_id)
       this.assertContext(context)
       const sessionId = a.agent_session?.kind === 'id' && a.agent_session.agent === a.agent ? a.agent_session.value : meta?.agent === a.agent && meta.located === 'exact' ? meta.sessionId || null : null

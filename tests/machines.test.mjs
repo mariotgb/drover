@@ -37,7 +37,7 @@ function fixture(t, options = {}) {
   }
   const provisioner = { setupBridge: async (_, __, ___, ____, step) => { await step('bridge-policy') }, installCommand: async ctx => { calls.push({ context: ctx }); return 'fake install command' }, switchBridge: async (_, __, targets) => ({ updated: targets.filter(t => t.os === 'linux').map(t => t.id), needsReinstall: targets.filter(t => t.os !== 'linux').map(t => t.id) }), revokeBridgeKey: async () => {}, removeTargets: async () => {}, revokeInstallers: async bridge => { calls.push({ revokeInstallers: bridge?.id ?? null }) }, retireBridge: async bridge => { calls.push({ retireBridge: bridge.id }) }, ...options.provisioner }
   const { provisioner: override, ...settings } = options
-  const service = new m.MachinesService({ home, userData, run, tcp: async () => { if (tcpFailure) throw tcpFailure; return 9 }, changed: s => events.push(s), provisioner: Object.hasOwn(options, 'provisioner') && override === undefined ? undefined : provisioner, confirmInclude: async () => confirmed, ...settings })
+  const service = new m.MachinesService({ home, userData, run, scanBackoffMs: 10, tcp: async () => { if (tcpFailure) throw tcpFailure; return 9 }, changed: s => events.push(s), provisioner: Object.hasOwn(options, 'provisioner') && override === undefined ? undefined : provisioner, confirmInclude: async () => confirmed, ...settings })
   t.after(() => { service.dispose(); rmSync(dir, { recursive: true, force: true }) })
   const direct = async name => service.add({ kind: 'direct', name, host: '203.0.113.5', port: 22, user: 'root' })
   const connect = async machine => service.installKey(machine.id, { password: 'temporary-password', acceptedFingerprint: m.fingerprint(hostKey) })
@@ -1090,7 +1090,7 @@ test('helper connect and connect-all: role gate, one native dialog with host-key
   assert.equal((await helper.dispatch(request('connect',[fresh.id]))).state,'connected')
   assert.match(dialogs.at(-1),/requests connect using your existing SSH login[\s\S]*new-host/)
   assert.equal((await installed()).includes(fresh.id),false)
-  assert.match(m.machineGuide([], '/x'),/`connect <id>` and `connect-all`/)
+  assert.match(m.machineGuide([], '/x'),/`connect <id>`.*`connect-all`.*`set-address <id> <json>`/)
 })
 
 test('the Main boss counts as a machine configuration lead', async t => {
@@ -1271,6 +1271,105 @@ test('helper Connect rechecks live project scope and usage after approval and ri
  }
 })
 
+test('helper connect results carry a clear per-machine reason built from codes, never SSH output', async t => {
+  const f=fixture(t),base=f.service.run
+  const hosts={'203.0.113.5':'refused-box','203.0.113.6':'closed-box','203.0.113.7':'far-box','203.0.113.8':'unknown-box','203.0.113.9':'changed-box','203.0.113.10':'ok-box'}
+  const ids={}
+  for (const [host,name] of Object.entries(hosts)) ids[name]=(await f.service.add({kind:'direct',name,host,port:22,user:'root'})).id
+  writeFileSync(join(f.service.root,'known_hosts'),Object.keys(hosts).filter(h=>h!=='203.0.113.8').map(h=>`[${h}]:22 ssh-ed25519 ${blob(h==='203.0.113.9'?9:7)}`).join('\n')+'\n',{mode:0o600})
+  const loginStderr={'203.0.113.5':'root@203.0.113.5: Permission denied (publickey).','203.0.113.6':'Received disconnect from 203.0.113.6 port 22:2: Too many authentication failures\r\nDisconnected from 203.0.113.6 port 22','203.0.113.7':'ssh: connect to host 203.0.113.7 port 22: No route to host'}
+  f.service.run=async(file,args,opts)=>file==='ssh'&&args.at(-1)==='true'&&loginStderr[args.at(-2)]?{code:255,stdout:'',stderr:loginStderr[args.at(-2)]}:base(file,args,opts)
+  const agent={pane_id:'w1:p1',terminal_id:'t',agent:'claude',name:'drover-lead',cwd:'/fixture',agent_session:{value:'s'}},dialogs=[]
+  const helper=new m.MachineHelper({root:f.service.root,runtime:process.execPath,session:()=> 'fixture',service:f.service,agent:async()=>agent,role:async()=>'lead',writable:()=>true,confirm:async d=>{dialogs.push(d);return true}})
+  await helper.start();t.after(()=>helper.dispose())
+  const token=JSON.parse(readFileSync(join(f.service.root,'helper/runtime.json'),'utf8')).token
+  const request=(action,args)=>({token,session:'fixture',paneId:'w1:p1',action,args})
+  const results=await helper.dispatch(request('connect-all',[])),by=Object.fromEntries(results.map(r=>[r.name,r]))
+  assert.equal(dialogs.length,1);assert.ok(dialogs[0].includes(`Machine ${ids['changed-box']}: HOST KEY CHANGED — blocked`))
+  assert.equal(by['ok-box'].state,'connected');assert.equal(by['ok-box'].reason,'connected')
+  assert.equal(by['refused-box'].state,'login_required');assert.match(by['refused-box'].reason,/^login refused \(auth_failed\): .*authorized_keys.*Connect in Drover to pick a key/)
+  assert.match(by['closed-box'].reason,/^login refused \(auth_failed\)/)
+  assert.equal(by['far-box'].state,'failed');assert.match(by['far-box'].reason,/^network unreachable \(host_unreachable\)/)
+  assert.equal(by['unknown-box'].state,'host_key_confirmation');assert.match(by['unknown-box'].reason,/^host key unknown \(SHA256:\S+\): .*confirm it in Drover's Machines screen/)
+  assert.equal(by['changed-box'].state,'failed');assert.match(by['changed-box'].reason,/^host key changed: stop/)
+  for (const r of results) { assert.doesNotMatch(r.reason,/port 22|Received disconnect|203\.0\.113/); assert.equal(r.machineId,ids[r.name]) }
+  // Single connect returns one explained result.
+  const single=await helper.dispatch(request('connect',[ids['refused-box']]))
+  assert.equal(single.name,'refused-box');assert.match(single.reason,/^login refused/)
+  // The CLI prints the reason per failing machine.
+  assert.match(readFileSync(join(f.service.root,'helper/cli.cjs'),'utf8'),/console\.error\(\(r\.name\|\|r\.machineId\)\+': '\+r\.reason\)/)
+})
+
+test('sshError separates an unknown host key from a changed one and maps closed logins; connectReason covers every class', () => {
+  assert.equal(m.sshError('No ED25519 host key is known for [203.0.113.5]:22 and you have requested strict checking.\r\nHost key verification failed.').code,'host_key_unknown')
+  assert.equal(m.sshError('@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.').code,'host_key_changed')
+  assert.equal(m.sshError('Host key verification failed.').code,'host_key_changed')
+  assert.equal(m.sshError('Received disconnect from h port 22:2: Too many authentication failures').code,'auth_failed')
+  assert.equal(m.sshError('Connection closed by 203.0.113.5 port 22').code,'connection_closed')
+  assert.equal(m.sshError('ssh: connect to host h port 22: Network is unreachable').code,'host_unreachable')
+  const id='x'
+  assert.match(m.connectReason({machineId:id,state:'failed',error:{code:'host_key_unknown'}}),/^host key unknown:/)
+  assert.match(m.connectReason({machineId:id,state:'failed',error:{code:'connection_closed'}}),/^login refused \(connection_closed\)/)
+  assert.match(m.connectReason({machineId:id,state:'login_required'}),/^login refused:/)
+  for (const code of ['timeout','refused','dns']) assert.match(m.connectReason({machineId:id,state:'failed',error:{code}}),new RegExp(`^network unreachable \\(${code}\\)`))
+  assert.equal(m.connectReason({machineId:id,state:'failed',error:{code:'weird',detail:'/Users/secret/path'}}),'failed (weird): ask the user to open the machine in Drover')
+})
+
+// Fake OpenSSH 9.8+ sshd with PerSourcePenalties: after `limit` unauthenticated connections
+// (keyscan, password-method probe, bare TCP probe) it drops this computer right after accept.
+function penalizingServer(f, limit) {
+  const base=f.service.run,tcp=f.service.tcp,server={preauth:0,keyscans:0,passwordProbes:0,blocked:false}
+  const count=()=>{server.preauth++;if(server.preauth>limit)server.blocked=true}
+  f.service.run=async(file,args,opts)=>{
+    if(file==='ssh-keyscan'){server.keyscans++;count();if(server.blocked)return{code:1,stdout:'',stderr:''}}
+    if(file==='ssh'&&args.includes('PreferredAuthentications=none')){server.passwordProbes++;count()}
+    if(file==='ssh'&&!args.includes('-G')&&server.blocked)return{code:255,stdout:'',stderr:'Connection closed by 203.0.113.5 port 22'}
+    return base(file,args,opts)
+  }
+  f.service.tcp=async(...a)=>{count();return tcp(...a)}
+  return server
+}
+test('one-click and helper Connect stay far below an sshd penalty threshold (one keyscan per check, no password probe)', async t => {
+  const {f}=trustedFixture(t),machine=await f.direct('pve')
+  const server=penalizingServer(f,6)
+  const result=await f.service.connectTrusted(machine.id,{confirmed:true})
+  assert.equal(result.state,'connected')
+  assert.equal(server.passwordProbes,0)
+  assert.ok(server.keyscans<=2,`one-click used ${server.keyscans} keyscans`)
+  // Helper path: prepare before the dialog, one fresh check after approval, one after login.
+  const {f:g}=trustedFixture(t),other=await g.direct('pve2'),s2=penalizingServer(g,6)
+  const helper=new m.MachineHelper({root:g.service.root,runtime:process.execPath,session:()=> 'fixture',service:g.service,agent:async()=>({pane_id:'w1:p1',terminal_id:'t',agent:'claude',name:'drover-lead',cwd:'/fixture',agent_session:{value:'s'}}),role:async()=> 'lead',writable:()=>true,confirm:async()=>true})
+  await helper.start();t.after(()=>helper.dispose())
+  const token=JSON.parse(readFileSync(join(g.service.root,'helper/runtime.json'),'utf8')).token
+  const r=await helper.dispatch({token,session:'fixture',paneId:'w1:p1',action:'connect',args:[other.id]})
+  assert.equal(r.state,'connected',r.reason);assert.equal(s2.blocked,false)
+  assert.ok(s2.keyscans<=3,`helper used ${s2.keyscans} keyscans`);assert.equal(s2.passwordProbes,0)
+})
+
+test('a penalising sshd yields a bounded number of retries and a clear ssh_penalty error, not "unreachable"', async t => {
+  const {f}=trustedFixture(t,{scanBackoffMs:1}),machine=await f.direct('pve')
+  const server=penalizingServer(f,0)
+  await assert.rejects(f.service.probeHostKey('203.0.113.5',22),error=>error.code==='ssh_penalty'&&/temporarily|for a while/.test(error.message)&&/PerSourcePenalt/.test(error.message)&&/Wait a minute/.test(error.message))
+  assert.equal(server.keyscans,3)
+  const keyscans=server.keyscans
+  const result=await f.service.connectTrusted(machine.id,{confirmed:true})
+  assert.equal(result.state,'failed');assert.equal(result.error.code,'ssh_penalty')
+  assert.equal(server.keyscans-keyscans,3,'one bounded scan per operation, no retries per guard')
+  assert.match(m.connectReason(result),/^the server temporarily blocks this computer \(sshd penalty/)
+  // A closed port is still reported as unreachable.
+  const {f:g}=trustedFixture(t,{scanBackoffMs:1});g.service.run=async file=>file==='ssh-keyscan'?{code:1,stdout:'',stderr:'connect (`203.0.113.5:22`): Connection refused'}:{code:0,stdout:'',stderr:''}
+  g.service.tcp=async()=>{throw new m.MachinesFailure('refused','refused')}
+  await assert.rejects(g.service.probeHostKey('203.0.113.5',22),{code:'host_unreachable'})
+})
+
+test('default host-key scan back-off is exponential', async t => {
+  const {f}=trustedFixture(t,{scanBackoffMs:undefined})
+  penalizingServer(f,0)
+  const start=performance.now()
+  await assert.rejects(f.service.probeHostKey('203.0.113.5',22),{code:'ssh_penalty'})
+  assert.ok(performance.now()-start>=2400,'500 ms then 2000 ms between the three attempts')
+})
+
 test('helper connect and connect-all render the exact prepared plan after a candidates refresh', async t => {
  for (const action of ['connect','connect-all']) {
   const {f,known}=trustedFixture(t),machine=await f.direct('old-label'),newKey=`[198.51.100.77]:22 ssh-ed25519 ${blob(8)}`
@@ -1296,4 +1395,104 @@ test('helper connect and connect-all render the exact prepared plan after a cand
   assert.equal(install.args[install.args.indexOf('-l')+1],'otherlogin')
   assert.equal(install.args.at(-2),'198.51.100.77')
  }
+})
+
+test('route address change keeps installed grant, isolates endpoint pins, validates input and allows explicit repair',async t=>{
+ const f=fixture(t),machine=await f.direct('move-address');await f.connect(machine)
+ const oldPins=readFileSync(f.service.knownHosts,'utf8'),newAddress={host:'203.0.113.54',port:2222,user:'drover'}
+ f.scan=`[203.0.113.54]:2222 ssh-ed25519 ${blob(8)}`
+ await assert.rejects(f.service.setRouteAddress(machine.id,'internet',newAddress,{confirmed:false}),{code:'confirmation_required'})
+ for(const address of [{...newAddress,host:'bad host'},{...newAddress,port:0},{...newAddress,user:'-oBad'}])await assert.rejects(f.service.setRouteAddress(machine.id,'internet',address,{confirmed:true}))
+ const moved=await f.service.setRouteAddress(machine.id,'internet',newAddress,{confirmed:true})
+ assert.equal(moved.host,newAddress.host);assert.equal(moved.routes[0].host,newAddress.host);assert.equal(moved.status.error.code,'host_key_unconfirmed')
+ assert.equal(readFileSync(f.service.knownHosts,'utf8'),oldPins);assert.ok(f.service.data.installed.includes(machine.id))
+ assert.equal(moved.hostKeyPinnedAt,undefined)
+ const probe=await f.service.probeHostKey(newAddress.host,newAddress.port,newAddress.user);assert.equal(probe.known,false)
+ f.authFailure='Permission denied (publickey).'
+ const rejected=await f.service.installKey(machine.id,{acceptedFingerprint:probe.fingerprint,useExistingLogin:true}).catch(e=>e)
+ assert.equal(rejected.code,'auth_failed');assert.ok(f.service.data.installed.includes(machine.id))
+ const checked=await f.service.check(machine.id);assert.equal(checked.status.error.code,'auth_failed');assert.ok(checked.nextActions.includes('install_key'))
+ f.authFailure='';assert.equal((await f.service.connectTrusted(machine.id,{confirmed:true})).state,'connected')
+ assert.ok(f.calls.some(c=>c.input?.includes('drover-agents')&&c.args.includes(newAddress.host)&&c.args.includes(newAddress.user)))
+ // An existing pin at exactly the new endpoint must never be overwritten, even with a supplied fingerprint.
+ writeFileSync(f.service.knownHosts,oldPins+`[203.0.113.55]:22 ssh-ed25519 ${blob(9)}\n`)
+ f.scan=`[203.0.113.55]:22 ssh-ed25519 ${blob(8)}`
+ const mismatch=await f.service.setRouteAddress(machine.id,'internet',{host:'203.0.113.55',port:22,user:'drover'},{confirmed:true})
+ assert.equal(mismatch.status.error.code,'host_key_changed')
+ await assert.rejects(f.service.installKey(machine.id,{acceptedFingerprint:m.fingerprint(`[x]:22 ssh-ed25519 ${blob(8)}`),useExistingLogin:true}))
+})
+
+test('importer updates installed and uninstalled changed endpoints, preserves local edits and never writes registry',async t=>{
+ for(const installed of [false,true]){
+  const rows=[{id:'saved-move',label:'import-move',host:'10.8.0.57',port:22,user:'drover',target:'drover@10.8.0.57',session:'fixture',enabled:true}]
+  const registry={list:async()=>rows,statuses:async()=>[],add:async()=>assert.fail('No registry write'),update:async()=>assert.fail('No registry write')}
+  const f=fixture(t,{herdr:registry});let machine=(await f.service.state()).machines[0]
+  if(installed)await f.service.installKey(machine.id,{password:'synthetic',acceptedFingerprint:m.fingerprint(hostKey)})
+  const before=readFileSync(f.service.knownHosts,'utf8')
+  rows[0]={...rows[0],host:'10.8.0.54',target:'drover@10.8.0.54',user:'otherlogin'}
+  machine=(await f.service.state()).machines[0]
+  if(installed){
+   assert.equal(machine.host,'10.8.0.57');assert.equal(machine.user,'drover')
+   assert.deepEqual(machine.pendingAddressChange,{source:'herdr',kind:'lan',previous:{host:'10.8.0.57',port:22,user:'drover'},address:{host:'10.8.0.54',port:22,user:'otherlogin'}})
+   const config=readFileSync(f.service.configPath,'utf8');assert.ok(!config.includes('HostName 10.8.0.54'))
+   await f.service.check(machine.id);assert.equal(readFileSync(f.service.knownHosts,'utf8'),before)
+   machine=await f.service.setRouteAddress(machine.id,'lan',machine.pendingAddressChange.address,{confirmed:true})
+   assert.equal(machine.pendingAddressChange,undefined)
+  }
+  assert.equal(machine.host,'10.8.0.54');assert.equal(machine.user,'otherlogin');assert.equal(machine.routes[0].host,'10.8.0.54');assert.equal(machine.hostKeyPinnedAt,undefined)
+  assert.equal(readFileSync(f.service.knownHosts,'utf8'),before);assert.equal(f.service.data.installed.includes(machine.id),installed)
+  await f.service.setRouteAddress(machine.id,'lan',{host:'10.8.0.53',port:22,user:'drover'},{confirmed:true})
+  assert.equal((await f.service.state()).machines[0].host,'10.8.0.53')
+  // Host can change even if a registry uses a stable target label.
+  rows[0]={...rows[0],host:'10.8.0.52'}
+  const latest=(await f.service.state()).machines[0]
+  assert.equal(latest.host,installed?'10.8.0.53':'10.8.0.52')
+  if(installed)assert.equal(latest.pendingAddressChange.address.host,'10.8.0.52')
+ }
+})
+
+test('helper set-address binds old/new route and live caller to native confirmation',async t=>{
+ const f=fixture(t),machine=await f.direct('address-helper'),address={kind:'internet',host:'203.0.113.54',port:2222,user:'drover'}
+ let role='worker',approve=false,change=false,detail
+ const agent={pane_id:'w1:p1',terminal_id:'t',agent:'claude',name:'lead',cwd:'/fixture'}
+ const helper=new m.MachineHelper({root:f.service.root,runtime:process.execPath,session:()=> 'fixture',service:f.service,agent:async()=>agent,role:async()=>role,writable:()=>true,confirm:async text=>{detail=text;if(change)f.service.data.machines[0].user='otherlogin';return approve}})
+ await helper.start();t.after(()=>helper.dispose());const config=JSON.parse(readFileSync(join(f.service.root,'helper/runtime.json'),'utf8'))
+ const request={token:config.token,session:'fixture',paneId:agent.pane_id,action:'set-address',args:[machine.id,JSON.stringify(address)]}
+ await assert.rejects(helper.dispatch(request),{code:'role_denied'});role='lead'
+ await assert.rejects(helper.dispatch(request),{code:'confirmation_required'})
+ approve=true;change=true;await assert.rejects(helper.dispatch(request),{code:'connect_plan_changed'});f.service.data.machines[0].user='root';change=false
+ const result=await helper.dispatch(request);assert.equal(result.host,address.host)
+ assert.match(detail,/root@203\.0\.113\.5:22 -> drover@203\.0\.113\.54:2222/)
+ assert.equal(f.calls.some(c=>c.input?.includes('drover-agents')),false)
+})
+
+test('edited secondary route needs explicit Connect even when user known_hosts matches',async t=>{
+ const {f,known}=trustedFixture(t),machine=await f.direct('secondary-move');await f.connect(machine)
+ f.service.data.machines.find(m=>m.id===machine.id).routes.push({kind:'lan',host:'10.8.0.1',port:22,user:'root',state:'unknown'})
+ const next={host:'10.8.0.54',port:2222,user:'drover'},key=`[10.8.0.54]:2222 ssh-ed25519 ${blob(8)}`
+ f.scan=key;writeFileSync(known,key+'\n')
+ const moved=await f.service.setRouteAddress(machine.id,'lan',next,{confirmed:true})
+ assert.equal(moved.host,next.host);assert.equal(moved.port,next.port);assert.equal(moved.user,next.user);assert.equal(moved.activeRoute,'lan');assert.equal(moved.status.checks.auth,false)
+ assert.equal(moved.status.error.code,'host_key_unconfirmed')
+ assert.ok(!readFileSync(f.service.knownHosts,'utf8').includes(key));assert.equal(moved.hostKeyPinnedAt,undefined)
+ const checked=await f.service.check(machine.id);assert.equal(checked.status.error.code,'host_key_unconfirmed')
+ assert.ok(!readFileSync(f.service.knownHosts,'utf8').includes(key))
+ assert.equal((await f.service.connectTrusted(machine.id,{confirmed:true})).state,'connected')
+ assert.ok(readFileSync(f.service.knownHosts,'utf8').includes(key))
+ assert.equal(moved.routes.find(r=>r.kind==='internet').host,machine.host)
+})
+
+test('helper set-address only approves the address and never pins a known user key or signs in',async t=>{
+ const {f,known}=trustedFixture(t),machine=await f.direct('known-helper-move');await f.connect(machine)
+ const key=`[198.51.100.88]:22 ssh-ed25519 ${blob(8)}`,before=readFileSync(f.service.knownHosts,'utf8')
+ f.scan=key;writeFileSync(known,key+'\n');f.calls.length=0
+ const agent={pane_id:'w1:p1',terminal_id:'t',agent:'claude',name:'lead',cwd:'/fixture'}
+ let dialogs=0,detail
+ const helper=new m.MachineHelper({root:f.service.root,runtime:process.execPath,session:()=> 'fixture',service:f.service,agent:async()=>agent,role:async()=> 'lead',writable:()=>true,confirm:async text=>{dialogs++;detail=text;return true}})
+ await helper.start();t.after(()=>helper.dispose());const config=JSON.parse(readFileSync(join(f.service.root,'helper/runtime.json'),'utf8'))
+ const result=await helper.dispatch({token:config.token,session:'fixture',paneId:agent.pane_id,action:'set-address',args:[machine.id,JSON.stringify({kind:'internet',host:'198.51.100.88',port:22,user:'root'})]})
+ assert.equal(dialogs,1);assert.match(detail,/normal SSH host-key confirmation before login/)
+ assert.equal(result.status.error.code,'host_key_unconfirmed');assert.equal(result.status.checks.auth,false)
+ assert.equal(readFileSync(f.service.knownHosts,'utf8'),before)
+ assert.equal(f.calls.some(c=>c.file==='ssh'),false)
 })

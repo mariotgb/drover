@@ -195,3 +195,28 @@ test('switch keeps successful repoints when old cleanup fails and retirement nev
   assert.equal(decode(calls.at(-1)[2]).data.action, 'retire')
   await p.dispose()
 })
+
+test('Linux installer dependency bootstrap works as root without sudo and tolerates broken apt indexes', () => {
+ const source=readFileSync('remote/machines/install-unix.sh','utf8')
+ const bootstrap=source.slice(source.indexOf('if [ "$OS" = linux ]; then'),source.indexOf('work=$(mktemp -d)'))
+ const run=(present)=>execFileSync('/bin/bash',['-c',`set -euo pipefail
+ OS=linux
+ command() { if [ "$1" = -v ]; then case "$2" in ${present.map(x=>x).join('|')}) return 0;; *) return 1;; esac; else builtin command "$@"; fi; }
+ apt-get() { printf 'APT %s\\n' "$*"; [ "$1" != update ]; }
+ ${bootstrap}
+ echo BOOTSTRAP_READY`],{encoding:'utf8'})
+ assert.equal(run(['systemctl','python3','ssh','sshd','visudo','curl']), 'BOOTSTRAP_READY\n')
+ const output=run(['systemctl','ssh','sshd','visudo','curl','apt-get'])
+ assert.match(output,/APT update -qq/);assert.match(output,/APT install -y python3\nBOOTSTRAP_READY/)
+ assert.doesNotMatch(output,/install -y.*sudo/)
+})
+
+test('Unix capability command executes bash directly as root and sudo only as a non-root caller',async t=>{
+ const p=m.createMachineProvisioner({run:async()=>({code:0,stdout:'',stderr:''})});t.after(()=>p.dispose())
+ const command=await p.installCommand(context(),'linux')
+ const tail=command.slice(command.indexOf(' | ')+3)
+ for(const uid of ['0','1000']){
+  const output=execFileSync('/bin/bash',['-c',`id() { echo ${uid}; }; /bin/true; sudo() { echo SUDO; cat >/dev/null; }; ${tail.replace('/bin/bash;','echo ROOT; cat >/dev/null;')}`],{input:'synthetic',encoding:'utf8'})
+  assert.equal(output,uid==='0'?'ROOT\n':'SUDO\n')
+ }
+})

@@ -9,6 +9,8 @@ export type MachineState = 'online' | 'offline' | 'checking' | 'waiting' | 'unkn
 export interface MachineError { code: string; detail?: string }
 export type MachineRouteKind = 'lan' | 'internet' | 'bridge'
 export interface MachineRoute {
+  /** Address changed: trust must be bound to this endpoint, never the old tunnel pin. */
+  hostKeyReset?: boolean
   kind: MachineRouteKind
   address?: string
   host?: string
@@ -57,6 +59,9 @@ export interface Machine {
   herdrId?: string
   herdrLabel?: string
   herdrTarget?: string
+  /** Last observed registry endpoint; local edits survive unchanged registry refreshes. */
+  herdrAddress?: string
+  pendingAddressChange?: { source: 'herdr'; kind: MachineRouteKind; previous: MachineRouteAddress; address: MachineRouteAddress }
   herdrSession?: string
   herdrSynced?: boolean
   herdrSyncError?: MachineError
@@ -134,6 +139,7 @@ export interface DirectDraft { kind: 'direct'; name: string; host: string; port:
 export interface BridgedDraft { kind: 'bridged'; name: string; os: MachineOs }
 export interface RoutedMachineDraft { name: string; firstRoute: MachineRouteKind; host?: string; port?: number; user?: string; os?: MachineOs; alsoBridge?: boolean }
 export type MachineDraft = DirectDraft | BridgedDraft | RoutedMachineDraft
+export interface MachineRouteAddress { host: string; port: number; user: string }
 export interface AddMachineRoute { kind: MachineRouteKind; host?: string; port?: number; acceptedFingerprint?: string; os?: MachineOs }
 export interface MachineKeyInstallOptions { password?: string; keyPath?: string; acceptedFingerprint: string; useExistingLogin?: boolean }
 export interface MachinePhone { id: string; name: string; lastSeenAt: number; online: boolean; kind?: RemoteDeviceKind }
@@ -154,6 +160,7 @@ export interface MachinesApi {
   openHerdrAgent(machineId: string, paneId: string): Promise<void>
   rename(id: string, name: string, options: MachineConfirmationOptions): Promise<void>
   setPurpose(id: string, purpose: string): Promise<void>
+  setRouteAddress(id: string, kind: MachineRouteKind, address: MachineRouteAddress, options: MachineConfirmationOptions): Promise<Machine>
   addRoute(id: string, route: AddMachineRoute, options: MachineConfirmationOptions): Promise<HostKey | InstallCommand>
   removeRoute(id: string, kind: MachineRouteKind, options: MachineConfirmationOptions): Promise<void>
   syncHerdr(options: MachineConfirmationOptions): Promise<void>
