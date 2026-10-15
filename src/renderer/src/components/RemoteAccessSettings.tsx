@@ -6,6 +6,7 @@ import { api, errorText } from '../api'
 import { locale, t } from '../i18n'
 import { toast } from '../store'
 import { Spinner } from './primitives'
+import { DeviceIcon, deviceKind } from '../devices'
 
 export function RemoteAccessSettings() {
   const [status, setStatus] = useState<RemoteStatus | null>(null)
@@ -85,7 +86,7 @@ export function RemoteAccessSettings() {
       </>}
       <div className="remote-devices-heading"><h3>{t('Paired devices')}</h3><button type="button" className="btn" disabled={busy} aria-label={t('Refresh')} onClick={() => void run(load)}><RefreshCw size={16} /></button></div>
       {!devices.length && <p className="setting-hint">{t('No paired devices yet')}</p>}
-      {devices.map((device) => <div className="remote-device" key={device.id}><Smartphone size={18} /><div><strong>{device.name}</strong><span>{t('Last used: {date}', { date: new Date(device.lastUsedAt).toLocaleString(locale()) })}</span></div><button type="button" className="btn" disabled={busy} onClick={() => void run(async () => { await api.revokeRemoteDevice!(device.id); setDevices(await api.remoteDevices!()) })}>{t('Revoke')}</button></div>)}
+      {devices.map((device) => <div className="remote-device" key={device.id}><DeviceIcon kind={deviceKind(device)} size={18} /><div><strong>{device.name}</strong><span>{t('Last used: {date}', { date: new Date(device.lastUsedAt).toLocaleString(locale()) })}</span></div><button type="button" className="btn" disabled={busy} onClick={() => void run(async () => { await api.revokeRemoteDevice!(device.id); setDevices(await api.remoteDevices!()) })}>{t('Revoke')}</button></div>)}
     </>}
     {error && <p role="alert" className="remote-auth-error">{error}</p>}
   </div>

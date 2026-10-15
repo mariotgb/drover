@@ -10,6 +10,7 @@ import { resolve, join } from 'node:path'
 const temp = mkdtempSync(join(tmpdir(), 'drover-office-test-'))
 const out = join(temp, 'office.cjs')
 await build({ stdin: { contents: `
+ export { AgentQuestions } from './src/main/agentQuestions'
  export { OfficeCollector } from './src/main/office/collector'
  export { officeProjects } from './src/main/office/projects'
  export { sendPrompt } from './src/main/actions'
@@ -669,4 +670,56 @@ test('every chunk of an atomic office history replacement is baseline, not a fre
  assert.ok(observed.length>=3);assert.ok(observed.every(u=>u.reset))
  appendFileSync(file,user('fresh','new live input'));await manager.subs.get('p').officeTailer.sync()
  assert.equal(observed.at(-1).reset,false)
+})
+
+
+test('agent-record-only kind and session retain a real agent seat and role binding', async t => {
+ const s=setup(t)
+ s.panes[0].agent=null; s.panes[0].agent_session=null
+ s.snapshot.agents[0].agent='gemini'; s.snapshot.agents[0].agent_session={value:'record-session'}
+ s.office.init(); await drain()
+ const first=s.office.getState().agents.find(a=>a.paneId==='w1:p1')
+ assert.equal(first.kind,'gemini'); assert.equal(first.name,'lead')
+ assert.equal(s.office.getState().seats.find(seat=>seat.paneId==='w1:p1').terminal,false)
+ s.office.bindRole('w1:p1',{id:'fixture',name:'lead',label:'DevOps',kind:'gemini',args:'',instructions:'',source:'custom',role:'devops'})
+ const bound=s.office.getState().agents.find(a=>a.paneId==='w1:p1')
+ assert.equal(bound.id,first.id); assert.equal(bound.roleSource,'binding')
+})
+
+test('question decoration-only changes and restore readiness feed Office statuses without a new raw snapshot', async t => {
+ const s=setup(t); let time=0
+ const text='Do you trust this folder?\n1. Yes, I trust this folder\n2. No\nEnter to confirm'
+ const service={snapshot:s.snapshot,sessionName:'isolated-fixture',connectionGeneration:1,client:{request:async method=>method==='session.snapshot'?{snapshot:s.snapshot}:{read:{text,revision:s.panes[0].revision}}}}
+ const questions=new m.AgentQuestions(service,()=>time)
+ s.source.snapshot=()=>questions.decorate(s.snapshot)
+ questions.on('changed',()=>s.office.onSnapshot(s.source.snapshot()))
+ s.office.init(); await drain()
+ assert.equal(s.office.getState().agents.find(a=>a.paneId==='w1:p1').status,'working')
+ await questions.poll(); time=6000; await questions.poll(); s.office.flush()
+ assert.equal(s.office.getState().agents.find(a=>a.paneId==='w1:p1').status,'blocked')
+ assert.ok(s.updates.some(u=>u.delta?.agents.some(a=>a.status==='blocked')))
+ s.panes[1].agent_status='unknown'; s.snapshot.agents[1].agent_status='unknown'
+ questions.beginRestore([{paneId:'w1:p2',kind:'codex',sessionId:'synthetic-2'}])
+ assert.equal(s.source.snapshot().panes[1].restore_state,'starting')
+ s.panes[1].revision++; s.snapshot.agents[1].revision=s.panes[1].revision
+ s.panes[1].agent_status='working'; s.snapshot.agents[1].agent_status='working'
+ s.office.onSnapshot(s.source.snapshot())
+ assert.equal(s.source.snapshot().panes[1].restore_state,undefined)
+ assert.equal(s.office.getState().agents.find(a=>a.paneId==='w1:p2').status,'working')
+})
+
+test('Office devices and remote agents appear in initial state and infrastructure deltas with safe metadata', t => {
+ const s=setup(t); s.office.init()
+ const machine={id:'machine',name:'Build',alias:'drover-build',status:{state:'online'}}
+ const rows=[{id:'remote',droverMachineId:'machine',session:'test',workspaces:[{agents:[{paneId:'p',name:'worker',agent:'gemini',status:'unknown',cwd:'/secret'}]}]}]
+ s.office.onInfrastructure([machine],[{id:'d',name:'Tablet',lastSeenAt:3,online:true,kind:'tablet',credential:'PRIVATE'}],rows)
+ s.office.flush()
+ const state=s.office.getState()
+ assert.deepEqual(state.externalNodes[0].devices,[{id:'d',name:'Tablet',lastSeenAt:3,online:true,kind:'tablet'}])
+ assert.deepEqual(state.externalNodes[0].phones,state.externalNodes[0].devices)
+ assert.equal(state.externalNodes[1].remoteAgents[0].kind,'gemini')
+ assert.ok(s.updates.at(-1).delta.externalNodes)
+ assert.doesNotMatch(JSON.stringify(state),/PRIVATE|secret/)
+ s.office.onInfrastructure([machine],[{id:'legacy',name:'Browser',lastSeenAt:1,online:false}],rows)
+ assert.equal(s.office.getState().externalNodes[0].devices[0].kind,'other')
 })

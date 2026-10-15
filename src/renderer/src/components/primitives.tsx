@@ -21,6 +21,8 @@ export function StatusDot({ status, size = 8, title }: { status: AgentStatus; si
       className={clsx('status-dot', `status-${status}`)}
       style={{ width: size, height: size }}
       title={title ?? statusLabel(status)}
+      role="img"
+      aria-label={title ?? statusLabel(status)}
     />
   )
 }

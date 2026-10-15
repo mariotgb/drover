@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import {
-  DEFAULT_PUSH_PREFERENCES, REMOTE_SESSION_DAYS, type RemoteDevice,
+  DEFAULT_PUSH_PREFERENCES, REMOTE_SESSION_DAYS, type RemoteDevice, type RemoteDeviceKind,
   type RemotePushPreferences, type RemotePushStatus, type RemotePushSubscription
 } from '@shared/remote'
 import { hashSecret, newSecret, RemoteFailure } from './security'
@@ -77,28 +77,35 @@ export class RemoteAuthStore {
     this.poisoned = false
   }
   devices(): RemoteDevice[] {
-    return this.data.devices.map(({ id, name, createdAt, lastUsedAt }) => ({ id, name, createdAt, lastUsedAt }))
+    return this.data.devices.map(({ id, name, createdAt, lastUsedAt, kind }) => ({ id, name, createdAt, lastUsedAt, kind: kind && ['phone', 'tablet', 'desktop', 'other'].includes(kind) ? kind : 'other' }))
   }
   credentials(rpID: string): StoredDevice[] { return this.data.devices.filter((d) => d.rpID === rpID) }
   credential(id: string, rpID: string): StoredDevice | undefined {
     return this.data.devices.find((d) => d.credential.id === id && d.rpID === rpID)
   }
-  addDevice(input: Pick<StoredDevice, 'name' | 'rpID' | 'userID' | 'credential'>): StoredDevice {
+  addDevice(input: Pick<StoredDevice, 'name' | 'rpID' | 'userID' | 'credential'> & { kind?: RemoteDeviceKind }): StoredDevice {
     if (this.credential(input.credential.id, input.rpID)) throw new RemoteFailure('duplicate_credential', 'Passkey already registered')
     const device = { ...input, id: randomUUID(), createdAt: this.now(), lastUsedAt: this.now() }
     this.data.devices.push(device)
     this.save()
     return device
   }
-  updateCredential(id: string, counter: number): StoredDevice {
+  updateCredential(id: string, counter: number, kind?: RemoteDeviceKind): StoredDevice {
     const device = this.data.devices.find((d) => d.id === id)
     if (!device) throw new RemoteFailure('unauthorized', 'Device was revoked', 401)
     // Concurrent verification must not decrease an already advanced counter.
     if (device.credential.counter > 0 && counter <= device.credential.counter) throw new RemoteFailure('invalid_authentication', 'Stale signature counter', 403)
+    if (kind) device.kind = kind
     device.credential.counter = counter
     device.lastUsedAt = this.now()
     this.save()
     return device
+  }
+  recordDeviceKind(id: string, kind: RemoteDeviceKind): void {
+    const device = this.data.devices.find(d => d.id === id)
+    if (!device || device.kind === kind) return
+    device.kind = kind
+    this.save()
   }
   issueSession(deviceId: string, origin: string): { token: string; expiresAt: number } {
     if (!this.data.devices.some((d) => d.id === deviceId)) throw new RemoteFailure('unauthorized', 'Device was revoked', 401)

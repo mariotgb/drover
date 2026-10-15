@@ -8,6 +8,8 @@ import { MachinesFailure } from './ssh'
  */
 export function registerMachinesIpc(ipc: Pick<IpcMain, 'handle'>, service: MachinesService, allowed: (event: IpcMainInvokeEvent) => boolean, keyPicker?: { home: string; open: (options: OpenDialogOptions) => Promise<OpenDialogReturnValue> }): void {
   const handlers: Record<string, (...args: any[]) => unknown> = { // eslint-disable-line @typescript-eslint/no-explicit-any
+    'machines:connect-trusted': (id, options) => service.connectTrusted(id, options),
+    'machines:connect-all': options => service.connectAll(options),
     'machines:state': () => service.state(),
     'machines:herdr-machines': () => service.herdrMachines(),
     'machines:start-herdr-agent': options => service.startHerdrAgent(options),
@@ -21,6 +23,7 @@ export function registerMachinesIpc(ipc: Pick<IpcMain, 'handle'>, service: Machi
     'machines:phones': () => service.phones(),
     'machines:move-phone': (id, options) => service.movePhoneToBridge(id, options),
     'machines:set-enabled': (id, enabled, options) => service.setEnabled(id, enabled, options),
+    'machines:set-usage': (id, usage, options) => service.setUsage(id, usage, options),
     'machines:enable-bridge-route': (id, os, options) => service.enableBridgeRoute(id, os, options),
     'machines:recommend-method': answer => service.recommendMethod(answer),
     'machines:project-policy': cwd => service.projectMachinePolicy(cwd),

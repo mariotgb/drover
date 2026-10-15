@@ -278,7 +278,7 @@ test('host-key probe discovers server password policy without offering any crede
     } })
     const probe = await f.service.probeHostKey(host, port)
     assert.equal(probe.passwordAllowed, expected); assert.equal(probe.known, false)
-    const auth = f.calls.find(c => c.file === 'ssh')
+    const auth = f.calls.find(c => c.file === 'ssh' && !c.args.includes('-G'))
     for (const option of ['PreferredAuthentications=none', 'PubkeyAuthentication=no', 'IdentityAgent=none', 'IdentityFile=none', 'BatchMode=yes', 'StrictHostKeyChecking=yes']) assert.ok(auth.args.includes(option), option)
     assert.ok(!auth.args.includes('-i')); assert.ok(!auth.env.SSH_ASKPASS)
     assert.equal(existsSync(auth.args.find(a => a.startsWith('UserKnownHostsFile=')).slice('UserKnownHostsFile='.length)), false)
@@ -296,8 +296,8 @@ test('password probe follows the supplied login and rejects malformed users befo
   } })
   assert.equal((await f.service.probeHostKey(host, port, 'root')).passwordAllowed, false)
   assert.equal((await f.service.probeHostKey(host, port, 'admin')).passwordAllowed, true)
-  assert.deepEqual(f.calls.filter(c => c.file === 'ssh').map(c => c.args[c.args.indexOf('-l') + 1]), ['root', 'admin'])
-  for (const command of f.calls.filter(c => c.file === 'ssh')) {
+  assert.deepEqual(f.calls.filter(c => c.file === 'ssh' && !c.args.includes('-G')).map(c => c.args[c.args.indexOf('-l') + 1]), ['root', 'admin'])
+  for (const command of f.calls.filter(c => c.file === 'ssh' && !c.args.includes('-G'))) {
     for (const option of ['PreferredAuthentications=none', 'PubkeyAuthentication=no', 'IdentityAgent=none', 'IdentityFile=none', 'PasswordAuthentication=no', 'KbdInteractiveAuthentication=no']) assert.ok(command.args.includes(option))
     assert.equal(command.input, undefined)
   }
@@ -754,4 +754,51 @@ test('bridge can explicitly connect agents as root while preserving tunnel users
   assert.doesNotMatch(readFileSync(f.service.configPath,'utf8'),/Host drover-bridge\n/)
   assert.match(readFileSync(guide+'.ssh_config','utf8'),/Host drover-bridge\n/)
   assert.deepEqual(JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8')).bridgeConnections,before.bridgeConnections)
+})
+
+
+test('Forget connected adopted bridge durably removes agents and management grants after offline retry while preserving foreign root keys and tunnel', async t => {
+ let rootHome, mutate=false, offline=false
+ const f=fixture(t,{overrideRun:async(file,args,options)=>{
+  if (file!=='ssh') return
+  if (offline) return {code:255,stdout:'',stderr:'Connection timed out'}
+  if (mutate && options.input?.includes('auth="$HOME/.ssh/authorized_keys"')) {execFileSync('/bin/sh',['-s'],{input:options.input,env:{PATH:'/usr/bin:/bin',HOME:rootHome}});return ok('')}
+ }})
+ rootHome=join(f.home,'root-grants');mkdirSync(join(rootHome,'.ssh'),{recursive:true})
+ const foreign=`# exact foreign\nrestrict ${key(44)} original-admin\n${key(45)} foreign\n`,auth=join(rootHome,'.ssh/authorized_keys');writeFileSync(auth,foreign)
+ const adopted=await f.service.adoptExistingBridge({acceptedFingerprint:m.fingerprint(hostKey)})
+ const before=JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8')),plist=readFileSync(f.plist,'utf8')
+ mutate=true
+ await f.service.installKey(adopted.machineId,{keyPath:f.adminPath,acceptedFingerprint:m.fingerprint(hostKey)})
+ assert.match(readFileSync(auth,'utf8'),/drover-agents/)
+ offline=true
+ await assert.rejects(f.service.remove(adopted.machineId,{confirmed:true}))
+ const pending=JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8'))
+ assert.ok(pending.credentialRemovals[adopted.machineId]);assert.equal(pending.agentsInstallations[adopted.machineId].state,'installed')
+ assert.equal(pending.machines.length,1);assert.deepEqual(pending.bridgeConnections,before.bridgeConnections)
+ const restarted=new m.MachinesService({home:f.home,userData:f.userData,run:f.run,tcp:async()=>1,periodMs:3600000});t.after(()=>restarted.dispose())
+ await restarted.state();offline=false
+ await restarted.remove(adopted.machineId,{confirmed:true})
+ assert.equal(readFileSync(auth,'utf8'),foreign);assert.equal(readFileSync(f.plist,'utf8'),plist)
+ assert.equal(readFileSync(f.adminPath,'utf8'),'DO NOT READ ADMIN SECRET')
+ const removed=JSON.parse(readFileSync(join(f.userData,'machines.json'),'utf8'));assert.equal(removed.machines.length,0)
+ assert.equal(removed.agentsInstallations[adopted.machineId],undefined);assert.equal(removed.credentialRemovals[adopted.machineId],undefined)
+ assert.ok(!f.calls.some(c=>c.args?.[0]==='bootstrap'||c.args?.[0]==='bootout'))
+})
+
+test('legacy admin-only installed bridge migrates to explicit Connect, while marked agents installations survive restart', async t => {
+ const f=fixture(t),adopted=await f.service.adoptExistingBridge({acceptedFingerprint:m.fingerprint(hostKey)})
+ const file=join(f.userData,'machines.json'),raw=JSON.parse(readFileSync(file,'utf8'))
+ raw.installed=[adopted.machineId];raw.bridgeConnections[adopted.machineId].adminManaged=true
+ delete raw.agentsInstallations;writeFileSync(file,JSON.stringify(raw))
+ const restarted=new m.MachinesService({home:f.home,userData:f.userData,run:f.run,tcp:async()=>1,periodMs:3600000});t.after(()=>restarted.dispose())
+ let state=await restarted.state();assert.equal(state.machines[0].status.error.code,'key_not_installed')
+ assert.doesNotMatch(readFileSync(restarted.configPath,'utf8'),/Host drover-bridge\n/)
+ let migrated=JSON.parse(readFileSync(file,'utf8'));assert.deepEqual(migrated.installed,[]);assert.equal(migrated.agentsInstallations[adopted.machineId].state,'legacy')
+ assert.deepEqual(migrated.bridgeConnections,raw.bridgeConnections)
+ await restarted.installKey(adopted.machineId,{keyPath:f.adminPath,acceptedFingerprint:m.fingerprint(hostKey)})
+ migrated=JSON.parse(readFileSync(file,'utf8'));assert.equal(migrated.agentsInstallations[adopted.machineId].state,'installed')
+ const again=new m.MachinesService({home:f.home,userData:f.userData,run:f.run,tcp:async()=>1,periodMs:3600000});t.after(()=>again.dispose())
+ state=await again.state();assert.notEqual(state.machines[0].status.error?.code,'key_not_installed')
+ assert.match(readFileSync(again.configPath,'utf8'),/Host drover-bridge\n/)
 })

@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 const dir = mkdtempSync(join(tmpdir(), 'drover-office-v21-'))
-await build({ stdin: { contents: ['layout', 'camera', 'scheduler', 'effects', 'engine', 'scene', 'labels', 'navigation', 'routes', 'text', 'generated-art', 'visibility', 'view-state', 'reconcile'].map(n => `export * from './src/renderer/src/office/${n}'`).join('\n') + "\nexport { OfficeArt as AtlasArt, animationFrame } from './src/renderer/src/office/art'\nexport { setLanguage } from './src/renderer/src/i18n'", resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'renderer.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent', plugins: [{ name: 'test-art', setup(b) {
+await build({ stdin: { contents: ['layout', 'camera', 'scheduler', 'effects', 'engine', 'scene', 'labels', 'navigation', 'routes', 'text', 'generated-art', 'visibility', 'view-state', 'reconcile', 'infra'].map(n => `export * from './src/renderer/src/office/${n}'`).join('\n') + "\nexport { OfficeArt as AtlasArt, animationFrame } from './src/renderer/src/office/art'\nexport { setLanguage } from './src/renderer/src/i18n'", resolveDir: resolve('.'), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'renderer.cjs'), alias: { '@shared': resolve('src/shared') }, logLevel: 'silent', plugins: [{ name: 'test-art', setup(b) {
   b.onLoad({filter:/office\/art\.ts$/}, args => {
     let source=readFileSync(args.path,'utf8');const manifests={},urls={}
     for(const theme of ['cozy','neon']) {
@@ -39,6 +39,8 @@ function host(t) {
   globalThis.window = { devicePixelRatio: 2 }; globalThis.document = { createElement: canvas, documentElement: {} }; globalThis.officeCalls = []
   return { canvas, listeners, tick(time) { const callbacks = [...pending.values()]; pending.clear(); callbacks.forEach(cb => cb(time)) }, get pending() { return pending.size }, get paints() { return paints }, get observers() { return observers } }
 }
+// Canvas paths exist in the browser; deterministic Node paint fixtures record rects only.
+globalThis.Path2D = class { rect() {} }
 globalThis.requestAnimationFrame = () => 0; globalThis.cancelAnimationFrame = () => {}; globalThis.ResizeObserver = class {}
 
 test('v2 growth matches the 1/4/8/16/30 agent reference and remains one hall', () => {
@@ -51,7 +53,7 @@ test('v2 growth matches the 1/4/8/16/30 agent reference and remains one hall', (
 test('0/20 projects and 200 agents stay inside bottom-aligned rooms with lobby, corridor and servers', () => {
   for (const n of [0,1,20]) {
     const l = new m.OfficeLayout().update(departments(n), n ? occupants(200,n) : [], false, 0, 2)
-    assert.equal(l.lots.length,n); assert.equal(l.seats.length,n ? 200 : 0); assert.ok(l.bounds.width > 0 && l.bounds.height > 0); assert.equal(l.lobby.width,192); assert.equal(l.server.width,160)
+    assert.equal(l.lots.length,n); assert.equal(l.seats.length,n ? 200 : 0); assert.ok(l.bounds.width > 0 && l.bounds.height > 0); assert.equal(l.lobby.width,192); assert.deepEqual({width:l.server.width,height:l.server.height},m.infraSize({machines:2,devices:0}))
     let right = l.lobby.x + l.lobby.width
     for (const lot of l.lots) { assert.equal(lot.x,right-16); right=lot.x+lot.width; assert.equal(lot.y+lot.height,0); for (const s of l.seats.filter(s=>s.departmentId===lot.departmentId)) { assert.ok(s.x>=lot.x && s.x+s.width<=lot.x+lot.width); assert.ok(Number.isFinite(s.anchor.y)) } }
     assert.equal(l.server.x,right-16)
@@ -240,7 +242,7 @@ test('SSH attempts stay dim/dashed and never energize equipment or move packets;
   assert.equal(officeCalls.filter(c=>c.id==='object.machine'&&c.state==='active').length,0)
   e.update({state:history,animations:[animation('machine-receipt',now,'a0','machine')]});globalThis.officeCalls=[];h.tick(80)
   assert.ok(officeCalls.some(c=>c.id==='object.machine'&&c.state==='active'))
-  assert.ok(officeCalls.some(c=>c.id==='object.rack'&&c.state==='hot'))
+  assert.equal(officeCalls.filter(c=>c.id==='object.rack'&&c.state==='hot').length,0, 'direct route receipt activates its station, not a bridge rack')
   assert.ok(officeCalls.some(c=>c.id==='effect.link.dot'&&c.state==='machine'))
   now+=4001;globalThis.officeCalls=[];h.tick(120)
   assert.equal(officeCalls.filter(c=>c.id==='object.machine'&&c.state==='active').length,0)

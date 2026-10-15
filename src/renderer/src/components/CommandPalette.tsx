@@ -41,7 +41,7 @@ export function CommandPalette() {
         title: t.name,
         sub: `${t.workspace.label} · ${t.subtitle}`,
         icon: <AgentAvatar kind={t.kind} size={20} />,
-        right: t.kind && t.status !== 'idle' && t.status !== 'unknown' ? (
+        right: t.kind && t.status !== 'idle' ? (
           <span className="palette-status">
             <StatusDot status={t.status} size={7} /> {statusLabel(t.status)}
           </span>

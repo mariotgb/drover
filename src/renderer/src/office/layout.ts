@@ -3,6 +3,7 @@ export const TILE = 16
 export const LOT_WIDTH = 224
 export const LOT_HEIGHT = 208
 export const SHRINK_DELAY = 10 * 60_000
+import { infraSize, type InfraCounts } from './infra'
 export interface Point { x: number; y: number }
 export interface Rect extends Point { width: number; height: number }
 export interface LayoutDepartment { id: string; number: number; order?: number }
@@ -37,7 +38,8 @@ export class OfficeLayout {
   private places = new Map<string, { departmentId: string; index: number }>()
   private shapes = new Map<string, { shape: HallShape; shrinking: number | null }>()
   clear() { this.places.clear(); this.shapes.clear() }
-  update(departments: LayoutDepartment[], occupants: LayoutOccupant[], repack = false, now = Date.now(), machines = 0): Layout {
+  /** `infra` sizes the machines room; a bare number counts machines only (older callers). */
+  update(departments: LayoutDepartment[], occupants: LayoutOccupant[], repack = false, now = Date.now(), infra: InfraCounts | number = 0): Layout {
     if (repack) this.clear()
     const ids = new Set(departments.map(d => d.id)), panes = new Set(occupants.map(a => a.paneId))
     for (const [id, p] of this.places) if (!panes.has(id) || !ids.has(p.departmentId) || occupants.find(a => a.paneId === id)?.departmentId !== p.departmentId) this.places.delete(id)
@@ -97,12 +99,13 @@ export class OfficeLayout {
       x += shape.width - TILE
     }
     const lobby = { x: 48, y: -208, width: 192, height: 208 }
-    const server = machines ? { x, y: -208, width: Math.max(10, 4 + machines * 3) * TILE, height: 208 } : null
+    const size = infraSize(typeof infra === 'number' ? { machines: infra, devices: 0 } : infra)
+    const server = size ? { x, y: -size.height, width: size.width, height: size.height } : null
     if (server) x += server.width - TILE
     const corridor = { x: 48, y: 0, width: x - 32, height: 80 }
     const seats = occupants.flatMap(a => { const p = this.places.get(a.paneId), lot = lots.find(l => l.departmentId === p?.departmentId); return p && lot ? [seatAt(lot, p.index, a.paneId)] : [] })
     const vacancies = lots.flatMap(l => Array.from({ length: l.shape.rows * l.shape.perRow }, (_, i) => seatAt(l, i)).filter(s => !seats.some(a => a.departmentId === s.departmentId && a.index === s.index)))
-    const top = Math.min(-208, ...lots.map(l => l.y)) - 48
+    const top = Math.min(-208, ...lots.map(l => l.y), server?.y ?? 0) - 48
     return { lots, seats, vacancies, lobby, server, corridor, bounds: { x: 0, y: top, width: x + 64, height: 168 - top } }
   }
 }

@@ -34,9 +34,10 @@ export function signedIn(m: Machine): boolean {
  * Connect an existing machine: check its server key, sign in once with a key from this computer
  * (or a one-time password), install Drover's agents key, then choose what agents may do there.
  */
-export function ConnectMachineWizard({ api, state, machineId, onClose }: { api: MachinesApi; state: MachinesState; machineId: string; onClose: () => void }) {
+export function ConnectMachineWizard({ api, state, machineId, initialStep = 1, onClose }: { api: MachinesApi; state: MachinesState; machineId: string; initialStep?: 1 | 2; onClose: () => void }) {
   const m = state.machines.find((x) => x.id === machineId) ?? null
-  const [step, setStep] = useState<Step>(1)
+  // Step 2 when the server key is already trusted and only the sign-in key is missing.
+  const [step, setStep] = useState<Step>(initialStep)
   const [hostKey, setHostKey] = useState<HostKey | null>(null)
   const [confirmed, setConfirmed] = useState(false)
   const [keys, setKeys] = useState<BridgeKeyCandidate[]>([])

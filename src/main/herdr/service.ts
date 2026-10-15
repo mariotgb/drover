@@ -97,7 +97,7 @@ export class HerdrService extends EventEmitter<Events> {
   readonly codexLaunch = new CodexLaunch(() => this.env)
 
   constructor(
-    private opts: { logDir: string; autoStartServer: () => boolean; isolatedHerdrDir?: string; machineInstructions?: (cwd: string) => Promise<string | null> }
+    private opts: { logDir: string; autoStartServer: () => boolean; isolatedHerdrDir?: string; machineInstructions?: (cwd: string, agent: { paneId: string; name?: string; kind?: string }) => Promise<string | null> }
   ) {
     super()
   }
@@ -430,7 +430,7 @@ export class HerdrService extends EventEmitter<Events> {
     if (method === 'agent.start' && this.opts.machineInstructions) {
       const pane = this.snapshot?.panes.find(p => p.pane_id === params.pane_id)
       const cwd = pane?.foreground_cwd || pane?.cwd
-      const pointer = cwd ? await this.opts.machineInstructions(cwd) : null
+      const pointer = cwd ? await this.opts.machineInstructions(cwd, { paneId: String(params.pane_id), name: typeof params.name === 'string' ? params.name : undefined, kind: typeof params.kind === 'string' ? params.kind : undefined }) : null
       if (pointer) params = { ...params, args: machineLaunchArgs(String(params.kind), Array.isArray(params.args) ? params.args as string[] : [], pointer) }
       if (client !== this.client || generation !== this.generation) throw new HerdrApiError('session_changed', 'The herdr session changed before agent launch')
     }

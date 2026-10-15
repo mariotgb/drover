@@ -1,3 +1,5 @@
+import type { RemoteDeviceKind, RemoteWebDevice } from './remote'
+
 /** Desktop-only office protocol. Board titles are the only task text; no prompts, commands or filesystem paths. */
 export const OFFICE_LIMITS = {
   historyMs: 30 * 60_000, decayMs: 5 * 60_000, maxEvents: 1000,
@@ -96,7 +98,8 @@ export interface OfficeExternalNode {
   fallback?: boolean
   routes?: { kind: 'lan' | 'internet' | 'bridge'; state: 'ok' | 'down' | 'checking' | 'setup' | 'unknown'; latencyMs?: number }[]
   /** Paired phones and remote agents are safe labels/status only, no paths or credentials. */
-  phones?: { id: string; name: string; lastSeenAt: number; online: boolean }[]
+  phones?: { id: string; name: string; lastSeenAt: number; online: boolean; kind?: RemoteDeviceKind }[]
+  devices?: RemoteWebDevice[]
   remoteAgents?: { id: string; paneId: string; name: string; kind: string; status: OfficeStatus }[]
 }
 export interface OfficeLink {

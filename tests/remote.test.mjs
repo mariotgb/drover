@@ -17,6 +17,8 @@ await build({
     export * from './src/main/remote/rpc'
     export * from './src/main/remote/security'
     export * from './src/main/remote/store'
+    export * from './src/main/remote/device-kind'
+    export * from './src/main/remote/machine-agents'
     export * from './src/main/remote/auth'
     export * from './src/main/remote/server'
     export * from './src/main/remote/push'
@@ -272,8 +274,8 @@ async function freePort() {
   await new Promise((r) => server.close(r))
   return port
 }
-function websocket(port, token, origin = `http://localhost:${port}`) {
-  return new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Host: `localhost:${port}`, ...(origin ? { Origin: origin } : {}), ...(token ? { Cookie: `drover_session=${token}` } : {}) } })
+function websocket(port, token, origin = `http://localhost:${port}`, userAgent) {
+  return new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Host: `localhost:${port}`, ...(userAgent ? {'User-Agent':userAgent} : {}), ...(origin ? { Origin: origin } : {}), ...(token ? { Cookie: `drover_session=${token}` } : {}) } })
 }
 async function rejectedUpgrade(port, token, origin) {
   const ws = websocket(port, token, origin)
@@ -300,6 +302,7 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   const token = store.issueSession(d.id, origin).token
   const handlers = new m.RpcHandlers()
   handlers.register('app:init', () => ({ greeting: 'hello' }))
+  handlers.register('machines:agents',()=>m.remoteMachineAgents([{id:'remote',label:'Build',status:{state:'online'},workspaces:[{agents:[{paneId:'p',name:'worker',agent:'gemini',status:'unknown'}]}]}]))
   handlers.register('term:open', () => ({ ok: true }))
   handlers.register('term:close', () => {})
   let settings = { ...m.DEFAULT_REMOTE_SETTINGS, remoteEnabled: true, remotePort: port }
@@ -312,7 +315,7 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   t.after(() => server.stop())
   await server.sync()
   assert.equal(server.status().running, true)
-  assert.deepEqual(server.phoneDevices(), [{ id: d.id, name: d.name, lastSeenAt: d.lastUsedAt, online: false }])
+  assert.deepEqual(server.phoneDevices(), [{ id: d.id, name: d.name, lastSeenAt: d.lastUsedAt, online: false, kind: 'other' }])
   assert.equal(server.server.address().address, '127.0.0.1')
   const request = (path, options = {}, auth = false) => new Promise((done, reject) => {
     const req = httpRequest({ hostname: '127.0.0.1', port, path, method: options.method ?? 'GET',
@@ -346,9 +349,9 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   assert.equal(await rejectedUpgrade(port, undefined, origin), 401)
   assert.equal(await rejectedUpgrade(port, token, 'https://evil.test'), 403)
   assert.equal(await rejectedUpgrade(port, token, ''), 403)
-  const a = websocket(port, token), b = websocket(port, token)
+  const a = websocket(port, token, origin, 'Mozilla iPad'), b = websocket(port, token, origin, 'Mozilla iPad')
   await Promise.all([once(a, 'open'), once(b, 'open')])
-  assert.deepEqual(server.phoneDevices(), [{ id: d.id, name: d.name, lastSeenAt: d.lastUsedAt, online: true }])
+  assert.deepEqual(server.phoneDevices(), [{ id: d.id, name: d.name, lastSeenAt: d.lastUsedAt, online: true, kind: 'tablet' }])
   t.after(() => { a.terminate(); b.terminate() })
   const received = [], otherReceived = []
   a.on('message', (data) => received.push(JSON.parse(data.toString())))
@@ -361,6 +364,9 @@ test('HTTP/WS enforce sessions, Origin and isolated terminal events; device revo
   a.send(JSON.stringify(call('init')))
   await waitFor(() => received.some((r) => r.id === '1'))
   assert.deepEqual(received.find((r) => r.id === '1').value, { greeting: 'hello' })
+  a.send(JSON.stringify(call('machineAgents', [], 'roster')))
+  await waitFor(()=>received.some(r=>r.id==='roster'))
+  assert.equal(received.find(r=>r.id==='roster').value[0].agents[0].kind,'gemini')
   a.send(JSON.stringify(call('pushStatus', [], 'push')))
   await waitFor(() => received.some((r) => r.id === 'push'))
   assert.equal(received.find((r) => r.id === 'push').value.preferences.finished, false, 'WS is bound to the cookie device')
@@ -463,4 +469,42 @@ test('phones receive board updates only for their own retained project subscript
   await wait(()=>received.some(r=>r.id==='unwatch-board'))
   server.broadcast('tasks:changed',[board]);await fence('unsubscribed')
   assert.equal(received.filter(r=>r.channel==='tasks:changed').length,1)
+})
+
+
+test('read-only machine roster RPC projects connected agents of every kind without private metadata or remote controls', async () => {
+ const handlers=new m.RpcHandlers(), connection=new m.RemoteRpcConnection('paired','device')
+ const rows=[{id:'r',label:'Build',session:'s',enabled:true,status:{state:'online'},host:'SECRET-HOST',target:'SECRET-SSH',workspaces:[{cwd:'/SECRET',agents:[{paneId:'p',agent:'gemini',name:'worker',status:'blocked',title:'SECRET-TITLE',bypass:true},{paneId:'q',agent:'codex',status:'unknown'}]}]},
+ {id:'offline',label:'No',status:{state:'offline'},workspaces:[]},{id:'disabled',enabled:false,status:{state:'online'},workspaces:[]}]
+ handlers.register('machines:agents',()=>m.remoteMachineAgents(rows))
+ const result=await m.dispatchRemoteRpc(handlers,connection,call('machineAgents'))
+ assert.equal(result.ok,true); assert.equal(result.value.length,1)
+ assert.equal(result.value[0].state,'online'); assert.deepEqual(result.value[0].agents.map(a=>[a.kind,a.status]),[['gemini','blocked'],['codex','unknown']])
+ assert.doesNotMatch(JSON.stringify(result),/SECRET|bypass|paneId|target/)
+ assert.deepEqual(result.value,m.remoteMachineAgents(rows),'stable IDs')
+ assert.equal((await m.dispatchRemoteRpc(handlers,connection,call('machineAgents',[{machineId:'r',command:'start'}]))).error.code,'invalid_args')
+ for (const method of ['startHerdrAgent','openHerdrAgent','machines:start-herdr-agent']) assert.equal((await m.dispatchRemoteRpc(handlers,connection,call(method))).error.code,'not_available_remotely')
+ connection.closed=true
+ assert.equal((await m.dispatchRemoteRpc(handlers,connection,call('machineAgents'))).error.code,'unauthorized')
+})
+
+test('browser user agent categories persist after verified registration/login without raw UA or credentials in public devices', async t => {
+ const uas=[['Mozilla iPhone Mobile','phone'],['Mozilla iPad','tablet'],['Mozilla Android Tablet','tablet'],['Mozilla Android Mobile','phone'],['Mozilla Macintosh','desktop'],['Mozilla Windows NT','desktop'],['Mozilla X11 Linux','desktop'],['unknown browser','other']]
+ for (const [ua,kind] of uas) assert.equal(m.webDeviceKind(ua),kind)
+ const file=join(temp(t),'auth.json'),store=new m.RemoteAuthStore(file)
+ const auth=new m.RemoteAuth(store,()=>m.DEFAULT_REMOTE_SETTINGS,{
+  generateRegistrationOptions:async()=>({challenge:'r'}),verifyRegistrationResponse:async()=>({verified:true,registrationInfo:{credential:{id:'synthetic',publicKey:new Uint8Array([1]),counter:0}}}),
+  generateAuthenticationOptions:async()=>({challenge:'l'}),verifyAuthenticationResponse:async()=>({verified:true,authenticationInfo:{newCounter:1}})
+ })
+ const origin='http://localhost:7780', code=auth.codes.create().code
+ const options=await auth.post(m.REMOTE_AUTH_ROUTES.registerOptions,{code},origin)
+ const registered=await auth.post(m.REMOTE_AUTH_ROUTES.registerVerify,{challengeId:options.body.challengeId,response:{}},origin,'Mozilla iPad PRIVATE-UA')
+ assert.equal(registered.body.device.kind,'tablet')
+ const login=await auth.post(m.REMOTE_AUTH_ROUTES.loginOptions,{},origin)
+ await auth.post(m.REMOTE_AUTH_ROUTES.loginVerify,{challengeId:login.body.challengeId,response:{id:'synthetic',response:{}}},origin,'Mozilla Windows NT PRIVATE-UA')
+ assert.equal(new m.RemoteAuthStore(file).devices()[0].kind,'desktop')
+ assert.doesNotMatch(JSON.stringify(store.devices()),/publicKey|credential|userID|rpID|PRIVATE-UA/)
+ assert.doesNotMatch(readFileSync(file,'utf8'),/PRIVATE-UA/)
+ const raw=JSON.parse(readFileSync(file,'utf8')); delete raw.devices[0].kind; writeFileSync(file,JSON.stringify(raw))
+ assert.equal(new m.RemoteAuthStore(file).devices()[0].kind,'other','legacy paired device')
 })

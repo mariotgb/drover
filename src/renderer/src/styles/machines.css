@@ -389,3 +389,43 @@ button.mmap-node:focus-visible .mmap-disc { outline: 2px solid var(--accent); ou
 .roles-row + .roles-row { border-top: 1px solid var(--border); }
 .roles-project { flex: none; width: 160px; font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roles-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Web drawer: agents on connected herdr machines, view only (no tap target, no menu). */
+.mw-remote-agent { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 8px 10px; border-radius: var(--radius); cursor: default; }
+.mw-remote-agent .avatar { width: 34px !important; height: 34px !important; font-size: 19px !important; border-radius: 10px; }
+.mw-remote-agent .avatar svg { width: 19px; height: 19px; }
+.mw-remote-agent .thread-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mw-remote-agent .thread-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mw-remote-agent .thread-name .name { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mw-remote-agent .thread-sub { font-size: 13px; }
+.mw-remote-agent .thread-status { width: 18px; }
+.mw-remote-badge { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--border); color: var(--text-3); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; white-space: nowrap; }
+
+/* One-click connect: a bar above the list for several machines, and one status line per card. */
+.machines-connect-all { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius); background: color-mix(in srgb, var(--blocked) 10%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blocked) 30%, transparent); font-size: 13px; color: var(--text-2); }
+.machines-connect-all > svg { flex: none; color: var(--blocked); }
+.machines-connect-all > span { flex: 1; min-width: 0; line-height: 1.4; }
+.machines-connect-all .btn { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.machine-run { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.machine-run.ok { color: var(--done); font-weight: 500; }
+.machine-run.warn { color: var(--blocked); }
+.machine-run.bad { color: var(--danger); }
+.machine-run .link-btn { font-size: 12px; }
+
+/* Machine card: who may use it. Agents grouped by project, with search. */
+.usage-agents { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; max-height: 320px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); }
+.usage-search { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 7px; background: var(--bg-active); color: var(--text-3); position: sticky; top: 0; z-index: 1; }
+.usage-search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 13px; outline: none; }
+.usage-project-name { margin: 2px 4px 4px; font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--text-3); }
+.usage-agent { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; border: 0; border-radius: 7px; background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.usage-agent:hover:not(:disabled) { background: var(--bg-hover); }
+.usage-agent:disabled { cursor: default; }
+.usage-check { flex: none; display: grid; place-items: center; width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--border-strong); color: var(--accent-text); }
+.usage-agent.on .usage-check { background: var(--accent); border-color: var(--accent); }
+.usage-agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-agent-off { flex: none; font-size: 11px; color: var(--text-3); }
+.usage-modes { display: flex; flex-direction: column; gap: 2px; }
+.usage-mode { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.usage-mode.on { color: var(--text); font-weight: 500; }
+.usage-mode input { margin: 0; accent-color: var(--accent); }
+.usage-agents { align-self: stretch; width: 100%; box-sizing: border-box; }

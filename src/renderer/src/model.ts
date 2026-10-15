@@ -180,6 +180,8 @@ export function statusLabel(s: AgentStatus): string {
       return t('Done')
     case 'idle':
       return t('Idle')
+    case 'unknown':
+      return t('Unknown status')
     default:
       return ''
   }

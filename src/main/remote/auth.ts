@@ -1,3 +1,4 @@
+import { webDeviceKind } from './device-kind'
 import { randomBytes, randomUUID } from 'node:crypto'
 import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
@@ -36,7 +37,7 @@ export class RemoteAuth {
       throw new RemoteFailure('invalid_challenge', 'Remote access configuration changed', 403)
     }
   }
-  async post(path: string, body: Record<string, unknown>, origin: string): Promise<AuthResult> {
+  async post(path: string, body: Record<string, unknown>, origin: string, userAgent?: string): Promise<AuthResult> {
     const identity = remoteIdentity(this.settings())
     // Local WS access is permitted, but passkeys belong to the configured RP/origin.
     if (origin !== identity.origin) throw new RemoteFailure('invalid_origin', 'Authenticate at the configured public address', 403)
@@ -87,7 +88,7 @@ export class RemoteAuth {
       // Atomic, after cryptographic verification: concurrent uses cannot register two phones.
       this.codes.consume(challenge.codeHash!)
       deviceId = this.store.addDevice({
-        name: challenge.name!, userID: challenge.userID!, rpID: challenge.rpID,
+        name: challenge.name!, kind: webDeviceKind(userAgent), userID: challenge.userID!, rpID: challenge.rpID,
         credential: { id: credential.id, publicKey: Buffer.from(credential.publicKey).toString('base64url'), counter: credential.counter, transports: credential.transports }
       }).id
     } else if (path === REMOTE_AUTH_ROUTES.loginVerify && challenge.kind === 'login') {
@@ -102,7 +103,7 @@ export class RemoteAuth {
       }).catch(() => { throw new RemoteFailure('invalid_authentication', 'Passkey verification failed', 403) })
       this.ensureCurrent(challenge)
       if (!verification.verified) throw new RemoteFailure('invalid_authentication', 'Passkey verification failed', 403)
-      deviceId = this.store.updateCredential(device.id, verification.authenticationInfo.newCounter).id
+      deviceId = this.store.updateCredential(device.id, verification.authenticationInfo.newCounter, webDeviceKind(userAgent)).id
     } else throw new RemoteFailure('invalid_challenge', 'Wrong challenge type', 403)
     const session = this.store.issueSession(deviceId, origin)
     return { body: { ok: true, device: this.store.devices().find((d) => d.id === deviceId) }, cookie: sessionCookie(session.token, identity.secure) }

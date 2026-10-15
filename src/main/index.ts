@@ -1,3 +1,4 @@
+import { remoteMachineAgents } from './remote/machine-agents'
 import {
   app,
   BrowserWindow,
@@ -113,10 +114,12 @@ const service: HerdrService = new HerdrService({
   logDir: join(userData, 'logs'),
   isolatedHerdrDir: process.env.DROVER_USER_DATA ? join(userData, 'herdr') : undefined,
   autoStartServer: () => settings.get().autoStartServer,
-  machineInstructions: async cwd => {
-    const pointer = await machines.agentInstructions(cwd)
+  machineInstructions: async (cwd, launch) => {
+    // Same role resolution as the helper (the Main boss counts as lead); name + cwd identify the agent.
+    const role = await office.configurationRole({ pane_id: launch.paneId, name: launch.name ?? '', agent: launch.kind ?? '', cwd } as import('@shared/types').AgentInfo).catch(() => null)
+    const pointer = await machines.agentInstructions(cwd, { name: launch.name, role })
     const helper = await machineHelper.start()
-    return `${pointer ?? ''}\nMachine configuration requests use ${machineQuote(helper)}; Drover checks your project role and asks the desktop user for confirmation.`
+    return `${pointer ?? ''} Machine configuration requests use ${machineQuote(helper)}; Drover checks your project role and asks the desktop user for confirmation.`
   }
 })
 const serverWatchdog = new ServerWatchdog(join(userData, 'logs'), (event, details) => lifecycle.record(event, details))
@@ -149,6 +152,7 @@ function updateInfrastructure(): void { office.onInfrastructure(infrastructureMa
 const machines: MachinesService = new MachinesService({
   userData, home: machinesHome,
   herdr: machineRegistry,
+  connectProgress: progress => { if (win && !win.isDestroyed()) win.webContents.send('machines:connect-progress', progress) },
   phones: () => remote?.phoneDevices() ?? [],
   herdrChanged: rows => { infrastructureHerdr = rows; if (win && !win.isDestroyed()) win.webContents.send('machines:herdr-changed', rows); updateInfrastructure() },
   openHerdr: async profile => {
@@ -192,7 +196,7 @@ const machineHelper = new MachineHelper({ root: machines.root, runtime: process.
   session: () => service.sessionName, writable: () => !READONLY && !!win && !win.isDestroyed(),
   agent: async paneId => { try { return (await service.request<{ agent: import('@shared/types').AgentInfo }>('agent.get', { target: paneId })).agent } catch { return null } },
   role: agent => office.configurationRole(agent),
-  confirm: async detail => !!win && !win.isDestroyed() && (await dialog.showMessageBox(win, { type: 'warning', message: 'Allow this agent to configure a machine?', detail, buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1 })).response === 0
+  confirm: async detail => !!win && !win.isDestroyed() && (await dialog.showMessageBox(win, { type: 'warning', message: 'Allow a machine change?', detail, buttons: ['Allow', 'Cancel'], defaultId: 1, cancelId: 1 })).response === 0
 })
 settings.onSaveError((error) => {
   void remote?.persistenceFailed(error)
@@ -230,7 +234,7 @@ const agentRestart = new AgentRestartService(service, userData, async (paneId) =
 }, (paneId, launch) => boss.recordRestart(paneId, launch), () => !READONLY, targets => agentQuestions.beginRestore(targets))
 const decoratedSnapshot = () => agentQuestions.decorate(agentRestart.decorate(service.snapshot))
 agentQuestions.on('changed', () => {
-  send('herdr:snapshot', agentRestart.decorate(agentQuestions.snapshot()))
+  publishSnapshot(agentRestart.decorate(agentQuestions.snapshot()))
   updateBadge()
 })
 agentQuestions.on('attention', change => service.emit('status-change', change))
@@ -240,7 +244,7 @@ const boards = new TaskBoards((b: TaskBoard) => send('tasks:changed', b),
   (b, write) => office.onBoard(b, write))
 const office = new OfficeCollector({
   session: () => service.sessionName,
-  snapshot: () => service.snapshot,
+  snapshot: decoratedSnapshot,
   settings: () => settings.get(),
   isBoss: (paneId) => boss.isBoss(paneId),
   confirmedPrompt: (from, to, text) => boss.observeConfirmedReply(from, to, text),
@@ -253,6 +257,10 @@ const office = new OfficeCollector({
   // Explicitly local: never call send(), which also broadcasts to phones.
   if (win && !win.isDestroyed()) win.webContents.send('office:update', update)
 })
+function publishSnapshot(snapshot = decoratedSnapshot()): void {
+  send('herdr:snapshot', snapshot)
+  office.onSnapshot(snapshot)
+}
 // An isolated development profile must also isolate HQ's writable roster/board.
 const boss = new BossService(service, BossSettingsStore.at(userData, process.env.DROVER_USER_DATA ? userData : homedir()),
   () => settings.get().projectLeads,
@@ -285,9 +293,8 @@ service.on('connection', (c) => {
 })
 service.on('snapshot', (s) => {
   boss.onChange()
-  send('herdr:snapshot', agentQuestions.decorate(agentRestart.decorate(s)))
+  publishSnapshot(agentQuestions.decorate(agentRestart.decorate(s)))
   void agentQuestions.poll().catch(() => {})
-  office.onSnapshot(s)
   transcripts.onSnapshot(s)
   updateBadge()
 })
@@ -471,6 +478,7 @@ function readonlyBlocked(method: string): boolean {
 
 function registerIpc() {
   handle('machines:status', () => machines.status())
+  handle('machines:agents', () => remoteMachineAgents(infrastructureHerdr))
   registerMachinesIpc(ipcMain, machines, event => !READONLY && !!win && !win.isDestroyed() && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame, { home: homedir(), open: options => dialog.showOpenDialog(win!, options) })
   ipcMain.handle('codex:integration-status', () => codexIntegration.status())
   ipcMain.handle('codex:integration-install', () => {
@@ -647,7 +655,7 @@ function registerIpc() {
     if (req.folder) settings.addRecentFolder(req.folder)
     const result = await createAgent(service, req)
     if (result.ok && result.paneId) {
-      if (service.snapshot) send('herdr:snapshot', decoratedSnapshot())
+      if (service.snapshot) publishSnapshot()
     }
     if (result.ok && result.paneId && validOfficeRoleId(req.roleId)) {
       const cwd = service.snapshot?.panes.find(p => p.pane_id === result.paneId)?.cwd || req.folder
@@ -662,13 +670,13 @@ function registerIpc() {
   handle('agent:restart-plan', async (ctx, selection: RestartSelection) => {
     if (READONLY || ctx.remote) throw new HerdrApiError('not_available_remotely', 'Agent restart is desktop-only')
     const plan = await agentRestart.plan(selection)
-    send('herdr:snapshot', decoratedSnapshot())
+    publishSnapshot()
     return plan
   })
   handle('agent:restart', async (ctx, token: string) => {
     if (READONLY || ctx.remote) throw new HerdrApiError('not_available_remotely', 'Agent restart is desktop-only')
     const result = await agentRestart.execute(token)
-    send('herdr:snapshot', decoratedSnapshot())
+    publishSnapshot()
     return result
   })
 

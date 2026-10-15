@@ -301,3 +301,6 @@ li.office-agent { cursor: default; }
 .office-v2[data-office-theme] .office-tooltip { background: var(--o-bg); color: var(--o-text); border: 2px solid var(--o-edge); box-shadow: 0 2px 0 var(--o-drop), var(--o-shadow); }
 .office-v2[data-office-theme='neon'] .office-tooltip, .office-v2[data-office-theme='neon'] .office-stale, .office-v2[data-office-theme='neon'] .office-empty { border: 1px solid rgba(94, 242, 255, .35); background: rgba(9, 13, 22, .92); color: #dffbff; box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
 @media (prefers-reduced-motion: reduce) { .office-v2[data-office-theme] .office-waiting { animation: none; } }
+/* Agents on herdr machines: view-only rows, no hover affordance. */
+.office-v2[data-office-theme] .office-remote .office-member-select { cursor: default; }
+.office-v2[data-office-theme] .office-team-machine .office-team-dept span:last-child { display: inline-flex; align-items: center; gap: 3px; }

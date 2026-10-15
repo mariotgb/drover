@@ -142,15 +142,22 @@ export class OfficeCollector {
       purpose: m.purpose ? clean(m.purpose) : undefined, state: m.status.state === 'online' ? 'online' : m.status.state === 'offline' ? 'offline' : 'unknown',
       activeRoute: m.activeRoute, fallback: m.fallback, routes: m.routes?.map(r => ({ kind: r.kind, state: r.state, latencyMs: r.latencyMs })),
       remoteAgents: herdrRows.filter(row => row.droverMachineId === m.id).flatMap(row => row.workspaces.flatMap(w => w.agents.map(a => ({ id: digest(`${row.id}:${row.session}:${a.paneId}`), paneId: a.paneId, name: clean(a.name || a.agent), kind: a.agent, status: a.status })))) })
-    nodes[0].phones = phones.map(p => ({ ...p, name: clean(p.name) }))
+    const devices = phones.map(p => ({ id: p.id, name: clean(p.name), lastSeenAt: p.lastSeenAt, online: p.online,
+      kind: p.kind && ['phone', 'tablet', 'desktop', 'other'].includes(p.kind) ? p.kind : 'other' as const }))
+    nodes[0].devices = devices
+    nodes[0].phones = structuredClone(devices)
     this.infrastructure = nodes; this.state.externalNodes = structuredClone(nodes); this.dirty = true
   }
   bindRole(paneId: string, template: RoleTemplate): void {
-    const pane = this.sources.snapshot()?.panes.find(p => p.pane_id === paneId)
-    if (!pane?.agent) return
+    const snapshot = this.sources.snapshot()
+    const pane = snapshot?.panes.find(p => p.pane_id === paneId)
+    const record = snapshot?.agents.find(a => a.pane_id === paneId)
+    const kind = (pane?.agent || record?.agent)?.toLowerCase()
+    const exact = pane?.agent_session?.value || record?.agent_session?.value
+    if (!pane || !kind) return
     let incarnation = this.incarnations.get(paneId)
-    if (!incarnation || incarnation.kind !== pane.agent || (pane.agent_session?.value && incarnation.token !== pane.agent_session.value)) {
-      incarnation = { token: pane.agent_session?.value || randomUUID(), kind: pane.agent }
+    if (!incarnation || incarnation.kind !== kind || (exact && incarnation.token !== exact)) {
+      incarnation = { token: exact || randomUUID(), kind }
       this.incarnations.set(paneId, incarnation)
     }
     if (incarnation) this.roleBindings.set(incarnation.token, { token: incarnation.token, role: roleOf(template) })
@@ -196,18 +203,20 @@ export class OfficeCollector {
             this.state.seats.push(seat)
           }
         }
-        seat.paneId = pane.pane_id; seat.terminal = !pane.agent
-        if (!pane.agent) { seat.agentId = null; this.incarnations.delete(pane.pane_id); continue }
-        const kind = pane.agent.toLowerCase()
+        const record = snapshot.agents.find(a => a.pane_id === pane.pane_id)
+        const agentKind = pane.agent || record?.agent
+        seat.paneId = pane.pane_id; seat.terminal = !agentKind
+        if (!agentKind) { seat.agentId = null; this.incarnations.delete(pane.pane_id); continue }
+        const kind = agentKind.toLowerCase()
         let inc = this.incarnations.get(pane.pane_id)
-        const exact = pane.agent_session?.value
+        const exact = pane.agent_session?.value || record?.agent_session?.value
         if (!inc || inc.kind !== kind || (exact && inc.token !== exact)) {
           inc = { token: exact || randomUUID(), kind }; this.incarnations.set(pane.pane_id, inc)
         }
         const incarnation = digest(inc.token)
         const id = `${this.state.session}:agent:${kind}:${incarnation}`
         const old = previous.get(id)
-        const candidate = snapshot.agents.find(a=>a.pane_id === pane.pane_id)?.name || pane.label
+        const candidate = record?.name || pane.label
         const name = candidate && AGENT_NAME_RE.test(candidate) ? candidate : kind
         const [role, roleSource] = this.role(inc.token, name, cwd || '')
         const same = old?.id === id

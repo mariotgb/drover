@@ -2,6 +2,7 @@ import type { OfficeArt } from './art'
 import type { OfficeArtManifestV2, RGB } from './assets/v2/manifest'
 import type { Layout, Rect } from './layout'
 import { officeText } from './text'
+import { t } from '../i18n'
 // @ts-expect-error Shared with the offline art generator.
 import { Pix } from '../../../../scripts/office-art/canvas.mjs'
 // @ts-expect-error Shared with the offline art generator.
@@ -46,7 +47,7 @@ export function atlasScene(art: OfficeArt, layout: Layout, names: Map<string, st
   // Project importance (0.7.2): rank badge at the sign, banner + mat at the corridor door, dimmed background halls.
   const IMP = (M.compositions as unknown as { importance?: ImportanceArt }).importance
   const levelOf = (r: object): ProjectImportance => ('departmentId' in r && importance?.get(r.departmentId as string)) || 'normal'
-  const rooms = [...(!layout.isolated ? [{ ...layout.lobby, kind: 'lobby', name: officeText('Reception') }] : []), ...layout.lots.map(l => ({ ...l, kind: l.boss ? 'boss' : 'hall', name: names.get(l.departmentId) ?? '' })), ...(layout.server ? [{ ...layout.server, kind: 'server', name: officeText('Server room') }] : [])]
+  const rooms = [...(!layout.isolated ? [{ ...layout.lobby, kind: 'lobby', name: officeText('Reception') }] : []), ...layout.lots.map(l => ({ ...l, kind: l.boss ? 'boss' : 'hall', name: names.get(l.departmentId) ?? '' })), ...(layout.server ? [{ ...layout.server, kind: 'server', name: t('Infrastructure') }] : [])]
   if (!front) {
     for (let y = b.y; y < b.y + b.height; y += 16) for (let x = b.x; x < b.x + b.width; x += 16) tile(`tile.ground.${Math.abs(x / 16 * 7 + y / 16 * 3) % 4}`, x, y)
     for (let y = b.y + 40; y < 0; y += 48) for (let x = b.x + 24; x < b.x + b.width; x += 48) {

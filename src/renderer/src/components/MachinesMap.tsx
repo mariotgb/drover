@@ -2,19 +2,20 @@ import { useEffect, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { Cable, House, Monitor, Server, Smartphone } from 'lucide-react'
 import { t } from '../i18n'
-import { pendingConnect, pendingConnectLabel } from '../machines'
+import { isTurnedOff, pendingConnect, pendingConnectLabel } from '../machines'
 import { activeRoute, hasRoute, routeName, routesOf, purposeOf, type RouteKind } from '../machineRoutes'
 import type { Machine, MachinesApi, MachinesState } from '../machines'
 import type { MachinePhone } from '@shared/machines'
+import { DeviceIcon, deviceKind, deviceKindName } from '../devices'
 
 const W = 1000
 const KEY = 'drover.machines.map'
 
 type Tone = 'ok' | 'warn' | 'bad' | 'off'
-interface Node { id: string; x: number; y: number; icon: ReactNode; name: string; sub: string; tone: Tone; kind: 'me' | 'bridge' | 'phone' | 'machine' | 'ghost'; machineId?: string }
+interface Node { id: string; x: number; y: number; icon: ReactNode; name: string; sub: string; tone: Tone; kind: 'me' | 'bridge' | 'phone' | 'machine' | 'ghost'; machineId?: string; title?: string }
 interface Edge { from: string; to: string; route: RouteKind | 'standby' | 'down'; label?: string }
 
-const toneOf = (m: Machine): Tone => { const pending = pendingConnect(m.status); return pending ? (pending === 'reachable' ? 'warn' : 'off') : stateTone(m) }
+const toneOf = (m: Machine): Tone => { if (isTurnedOff(m)) return 'off'; const pending = pendingConnect(m.status); return pending ? (pending === 'reachable' ? 'warn' : 'off') : stateTone(m) }
 const stateTone = (m: Machine): Tone => m.status.state === 'online' ? 'ok' : m.status.state === 'offline' ? 'bad' : m.status.state === 'unknown' ? 'off' : 'warn'
 
 function usePhones(api: MachinesApi): MachinePhone[] {
@@ -48,7 +49,7 @@ export function MachinesMap({ api, state, onOpen }: { api: MachinesApi; state: M
   const direct = others.filter((m) => !viaBridge.includes(m))
   const nodes: Node[] = []
   const edges: Edge[] = []
-  const top = phones.length ? 56 + phones.length * 84 + 20 : 150
+  const top = phones.length ? 56 + phones.length * 100 + 20 : 150
   const directTop = Math.max(top + 40, 200)
   const H = Math.max(280, top + viaBridge.length * 96 + 30, directTop + direct.length * 96 - 10)
   nodes.push({ id: 'me', x: 110, y: H / 2, icon: <Monitor size={20} />, name: t('This computer'), sub: '', tone: 'ok', kind: 'me' })
@@ -58,7 +59,8 @@ export function MachinesMap({ api, state, onOpen }: { api: MachinesApi; state: M
   }
   phones.forEach((p, i) => {
     const id = `phone:${p.id}`
-    nodes.push({ id, x: 880, y: 56 + i * 84, icon: <Smartphone size={20} />, name: p.name || t('Device'), sub: p.online ? t('online') : t('offline'), tone: p.online ? 'ok' : 'off', kind: 'phone' })
+    const kind = deviceKind(p)
+    nodes.push({ id, x: 880, y: 56 + i * 100, icon: <DeviceIcon kind={kind} />, name: p.name || deviceKindName(kind), sub: p.online ? t('online') : t('offline'), title: `${deviceKindName(kind)} · ${p.name || deviceKindName(kind)}`, tone: p.online ? 'ok' : 'off', kind: 'phone' })
     if (bridge) edges.push({ from: bridge.id, to: id, route: 'bridge' })
   })
   const place = (m: Machine): [number, number] => {
@@ -71,9 +73,10 @@ export function MachinesMap({ api, state, onOpen }: { api: MachinesApi; state: M
     const pending = pendingConnect(m.status)
     const active = pending ? null : activeRoute(m)
     const first = routesOf(m)[0]?.kind
-    const sub = pending ? [purposeOf(m), pendingConnectLabel(pending)].filter(Boolean).join(' · ') : purposeOf(m) || (active ? routeName(active) : t('not answering'))
+    const off = isTurnedOff(m)
+    const sub = off ? [purposeOf(m), t('Turned off')].filter(Boolean).join(' · ') : pending ? [purposeOf(m), pendingConnectLabel(pending)].filter(Boolean).join(' · ') : purposeOf(m) || (active ? routeName(active) : t('not answering'))
     nodes.push({ id: m.id, x, y, icon: first === 'internet' ? <Server size={20} /> : <House size={20} />, name: m.name, sub, tone: toneOf(m), kind: 'machine', machineId: m.id })
-    if (pending) edges.push({ from: 'me', to: m.id, route: 'standby' })
+    if (pending || off) edges.push({ from: 'me', to: m.id, route: 'standby' })
     else if (active === 'bridge' && bridge) edges.push({ from: bridge.id, to: m.id, route: 'bridge' })
     else if (active) edges.push({ from: 'me', to: m.id, route: active })
     // Not connected yet (listed, e.g. from herdr) is not broken: a quiet line until the user connects it.
@@ -96,7 +99,7 @@ export function MachinesMap({ api, state, onOpen }: { api: MachinesApi; state: M
         const style = { left: `${(n.x / W) * 100}%`, top: n.y }
         return n.machineId
           ? <button key={n.id} type="button" className={clsx('mmap-node', `k-${n.kind}`)} style={style} onClick={() => onOpen(n.machineId!)} title={t('Open {name}', { name: n.name })}>{body}</button>
-          : <div key={n.id} className={clsx('mmap-node', `k-${n.kind}`)} style={style}>{body}</div>
+          : <div key={n.id} className={clsx('mmap-node', `k-${n.kind}`)} style={style} title={n.title}>{body}</div>
       })}
     </div>
   )

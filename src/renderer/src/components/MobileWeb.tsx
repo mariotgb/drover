@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactNode, type TouchEvent } from 'react'
-import { MobileMachinesAlert } from './MobileMachines'
+import { MobileMachineAgents, MobileMachinesAlert } from './MobileMachines'
 import clsx from 'clsx'
 import { Bell, Brain, FolderClosed, Globe, ListChecks, Menu as MenuIcon, MoreHorizontal, Pencil, Search, Settings, Square, SquareTerminal, Trash2, X } from 'lucide-react'
 import { agentKindDef } from '@shared/agents'
@@ -186,7 +186,7 @@ function ChatHeader({ thread }: { thread: Thread | null }) {
         {thread ? <>
           <strong>{thread.name}</strong>
           <span className={`st-${thread.status}`}>
-            {thread.kind && thread.status !== 'unknown' && <StatusDot status={thread.status} size={7} />}
+            {thread.kind && <StatusDot status={thread.status} size={7} />}
             <span>{thread.kind ? statusLabel(thread.status) || def?.label : thread.subtitle || t('Terminal')} · {thread.workspace.label}</span>
           </span>
         </> : <strong>Drover</strong>}
@@ -331,6 +331,7 @@ function DrawerContent() {
             </div>}
           </section>
         ))}
+        {!reordering && <MobileMachineAgents query={q} />}
         {!shown.length && <p className="mw-drawer-empty">{q ? t('No results. Try another search.') : t('Open a workspace on your computer to see it here.')}</p>}
       </div>
       <MobileMachinesAlert />

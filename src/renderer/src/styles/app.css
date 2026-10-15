@@ -340,6 +340,11 @@ select {
   color: var(--blocked);
   background: color-mix(in srgb, var(--blocked) 16%, transparent);
 }
+.pill-unknown {
+  color: var(--text-3);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
 .pill-failed {
   color: var(--danger);
   background: var(--danger-soft);
@@ -457,8 +462,22 @@ select {
 .status-dot.status-idle {
   background: var(--idle);
 }
+/* Unknown: a hollow ring with a bar, so it never reads as "idle" or as a missing dot. */
 .status-dot.status-unknown {
-  border: 1.5px solid var(--text-4);
+  position: relative;
+  border: 1.5px solid var(--text-3);
+  background: transparent;
+}
+.status-dot.status-unknown::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 60%;
+  height: 1.5px;
+  border-radius: 1px;
+  background: var(--text-3);
+  transform: translate(-50%, -50%);
 }
 @keyframes pulse {
   50% {

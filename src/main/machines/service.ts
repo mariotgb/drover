@@ -5,10 +5,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { BridgeAdoptOptions, BridgeProgress, BridgeRepairOptions, BridgeScratchOptions, BridgeSetupReport, BridgeStepId, ExistingBridge, HostKey, InstallCommand, Machine, MachineConfirmationOptions, MachineDraft, MachineOs, MachinePermissions, MachinesState, MachinesStatus, SessionCleanupReason, SessionCleanupReport, SessionCleanupResult, HerdrMachine, HerdrSavedMachine, StartHerdrAgentRequest, MachineMethodAnswer, MachineMethodRecommendation, ProjectMachinePolicy } from '@shared/machines'
-import { MachinesStore, publicAddress, validHost, validPort, validateDraft, validatePermissions, type StoredMachines } from './store'
+import { MachinesStore, publicAddress, validHost, validPort, validateDraft, validatePermissions, validUsage, type StoredMachines } from './store'
 import { fingerprint, MachinesFailure, privateDirectory, privateRead, privateWrite, quote, runCommand, sshError, tcpProbe, withAskpass, type CommandResult, type CommandRunner } from './ssh'
 import { adminKeyInstallScript, keyInstallScript, removeKeyScript, windowsKeyScript } from './permissions'
-import { projectMachineInstructions, writeAwareness } from './awareness'
+import { machineInProject, machineUsable, projectMachineInstructions, writeAwareness, type MachineAgent } from './awareness'
 import { bridgeTunnelUser, createMachineProvisioner, macTunnelAsset, type BridgeOptions, type BridgeTarget, type ExistingBridgeReport, type InstallContext, type InstallerReport, type LegacyBridge } from './provision'
 import { BridgeCleanupQueue } from './cleanup'
 import { sessionCleanupScript } from './sessions'
@@ -16,7 +16,7 @@ import { bridgeKeyPath, detectLocalBridge, keyExists, publicExistingBridge, type
 import type { HerdrMachineRegistry } from './herdr'
 import { recommendMachineMethod, machineNextActions } from './recommend'
 import { orderedRoutes, validateRoute } from './routes'
-import type { AddMachineRoute, BridgeKeyCandidate, DirectDraft, BridgedDraft, MachineKeyInstallOptions, MachinePhone, MachineRoute, MachineRouteKind } from '@shared/machines'
+import type { MachineUsage, MachineConnectResult, MachineConnectProgress, AddMachineRoute, BridgeKeyCandidate, DirectDraft, BridgedDraft, MachineKeyInstallOptions, MachinePhone, MachineRoute, MachineRouteKind } from '@shared/machines'
 import { adminKeyCandidates } from './existing-bridge'
 import { linuxTunnelAsset, phoneKeyGrantScript } from './provision'
 
@@ -32,6 +32,10 @@ export interface MachineProvisioner {
   verifyExistingBridge?(machine: Machine, legacy: LegacyBridge): Promise<ExistingBridgeReport>
   setupScratchBridge?(machine: Machine, keys: { tunnel: string; agents: string; management: string }, options: BridgeOptions, onStep: (step: BridgeStepId, state: 'running' | 'done' | 'skipped') => Promise<void>): Promise<void>
   repairBridge?(machine: Machine, targets: Machine[], agentsPublicKey: string, options: BridgeOptions, onStep: (step: string) => Promise<void>): Promise<void>
+}
+export interface ApprovedMachineConnect {
+  readonly machineId: string; readonly name: string; readonly host: string; readonly port: number; readonly user: string
+  readonly tuple: string; readonly hostKey: Readonly<HostKey>
 }
 export interface MachinesOptions {
   userData: string
@@ -49,6 +53,9 @@ export interface MachinesOptions {
   lanHost?: string
   remoteSettings?: () => { remotePublicUrl?: string; remotePort?: number }
   bridgeAdmin?: () => BridgeAdmin | undefined
+  connectProgress?: (progress: MachineConnectProgress) => void
+  /** Public host trust files used by the saved herdr profile, never private identities. */
+  herdrKnownHosts?: (machine: Machine) => Promise<string[]>
   bridgeProgress?: (progress: BridgeProgress) => void
   configurePhone?: (publicUrl: string) => void | Promise<void>
   phoneOriginTransition?: (publicUrl: string) => Promise<(committed: boolean) => Promise<void>>
@@ -88,6 +95,8 @@ export class MachinesService {
   private readonly bridgeCleanup: BridgeCleanupQueue
   private polling = false
   private projects = new Set<string>()
+  /** Agents that got a per-agent guide; their guides are re-rendered on change. Bounded, newest last. */
+  private agentGuides = new Map<string, { cwd: string; name?: string; role?: string | null }>()
   private installerAttempts = new Map<string, symbol>()
   private herdrRows: HerdrMachine[] = []
   private herdrProfiles: HerdrSavedMachine[] = []
@@ -164,6 +173,19 @@ export class MachinesService {
   private load(): Promise<void> {
     return this.loaded ??= (async () => {
       this.data = await this.store.load()
+      // Old bridge admin bootstrap wrote installed without installing agents.
+      // Preserve potential grant ownership for cleanup, but require explicit Connect.
+      this.d.agentsInstallations ??= {}
+      let migrated = false
+      for (const machine of this.d.machines.filter(m => this.infrastructureBridge(m))) {
+        const grant = this.d.agentsInstallations[machine.id]
+        if (this.d.installed.includes(machine.id) && grant?.state !== 'installed') {
+          this.d.agentsInstallations[machine.id] ??= { version: 1, state: 'legacy', agentsPublicKeys: this.d.agentsKey ? [this.d.agentsKey.publicKey] : [] }
+          this.d.installed = this.d.installed.filter(id => id !== machine.id)
+          migrated = true
+        }
+      }
+      if (migrated) await this.store.save(this.d)
       const registry = await privateRead(join(this.root, 'projects.json'))
       if (registry) {
         try {
@@ -171,6 +193,14 @@ export class MachinesService {
           if (!Array.isArray(paths) || paths.some(p => typeof p !== 'string' || !p.startsWith('/') || /[\r\n\0]/.test(p))) throw new Error('Invalid paths')
           this.projects = new Set(paths)
         } catch { throw new MachinesFailure('store_invalid', 'The machine project registry is damaged.') }
+      }
+      const agents = await privateRead(join(this.root, 'agent-guides.json'))
+      if (agents) {
+        // Rebuildable cache: a damaged file only drops stale per-agent guides.
+        try {
+          const list = JSON.parse(agents)
+          if (Array.isArray(list)) for (const a of list) if (validGuideAgent(a)) this.agentGuides.set(guideKey(a), { cwd: a.cwd, name: a.name, role: a.role })
+        } catch { /* ignored */ }
       }
       await this.render()
       await this.bridgeCleanup.load()
@@ -202,8 +232,10 @@ export class MachinesService {
       }
       machine.origin ??= 'drover'
       machine.enabled ??= true
+      machine.usage ??= { mode: 'all', agents: [] }
       machine.route ??= machine.kind === 'bridged' && machine.bridgeMachineId ? 'bridge' : machine.host && !publicAddress(machine.host) ? 'lan' : 'direct'
-      if (this.infrastructureBridge(machine) && !this.d.installed.includes(machine.id)) machine.status.error = { code: 'key_not_installed', detail: 'The bridge is configured, but agents access has not been connected. Connect it to install the agents key for this login.' }
+      if (machine.enabled === false) machine.status = { state: 'offline', error: { code: 'machine_disabled' } }
+      else if (this.infrastructureBridge(machine) && !this.d.installed.includes(machine.id)) machine.status.error = { code: 'key_not_installed', detail: 'The bridge is configured, but agents access has not been connected. Connect it to install the agents key for this login.' }
       machine.nextActions = machineNextActions(machine)
       orderedRoutes(machine)
     }
@@ -241,7 +273,7 @@ export class MachinesService {
       if (m.origin === 'herdr' && !this.d.installed.includes(m.id) && !m.bridgeMachineId && !this.d.bridgeConnections?.[m.id]) this.d.machines = this.d.machines.filter(x => x !== m)
       else { m.herdrSynced = false; m.herdrSyncError = { code: 'herdr_machine_missing' } }
     }
-    for (const m of this.d.machines) if (m.origin === 'herdr' && !this.d.installed.includes(m.id)) await this.checkUnconnected(m)
+    for (const m of this.d.machines) if (m.origin === 'herdr' && !this.d.installed.includes(m.id) && m.enabled !== false) await this.checkUnconnected(m)
     if (before !== JSON.stringify(this.d.machines)) { await this.store.save(this.d); await this.render(); this.options.changed?.(await this.result()) }
     let statuses: Awaited<ReturnType<HerdrMachineRegistry['statuses']>> = []
     // Import is metadata-only. Do not let herdr probe a user's original SSH
@@ -347,7 +379,19 @@ export class MachinesService {
       if (typeof enabled !== 'boolean') throw new MachinesFailure('invalid_options', 'Choose enabled or disabled.')
       const m = this.machine(id)
       m.enabled = enabled
+      if (!enabled) m.status = { state: 'offline', error: { code: 'machine_disabled' } }
       if (m.herdrId && this.options.herdr) { try { await this.options.herdr.update(enabled ? 'enable' : 'disable', m.herdrId); delete m.herdrSyncError } catch (error) { m.herdrSyncError = sshError(error) } }
+      await this.changed()
+    })
+  }
+  async setUsage(id: string, usage: MachineUsage, options: MachineConfirmationOptions): Promise<void> {
+    this.requireConfirmation(options)
+    const next = validUsage(usage)
+    await this.serial(async () => {
+      this.requireConfirmation(options)
+      const m = this.machine(id)
+      if (next.mode === 'all') delete m.usage
+      else m.usage = next
       await this.changed()
     })
   }
@@ -809,6 +853,7 @@ export class MachinesService {
     if (await privateRead(this.knownHosts) === null) await privateWrite(this.knownHosts, '')
     await writeAwareness(this.options.home, this.root, this.agentMachines())
     for (const project of this.projects) await this.projectGuide(project)
+    for (const agent of this.agentGuides.values()) await this.projectGuide(agent.cwd, agent)
   }
   private async generateKey(name: string): Promise<string> {
     const path = this.keyPath(name)
@@ -901,6 +946,15 @@ export class MachinesService {
     } catch (error) { if (sshError(error).code === 'host_key_changed') throw error; return undefined }
     finally { await rm(scratch, { recursive: true, force: true }) }
   }
+  private async loginKnownHosts(host: string, port: number, user: string): Promise<string[]> {
+    // ssh -G expands the user's config (including Herdr includes) without connecting
+    // or opening any identity. Read only the resulting public known-hosts files.
+    const config = await this.run('ssh', ['-G', '-p', String(port), '-l', user, host], { env: this.env(), timeoutMs: 5000 })
+    if (config.code) return []
+    const field = config.stdout.split('\n').find(line => /^userknownhostsfile /i.test(line))
+    return (field?.slice(field.indexOf(' ') + 1).split(/\s+/) ?? []).map(path => path.replace(/^~(?=\/)/, this.options.home).replace(/%d/g, this.options.home).replace(/%h/g, host).replace(/%p/g, String(port)))
+      .filter(path => path.startsWith('/') && !/[\r\n\0%]/.test(path))
+  }
   async probeHostKey(host: string, port: number, user?: string): Promise<HostKey> {
     if (user !== undefined && (typeof user !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(user))) throw new MachinesFailure('invalid_user', 'Enter a valid administrator SSH login.')
     return this.serial(async () => {
@@ -910,19 +964,24 @@ export class MachinesService {
       validPort(port)
       const key = await this.scan(host, port, m)
       const pin = m ? this.pinName(m) : `[${host}]:${port}`
-      const managedKnown = (await privateRead(this.knownHosts) ?? '').split('\n').some(line => line.split(/\s+/)[0] === pin && fingerprint(line) === fingerprint(key))
+      const managedLines = (await privateRead(this.knownHosts) ?? '').split('\n').filter(line => line.split(/\s+/)[0] === pin)
+      const managedKnown = managedLines.some(line => fingerprint(line) === fingerprint(key))
+      if (managedLines.length && !managedKnown) throw new MachinesFailure('host_key_changed', 'The SSH host key changed from its confirmed fingerprint. Connecting is blocked.')
       let userKnown = false
       if (!m) {
-        // ssh-keygen understands hashed known_hosts. Read only this public file;
-        // unlike privateRead, never chmod or write the user's SSH files.
-        const file = join(this.options.home, '.ssh', 'known_hosts')
-        try {
-          const stat = await lstat(file)
-          if (stat.isFile() && !stat.isSymbolicLink()) for (const name of port === 22 ? [host, pin] : [pin]) {
+        const machine = this.d.machines.find(m => m.host === host && (m.port ?? 22) === port)
+        const files = [...new Set([join(this.options.home, '.ssh', 'known_hosts'), ...await this.loginKnownHosts(host, port, user ?? machine?.user ?? 'root'), ...(machine && this.options.herdrKnownHosts ? await this.options.herdrKnownHosts(machine) : [])])]
+        for (const file of files) {
+          let stat
+          try { stat = await lstat(file) } catch { continue }
+          if (!stat.isFile() || stat.isSymbolicLink()) continue
+          for (const name of port === 22 ? [host, pin] : [pin]) {
             const found = await this.run('ssh-keygen', ['-F', name, '-f', file], { env: this.env(), timeoutMs: 5000 })
-            userKnown ||= found.stdout.split('\n').some(line => !line.startsWith('#') && line.trim() && fingerprint(line) === fingerprint(key))
+            const lines = found.stdout.split('\n').filter(line => !line.startsWith('#') && line.trim())
+            if (lines.length && !lines.some(line => fingerprint(line) === fingerprint(key))) throw new MachinesFailure('host_key_changed', 'The SSH host key does not match known_hosts. Verify the server through a trusted channel; connecting is blocked.')
+            userKnown ||= lines.some(line => fingerprint(line) === fingerprint(key))
           }
-        } catch { /* No public pin available. Confirmation is still required. */ }
+        }
       }
       const known = managedKnown || userKnown
       const login = user ?? this.d.machines.find(m => m.kind === 'direct' && m.host === host && m.port === port)?.user ?? 'root'
@@ -1025,11 +1084,11 @@ export class MachinesService {
     } catch { return this.recordSessions(m, options.sessionReason, { terminated: 0, incomplete: true, error: { code: 'session_cleanup_failed', detail: 'Existing agent sessions could not be confirmed as ended. End them on the machine.' } }) }
   }
   private async stageCredentialRemoval(m: Machine): Promise<void> {
-    if (!this.d.installed.includes(m.id) && !this.d.issuedInstallers.includes(m.id) && !this.d.revocations[m.id]?.length && !this.d.credentialRemovals[m.id]) return
+    if (!this.d.bridgeConnections?.[m.id]?.adminManaged && !this.d.bridgeConnections?.[m.id]?.managed && !this.d.agentsInstallations?.[m.id] && !this.d.installed.includes(m.id) && !this.d.issuedInstallers.includes(m.id) && !this.d.revocations[m.id]?.length && !this.d.credentialRemovals[m.id]) return
     const keys = await this.ensureKeys(), previous = this.d.credentialRemovals[m.id]
     this.d.credentialRemovals[m.id] = {
-      agentsPublicKeys: [...new Set([...(previous?.agentsPublicKeys ?? []), ...(this.d.revocations[m.id] ?? []), keys.agents])],
-      managementPublicKey: previous?.managementPublicKey ?? keys.management,
+      agentsPublicKeys: [...new Set([...(previous?.agentsPublicKeys ?? []), ...(this.d.revocations[m.id] ?? []), ...(this.d.agentsInstallations?.[m.id]?.agentsPublicKeys ?? []), keys.agents])],
+      managementPublicKey: previous?.managementPublicKey ?? this.d.agentsInstallations?.[m.id]?.managementPublicKey ?? keys.management,
       ...((previous?.bridgeMachineId ?? m.bridgeMachineId) ? { bridgeMachineId: previous?.bridgeMachineId ?? m.bridgeMachineId } : {})
     }
     m.needsReinstall = true
@@ -1048,6 +1107,7 @@ export class MachinesService {
       sessions = await this.updateRemoteKey(m, key, pending.managementPublicKey, { remove: true, removeManagement: last, ...(last ? { sessionReason: 'remove' } : {}) }) ?? sessions
     }
     delete this.d.credentialRemovals[m.id]
+    delete this.d.agentsInstallations?.[m.id]
     delete this.d.revocations[m.id]
     delete this.d.keyRemovalProgress?.[m.id]
     this.d.installed = this.d.installed.filter(id => id !== m.id)
@@ -1055,9 +1115,94 @@ export class MachinesService {
     await this.store.save(this.d)
     return sessions
   }
-  async installKey(id: string, options: MachineKeyInstallOptions): Promise<Machine> {
+  private connectTuple(m: Machine): string {
+    return JSON.stringify([m.id, m.kind, m.host, m.port ?? 22, m.user, m.bridgeMachineId, m.bridgePort,
+      orderedRoutes(this.clone(m)).map(r => [r.kind, r.host, r.port, r.user, r.bridgeMachineId])])
+  }
+  async prepareConnect(id: string): Promise<ApprovedMachineConnect> {
+    const machine = await this.serial(async () => this.clone(this.machine(id)))
+    if (machine.enabled === false) throw new MachinesFailure('machine_disabled', 'Enable this machine before connecting.')
+    if (!machine.host || machine.kind !== 'direct') throw new MachinesFailure('connect_requires_installer', 'Use the machine installer to connect this route.')
+    const tuple = this.connectTuple(machine)
+    const hostKey = await this.probeHostKey(machine.host, machine.port ?? 22, machine.user)
     await this.serial(async () => {
-      try { return await this.installKeyInternal(id, options) }
+      if (this.connectTuple(this.machine(id)) !== tuple) throw new MachinesFailure('connect_plan_changed', 'The machine changed. Review Connect again.')
+    })
+    return Object.freeze({ machineId: id, name: machine.name, host: machine.host, port: machine.port ?? 22, user: machine.user, tuple, hostKey: Object.freeze({ ...hostKey }) })
+  }
+  private async validateConnect(plan: ApprovedMachineConnect, caller?: () => Promise<MachineAgent>): Promise<void> {
+    const m = this.machine(plan.machineId)
+    if (m.enabled === false || this.connectTuple(m) !== plan.tuple) throw new MachinesFailure('connect_plan_changed', 'The approved machine or route changed. Review Connect again.')
+    const key = await this.scan(plan.host, plan.port)
+    if (fingerprint(key) !== plan.hostKey.fingerprint) throw new MachinesFailure('host_key_changed', 'The server key changed after approval. Connecting is blocked.')
+    if (caller) {
+      const agent = await caller()
+      if (!machineInProject(m, agent.project) || !machineUsable(m, agent)) throw new MachinesFailure('usage_denied', 'This machine is no longer available to the requesting agent.')
+      if (!agent.role || !this.policy(agent.project).configureRoles.includes(agent.role)) throw new MachinesFailure('role_denied', 'The project machine policy changed after approval.')
+    }
+    const current = this.machine(plan.machineId)
+    if (current.enabled === false || this.connectTuple(current) !== plan.tuple) throw new MachinesFailure('connect_plan_changed', 'The approved machine changed. Review Connect again.')
+  }
+  async connectTrusted(id: string, options: MachineConfirmationOptions, approved?: ApprovedMachineConnect, caller?: () => Promise<MachineAgent>): Promise<MachineConnectResult> {
+    this.requireConfirmation(options)
+    const emit = (phase: MachineConnectProgress['phase']) => this.options.connectProgress?.({ machineId: id, phase })
+    try {
+      emit('host_key')
+      const plan = approved ?? await this.prepareConnect(id)
+      if (plan.machineId !== id) throw new MachinesFailure('connect_plan_changed', 'Review the selected machine again.')
+      const hostKey = plan.hostKey
+      if (!hostKey.known) return { machineId: id, state: 'host_key_confirmation', hostKey }
+      const guard = () => this.validateConnect(plan, caller)
+      if (await this.serial(async () => { await guard(); return this.d.installed.includes(id) })) {
+        emit('done'); return { machineId: id, state: 'connected' }
+      }
+      emit('login')
+      try {
+        await this.serial(async () => {
+          await guard()
+          const live = this.machine(id)
+          await this.pin(live, hostKey.fingerprint)
+          await guard()
+          const result = await this.run('ssh', [...this.existingLoginArgs(live), plan.host, 'true'], { env: this.env(), timeoutMs: 15000 })
+          this.requireSuccess(result)
+        })
+      } catch (error) {
+        const reason = sshError(error)
+        if (['auth_failed', 'login_key_unreadable'].includes(reason.code)) return { machineId: id, state: 'login_required', hostKey, error: reason }
+        throw error
+      }
+      emit('install')
+      const connected = await this.installKey(id, { acceptedFingerprint: hostKey.fingerprint, useExistingLogin: true }, guard)
+      emit('check')
+      if (!connected.status.checks?.auth) throw new MachinesFailure(connected.status.error?.code ?? 'auth_failed', connected.status.error?.detail ?? 'The installed agents key did not authenticate. Try again.')
+      emit('done')
+      return { machineId: id, state: 'connected' }
+    } catch (error) { emit('failed'); return { machineId: id, state: 'failed', error: sshError(error) } }
+  }
+  async connectAll(options: MachineConfirmationOptions & { machineIds: string[] }): Promise<MachineConnectResult[]> {
+    this.requireConfirmation(options)
+    if (!Array.isArray(options.machineIds) || options.machineIds.length > 1000 || options.machineIds.some(id => typeof id !== 'string' || !id || id.length > 100)) throw new MachinesFailure('invalid_options', 'Choose the machines to connect.')
+    const plans: (ApprovedMachineConnect | MachineConnectResult)[] = []
+    for (const id of new Set(options.machineIds)) {
+      try { plans.push(await this.prepareConnect(id)) }
+      catch (error) { plans.push({ machineId: id, state: 'failed', error: sshError(error) }) }
+    }
+    const results: MachineConnectResult[] = []
+    for (const plan of plans) results.push('tuple' in plan ? await this.connectTrusted(plan.machineId, options, plan) : plan)
+    return results
+  }
+  /** Machines connectAll would try (same filter), for the agent helper's confirmation dialog. */
+  async connectCandidates(): Promise<Machine[]> {
+    return this.serial(async () => this.d.machines.filter(m => m.enabled !== false && m.kind === 'direct' && m.host && !this.d.installed.includes(m.id)).map(m => this.clone(m)))
+  }
+  private existingLoginArgs(m: Machine): string[] {
+    // Keep the user's existing default identities and SSH agent for this explicit UI login.
+    // Override transport/auth safety fields; no passphrase/password dialog is allowed.
+    return ['-p', String(m.port ?? 22), '-l', m.user, '-o', `UserKnownHostsFile=${this.knownHosts}`, '-o', 'GlobalKnownHostsFile=/dev/null', '-o', `HostKeyAlias=${this.pinName(m)}`, '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes', '-o', 'PreferredAuthentications=publickey', '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no', '-o', 'ConnectTimeout=5']
+  }
+  async installKey(id: string, options: MachineKeyInstallOptions, guard?: () => Promise<void>): Promise<Machine> {
+    await this.serial(async () => {
+      try { return await this.installKeyInternal(id, options, guard) }
       catch (error) {
         const m = this.machine(id), reason = sshError(error)
         if (!this.d.installed.includes(id)) {
@@ -1091,17 +1236,29 @@ export class MachinesService {
   private async passwordKeyInstall(m: Machine, script: string, password: string): Promise<CommandResult> {
     return withAskpass(password, this.root, this.options.runtime ?? process.execPath, env => this.run('ssh', ['-F', this.controlConfig, '-o', 'BatchMode=no', '-o', 'NumberOfPasswordPrompts=1', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'PasswordAuthentication=yes', '-o', 'KbdInteractiveAuthentication=yes', `drover-management-${m.id}`, 'sh -s'], { input: script, env: { ...this.env(), ...env }, timeoutMs: 30_000 }))
   }
-  private async installKeyInternal(id: string, options: MachineKeyInstallOptions): Promise<Machine> {
+  private async installKeyInternal(id: string, options: MachineKeyInstallOptions, guard?: () => Promise<void>): Promise<Machine> {
       if (options?.keyPath !== undefined && options.password !== undefined) throw new MachinesFailure('invalid_options', 'Choose a login key or a password.')
+      await guard?.()
       const m = this.machine(id), keys = await this.ensureKeys()
       await this.pin(m, options?.acceptedFingerprint)
       await this.render()
       // Never reinstall credentials while a full removal is still pending.
+      await guard?.()
       await this.finishCredentialRemoval(m)
       if (m.kind === 'direct' || m.host) {
+        if (this.infrastructureBridge(m)) {
+          const previous = this.d.agentsInstallations?.[id]
+          this.d.agentsInstallations ??= {}
+          this.d.agentsInstallations[id] = { version: 1, state: 'pending', agentsPublicKeys: [...new Set([...(previous?.agentsPublicKeys ?? []), keys.agents])], managementPublicKey: keys.management }
+          await this.store.save(this.d) // Before remote mutation: even partial installation remains revocable.
+        }
+        await guard?.()
         const script = keyInstallScript(keys.agents, keys.management, m.permissions)
         let result: CommandResult
-        if (options.keyPath !== undefined) {
+        if (options.useExistingLogin) {
+          result = await this.run('ssh', [...this.existingLoginArgs(m), m.host!, 'sh -s'], { input: script, env: this.env(), timeoutMs: 30000 })
+          this.requireSuccess(result)
+        } else if (options.keyPath !== undefined) {
           const key = bridgeKeyPath(options.keyPath, this.options.home)
           if (!key || !await keyExists(key) || !m.host) throw new MachinesFailure('login_key_unreadable', 'Choose a readable login key from this computer.')
           result = await this.run('ssh', [...this.directSshArgs(m.host, m.port ?? 22, m.user, this.knownHosts, this.pinName(m)), '-i', key, '-o', 'PreferredAuthentications=publickey', m.host, 'sh -s'], { input: script, env: this.env(), timeoutMs: 30_000 })
@@ -1116,6 +1273,7 @@ export class MachinesService {
           this.requireSuccess(result)
         }
         if (!this.d.installed.includes(m.id)) this.d.installed.push(m.id)
+        if (this.d.agentsInstallations?.[id]) this.d.agentsInstallations[id].state = 'installed'
         m.needsReinstall = false
         await this.changed()
       }
@@ -1176,8 +1334,8 @@ export class MachinesService {
     return this.clone(m)
   }
   private async checkInternal(m: Machine): Promise<Machine> {
-    if (m.origin === 'herdr' && !this.d.installed.includes(m.id)) return this.checkUnconnected(m)
     if (m.enabled === false) return this.clone(m)
+    if (m.origin === 'herdr' && !this.d.installed.includes(m.id)) return this.checkUnconnected(m)
     m.status = { ...m.status, state: 'checking', error: undefined }
     this.options.changed?.(await this.result())
     let tcp = false, auth = false, latencyMs: number | undefined
@@ -1263,9 +1421,18 @@ export class MachinesService {
           await this.provisioner.retireBridge(m)
           await this.bridgeCleanup.cancel(id)
         } else if (targets.length) throw new MachinesFailure('bridge_repair_required', 'Detach dependent machines before forgetting this existing bridge.')
-        if (connection.managed || connection.adminManaged) {
-          const keys = await this.ensureKeys()
-          await this.updateRemoteKey(m, keys.agents, keys.management, { remove: true, removeManagement: true })
+        if (connection.managed || connection.adminManaged || this.d.agentsInstallations?.[id] || this.d.installed.includes(id) || this.d.credentialRemovals[id]) {
+          // Keep the record and exact public grants durable until all SSH removals succeed.
+          // The original administrator key remains the authentication route.
+          await this.stageCredentialRemoval(m)
+          const pending = this.d.credentialRemovals[id]
+          if (pending) for (const [index, key] of pending.agentsPublicKeys.entries()) {
+            await this.updateRemoteKey(m, key, pending.managementPublicKey, { remove: true, removeManagement: index === pending.agentsPublicKeys.length - 1 })
+          }
+          else {
+            const keys = await this.ensureKeys()
+            await this.updateRemoteKey(m, keys.agents, keys.management, { remove: true, removeManagement: true })
+          }
         }
         for (const target of targets) { delete target.bridgeMachineId; target.needsReinstall = true; target.status = { state: 'waiting', error: { code: 'no_bridge' } } }
         await this.removeHerdrRow(m)
@@ -1275,6 +1442,7 @@ export class MachinesService {
         this.d.issuedInstallers = this.d.issuedInstallers.filter(x => x !== id)
         delete this.d.revocations[id]
         delete this.d.credentialRemovals[id]
+        delete this.d.agentsInstallations?.[id]
         delete this.d.bridgeConnections[id]
         if (this.d.bridgeMachineId === id) this.d.bridgeMachineId = null
         await this.changed()
@@ -1526,21 +1694,37 @@ export class MachinesService {
       this.options.changed?.(await this.result())
     })
   }
-  async agentInstructions(cwd: string): Promise<string | null> {
+  /** With an agent (launch name + resolved role), the guide matches that agent's machine usage. */
+  async agentInstructions(cwd: string, agent?: { name?: string; role?: string | null }): Promise<string | null> {
     return this.serial(async () => {
       if (!this.d.machines.length) return null
       if (!this.projects.has(cwd)) { this.projects.add(cwd); await privateWrite(join(this.root, 'projects.json'), JSON.stringify([...this.projects])) }
-      return this.projectGuide(cwd)
+      if (!agent) return this.projectGuide(cwd)
+      const entry = { cwd, name: agent.name || undefined, role: agent.role ?? null }
+      if (!validGuideAgent(entry)) return this.projectGuide(cwd)
+      const key = guideKey(entry)
+      this.agentGuides.delete(key); this.agentGuides.set(key, entry)
+      for (const old of [...this.agentGuides.keys()].slice(0, Math.max(0, this.agentGuides.size - 500))) this.agentGuides.delete(old)
+      await privateWrite(join(this.root, 'agent-guides.json'), JSON.stringify([...this.agentGuides.values()]))
+      return this.projectGuide(cwd, entry)
     })
   }
-  private async projectGuide(cwd: string): Promise<string> {
-      return projectMachineInstructions(this.root, this.agentMachines(), cwd, async visible => {
-        let text = await privateRead(this.configPath) ?? ''
+  /** Helper `list`: only machines in the agent's project scope that it may use. */
+  async statusFor(agent: MachineAgent): Promise<MachinesStatus> {
+    const s = await this.status()
+    const machines = await this.serial(async () => this.d.machines.filter(m => machineInProject(m, agent.project) && machineUsable(m, agent)).map(m => m.id))
+    return { ...s, machines: s.machines.filter(m => machines.includes(m.id)) }
+  }
+  private async projectGuide(cwd: string, agent?: { name?: string; role?: string | null }): Promise<string> {
+      return projectMachineInstructions(this.root, this.agentMachines(), cwd, async (visible, denied) => {
+        // Denied machines' aliases are left out of this agent's -F config (advisory; the shared config still has them).
+        const hidden = new Set(denied.map(m => m.alias))
+        let text = (await privateRead(this.configPath) ?? '').split(/(?=^Host )/m).filter(block => !hidden.has(block.match(/^Host (\S+)/)?.[1] ?? '')).join('')
         for (const m of visible.filter(m => m.permissions.mode === 'projects' && !m.needsReinstall)) {
           text += this.routeBlock(m)
         }
         return text
-      })
+      }, agent)
   }
   private startPeriodic(): void {
     if (this.timer || this.disposed) return
@@ -1554,3 +1738,10 @@ export class MachinesService {
   }
   dispose(): void { this.disposed = true; if (this.timer) clearInterval(this.timer); if (this.herdrPoll) clearTimeout(this.herdrPoll); this.timer = null; this.herdrPoll = null; void this.provisioner.dispose?.() }
 }
+function validGuideAgent(a: unknown): a is { cwd: string; name?: string; role?: string | null } {
+  const v = a as { cwd?: unknown; name?: unknown; role?: unknown }
+  return !!v && typeof v.cwd === 'string' && v.cwd.startsWith('/') && v.cwd.length <= 1024 && !/[\r\n\0]/.test(v.cwd)
+    && (v.name === undefined || typeof v.name === 'string' && v.name.length <= 128 && !/[\r\n\0]/.test(v.name))
+    && (v.role === undefined || v.role === null || typeof v.role === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(v.role))
+}
+function guideKey(a: { cwd: string; name?: string; role?: string | null }): string { return JSON.stringify([a.cwd, a.name ?? '', a.role ?? '']) }

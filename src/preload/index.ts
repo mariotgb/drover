@@ -1,5 +1,5 @@
 import type { OfficeState, OfficeUpdate } from '@shared/office'
-import type { BridgeProgress, MachinesApi, MachinesState, MachinesStatus } from '@shared/machines'
+import type { BridgeProgress, MachineConnectProgress, MachinesApi, MachinesState, MachinesStatus } from '@shared/machines'
 import type { BossBroadcastRequest, BossDelivery, BossOpenRequest, BossSettings } from '@shared/boss'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { TranscriptCursor } from '@shared/types'
@@ -20,6 +20,9 @@ function on(channel: string, fn: Listener): () => void {
 const api = {
   machinesStatus: (): Promise<MachinesStatus> => ipcRenderer.invoke('machines:status'),
   machines: {
+    connectTrusted: (id, options) => ipcRenderer.invoke('machines:connect-trusted', id, options),
+    connectAll: options => ipcRenderer.invoke('machines:connect-all', options),
+    onConnectProgress: (fn: (progress: MachineConnectProgress) => void) => on('machines:connect-progress', fn),
     state: () => ipcRenderer.invoke('machines:state'),
     onChange: (fn: (state: MachinesState) => void) => on('machines:changed', fn),
     herdrMachines: () => ipcRenderer.invoke('machines:herdr-machines'),
@@ -35,6 +38,7 @@ const api = {
     phones: () => ipcRenderer.invoke('machines:phones'),
     movePhoneToBridge: (id, options) => ipcRenderer.invoke('machines:move-phone', id, options),
     setEnabled: (id, enabled, options) => ipcRenderer.invoke('machines:set-enabled', id, enabled, options),
+    setUsage: (id, usage, options) => ipcRenderer.invoke('machines:set-usage', id, usage, options),
     enableBridgeRoute: (id, os, options) => ipcRenderer.invoke('machines:enable-bridge-route', id, os, options),
     recommendMethod: answer => ipcRenderer.invoke('machines:recommend-method', answer),
     projectMachinePolicy: cwd => ipcRenderer.invoke('machines:project-policy', cwd),

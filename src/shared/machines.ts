@@ -1,3 +1,5 @@
+import type { RemoteDeviceKind } from './remote'
+
 /** Desktop machine management. The phone may only read MachinesStatus. */
 export type MachineKind = 'direct' | 'bridged'
 export type MachineOs = 'linux' | 'macos' | 'windows'
@@ -24,6 +26,13 @@ export interface SessionCleanupResult { terminated: number; incomplete: boolean;
 export interface SessionCleanupReport extends SessionCleanupResult { machineId: string; name: string }
 export type SessionCleanupReason = 'permissions' | 'revoke' | 'remove'
 export interface MachinePermissions { mode: MachineAccess; projects: string[] }
+/** Who may use a machine. Advisory: agents follow it from their guide; not a lock between agents of one macOS user. */
+export type MachineUsageMode = 'all' | 'roles' | 'agents'
+/** Stable agent identity across restarts: project folder (as in permissions.projects) + herdr agent name, case-sensitive. */
+export interface MachineAgentRef { project: string; name: string }
+export interface MachineUsage { mode: MachineUsageMode; agents: MachineAgentRef[] }
+/** Roles allowed by usage mode 'roles'. The Main boss counts as lead. */
+export const MACHINE_USAGE_ROLES = ['lead', 'orchestrator', 'devops']
 export interface MachineChecks {
   tcp: boolean
   auth: boolean
@@ -69,6 +78,8 @@ export interface Machine {
   installReport?: { reportedAt: number; fingerprint: string }
   sessionCleanup?: { account: 'dedicated' | 'supplied'; last?: SessionCleanupResult & { at: number; reason: SessionCleanupReason } }
   permissions: MachinePermissions
+  /** Absent = all agents. */
+  usage?: MachineUsage
   status: { state: MachineState; latencyMs?: number; checkedAt?: number; error?: MachineError; checks?: MachineChecks }
   bridgeSetup?: { state: 'none' | 'running' | 'ready' | 'failed'; step?: string; checkedAt?: number; error?: MachineError; caddy?: boolean; cleanup?: BridgeCleanupState }
   /** Existing local tunnel/phone route mapped without replacing credentials. */
@@ -124,12 +135,17 @@ export interface BridgedDraft { kind: 'bridged'; name: string; os: MachineOs }
 export interface RoutedMachineDraft { name: string; firstRoute: MachineRouteKind; host?: string; port?: number; user?: string; os?: MachineOs; alsoBridge?: boolean }
 export type MachineDraft = DirectDraft | BridgedDraft | RoutedMachineDraft
 export interface AddMachineRoute { kind: MachineRouteKind; host?: string; port?: number; acceptedFingerprint?: string; os?: MachineOs }
-export interface MachineKeyInstallOptions { password?: string; keyPath?: string; acceptedFingerprint: string }
-export interface MachinePhone { id: string; name: string; lastSeenAt: number; online: boolean }
+export interface MachineKeyInstallOptions { password?: string; keyPath?: string; acceptedFingerprint: string; useExistingLogin?: boolean }
+export interface MachinePhone { id: string; name: string; lastSeenAt: number; online: boolean; kind?: RemoteDeviceKind }
 export interface InstallCommand { command: string; expiresAt: number }
 /** Checked as an exact boolean by the main process before any side effect. */
 export interface MachineConfirmationOptions { confirmed: true }
+export interface MachineConnectResult { machineId: string; state: 'connected' | 'host_key_confirmation' | 'login_required' | 'failed'; hostKey?: HostKey; error?: MachineError }
+export interface MachineConnectProgress { machineId: string; phase: 'host_key' | 'login' | 'install' | 'check' | 'done' | 'failed' }
 export interface MachinesApi {
+  connectTrusted(id: string, options: MachineConfirmationOptions): Promise<MachineConnectResult>
+  connectAll(options: MachineConfirmationOptions & { machineIds: string[] }): Promise<MachineConnectResult[]>
+  onConnectProgress(cb: (progress: MachineConnectProgress) => void): () => void
   state(): Promise<MachinesState>
   onChange(cb: (state: MachinesState) => void): () => void
   herdrMachines(): Promise<HerdrMachine[]>
@@ -145,6 +161,7 @@ export interface MachinesApi {
   phones(): Promise<MachinePhone[]>
   movePhoneToBridge(id: string, options: MachineConfirmationOptions): Promise<void>
   setEnabled(id: string, enabled: boolean, options: MachineConfirmationOptions): Promise<void>
+  setUsage(id: string, usage: MachineUsage, options: MachineConfirmationOptions): Promise<void>
   enableBridgeRoute(id: string, os: MachineOs, options: MachineConfirmationOptions): Promise<Machine>
   recommendMethod(answer: MachineMethodAnswer): Promise<MachineMethodRecommendation>
   projectMachinePolicy(cwd: string): Promise<ProjectMachinePolicy>

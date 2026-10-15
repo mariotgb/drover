@@ -1,3 +1,4 @@
+import { webDeviceKind } from './device-kind'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createReadStream, realpathSync, statSync } from 'node:fs'
 import { extname, join, sep } from 'node:path'
@@ -8,7 +9,7 @@ import { RemoteTransfers, type Transfer } from './transfers'
 import { WebSocket, WebSocketServer } from 'ws'
 import {
   REMOTE_AUTH_ENTRY, REMOTE_AUTH_ROUTES, REMOTE_EVENT_CHANNELS, REMOTE_WEB_ENTRY, REMOTE_WS_PATH, REMOTE_PUSH_ROUTES, REMOTE_ATTACHMENT_ROUTES, REMOTE_APPEARANCE_ROUTES, remoteUsesProxy,
-  remoteRpcDeadline, type RemoteAccessSettings, type RemotePairingCode, type RemoteStatus, type RemotePushPreferences, type RemotePushStatus
+  remoteRpcDeadline, type RemoteAccessSettings, type RemotePairingCode, type RemoteStatus, type RemotePushPreferences, type RemoteWebDevice, type RemotePushStatus
 } from '@shared/remote'
 import { RemoteAuth } from './auth'
 import { RemoteAuthStore, sessionCookie, sessionToken, poisonAuthStore } from './store'
@@ -175,13 +176,13 @@ export class RemoteServer {
     return { ...code, url: `${remoteIdentity(this.host.settings()).origin}/pair?code=${encodeURIComponent(code.code)}` }
   }
   devices() { return this.auth.store.devices() }
-  /** Saved phones with a currently authorized, open websocket projection. */
-  phoneDevices(): { id: string; name: string; lastSeenAt: number; online: boolean }[] {
+  /** Paired web devices with a currently authorized, open websocket projection. */
+  phoneDevices(): RemoteWebDevice[] {
     let origin = ''
     try { origin = remoteIdentity(this.host.settings()).origin } catch { /* Invalid settings have no authorized live clients. */ }
     const online = new Set([...this.clients].filter(client => client.ws.readyState === WebSocket.OPEN)
       .map(client => this.auth.store.session(client.token, origin)?.device.id).filter(Boolean))
-    return this.devices().map(({ id, name, lastUsedAt }) => ({ id, name, lastSeenAt: lastUsedAt, online: online.has(id) }))
+    return this.devices().map(({ id, name, lastUsedAt, kind }) => ({ id, name, lastSeenAt: lastUsedAt, online: online.has(id), kind: kind ?? 'other' }))
   }
   async revoke(id: string): Promise<void> {
     this.requireNoPoisonFailure()
@@ -253,7 +254,7 @@ export class RemoteServer {
       const token = sessionToken(req.headers.cookie)
       if (!token || !this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)) return reject(401)
       if (this.clients.size >= 32) return reject(429)
-      wss.handleUpgrade(req, socket, head, (ws) => this.connect(ws, token))
+      wss.handleUpgrade(req, socket, head, (ws) => this.connect(ws, token, req.headers['user-agent']))
     })
     await new Promise<void>((resolvePromise, reject) => {
       server.once('error', reject)
@@ -298,8 +299,9 @@ export class RemoteServer {
     const identity = remoteIdentity(this.host.settings())
     return req.headers.host === new URL(identity.origin).host || req.headers.host === new URL(identity.localUrl).host || this.movingOrigins.some(origin => req.headers.host === new URL(origin).host)
   }
-  private connect(ws: WebSocket, token: string): void {
+  private connect(ws: WebSocket, token: string, userAgent?: string): void {
     const deviceId = this.auth.store.session(token, remoteIdentity(this.host.settings()).origin)!.device.id
+    try { this.auth.store.recordDeviceKind(deviceId, webDeviceKind(userAgent)) } catch { /* Metadata persistence cannot block a valid authenticated connection. */ }
     const client: Client = { ws, token, rpc: new RemoteRpcConnection(randomUUID(), deviceId), alive: true, pending: 0, stateRevision: 0, queue: new RemoteRpcQueue(), calls: new Map() }
     this.clients.add(client)
     this.log.write('ws_connect', client.rpc.id)
@@ -511,7 +513,8 @@ export class RemoteServer {
       }
       if (!Object.values(REMOTE_AUTH_ROUTES).includes(path as never) || path === REMOTE_AUTH_ROUTES.session) throw new RemoteFailure('not_found', 'Not found', 404)
       this.limiter.check(this.visitor(req))
-      const result = await this.auth.post(path, await this.body(req), req.headers.origin!)
+      const result = await this.auth.post(path, await this.body(req), req.headers.origin!, req.headers['user-agent'])
+      if (result.cookie) this.emitStatus()
       if (result.cookie) res.setHeader('Set-Cookie', result.cookie)
       this.json(res, 200, result.body)
       return

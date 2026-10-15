@@ -11,6 +11,8 @@ import { arcBounds, pathBounds, pathLength } from './visibility'
 import { shortAgentNames } from './labels'
 import { language, t } from '../i18n'
 import { officeText } from './text'
+import { infraCounts, infraScene, type InfraScene } from './infra'
+import { cablePaths, legendText, paintCables, paintDevice, paintPlaque, paintText, remoteState, routeColor } from './infra-paint'
 
 export interface WorldLabel { id: string; name: string; kind: 'department' | 'user' | 'machine'; x: number; y: number }
 export interface MapSnapshot { bounds: Rect; rooms: Rect[]; viewport: Rect; camera: Camera; width: number; height: number }
@@ -70,6 +72,8 @@ export class OfficeEngine {
   private boardCounts = new Map<string, [number, number, number]>()
   private projectOrder: string[] = []
   private importance = new Map<string, import('@shared/projects').ProjectImportance>()
+  private infra: InfraScene | null = null
+  private infraCables: ReturnType<typeof cablePaths> | null = null
 
   private orderedDepartments(state: OfficeState) {
     const positions = new Map(this.projectOrder.map((id, i) => [id, i]))
@@ -102,6 +106,8 @@ export class OfficeEngine {
   private externalPoint(id: string): Point {
     const node = this.state?.externalNodes.find(n => n.id === id)
     if (node?.kind === 'user') return { x: this.layout.lobby.x + 96, y: this.layout.lobby.y + 132 }
+    const station = this.infra?.machines.find(m => m.id === id)
+    if (station) return station.anchor
     const index = this.state?.externalNodes.filter(n => n.kind === 'machine').findIndex(n => n.id === id) ?? 0
     return { x: (this.layout.server?.x ?? 0) + (3 + index * 3) * 16, y: -96 }
   }
@@ -119,7 +125,9 @@ export class OfficeEngine {
   private rebuildGeometry(now: number, repack = false) {
     if (!this.state) return
     const state = this.state
-    this.layout = this.layoutModel.update(this.orderedDepartments(state), this.occupants(state), repack, now, state.externalNodes.filter(n => n.kind === 'machine').length)
+    this.layout = this.layoutModel.update(this.orderedDepartments(state), this.occupants(state), repack, now, infraCounts(state.externalNodes))
+    this.infra = this.layout.server ? infraScene(this.layout.server, state.externalNodes) : null
+    this.infraCables = null
     if (this.hall && !this.layout.lots.some(l => l.departmentId === this.hall)) this.hall = null
     this.sceneLayout = singleHallLayout(this.layout, this.hall)
     this.seatsByPane = new Map(this.layout.seats.map(s => [s.paneId, s])); this.agentsByPane = new Map(state.agents.map(a => [a.paneId, a]))
@@ -136,7 +144,8 @@ export class OfficeEngine {
     }
     for (const n of state.externalNodes) {
       const p = this.externalPoint(n.id)
-      this.nodes.set(n.id, { agent: p, hand: { x: p.x + 10, y: p.y - 30 }, land: { x: p.x, y: p.y + 28 }, label: { x: p.x, y: p.y + (n.kind === 'user' ? -50 : 34) }, bubble: { x: p.x, y: p.y - 44 } })
+      this.nodes.set(n.id, n.kind === 'user' ? { agent: p, hand: { x: p.x + 10, y: p.y - 30 }, land: { x: p.x, y: p.y + 28 }, label: { x: p.x, y: p.y - 50 }, bubble: { x: p.x, y: p.y - 44 } }
+        : { agent: p, hand: { x: p.x, y: p.y - 20 }, land: { x: p.x, y: p.y + 2 }, label: { x: p.x, y: p.y - 48 }, bubble: { x: p.x, y: p.y - 44 } })
     }
     if (this.hall) this.fit(); else this.invalidate()
   }
@@ -153,7 +162,7 @@ export class OfficeEngine {
     this.agentsByPane = new Map(update.state.agents.map(a => [a.paneId, a]))
     const key = JSON.stringify([update.state.departments, this.occupants(update.state), update.state.externalNodes])
     // Update hysteresis on snapshots as well as membership changes.
-    const layout = this.layoutModel.update(this.orderedDepartments(update.state), this.occupants(update.state), false, now, update.state.externalNodes.filter(n => n.kind === 'machine').length)
+    const layout = this.layoutModel.update(this.orderedDepartments(update.state), this.occupants(update.state), false, now, infraCounts(update.state.externalNodes))
     if (key !== this.geometryKey || JSON.stringify(layout.lots) !== JSON.stringify(this.layout.lots)) {
       this.geometryKey = key; this.rebuildGeometry(now)
     }
@@ -240,11 +249,17 @@ export class OfficeEngine {
     this.art.paint(ctx, a.isBoss ? 'agent.boss' : `agent.${a.kind}`, a.isBoss ? 'sit:front' : 'idle:front', { x: 16, y: 44 }, 0)
     if (!a.isBoss) this.art.paint(ctx, `role.${a.role}`, 'idle:front', { x: 16, y: 44 }, 0)
   }
+  /** Portrait for an agent on another machine: body only, no local role. */
+  remotePortrait(kind: string, canvas: HTMLCanvasElement) {
+    const ctx = canvas.getContext('2d'); if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.imageSmoothingEnabled = false
+    this.art.paint(ctx, `agent.${kind}`, 'idle:front', { x: 16, y: 44 }, 0)
+  }
   private invalidate() {
     if (this.disposed) return
     const c = this.hitCamera()
     const labels: WorldLabel[] = this.sceneLayout.lots.map(l => ({ id: l.departmentId, name: this.state?.departments.find(d => d.id === l.departmentId)?.name ?? '', kind: 'department', x: l.x + 90, y: 12 }))
-    if (!this.hall) for (const n of this.state?.externalNodes ?? []) { const p = this.nodes.get(n.id)?.label; if (p) labels.push({ id: n.id, name: n.kind === 'user' ? t('You') : n.name, kind: n.kind, ...p }) }
+    if (!this.hall) for (const n of this.state?.externalNodes ?? []) { const p = n.kind === 'user' && this.nodes.get(n.id)?.label; if (p) labels.push({ id: n.id, name: n.kind === 'user' ? t('You') : n.name, kind: n.kind, ...p }) }
     this.options.onLabels?.(labels.map(l => ({ ...l, ...{ x: Math.round(l.x * c.zoom + c.x), y: Math.round(l.y * c.zoom + c.y) } })))
     this.options.onMap?.(this.mapState())
   }
@@ -386,6 +401,7 @@ export class OfficeEngine {
     if (this.world) ctx.drawImage(this.world, this.sceneLayout.bounds.x, this.sceneLayout.bounds.y)
     this.targets = []; if (!this.state) return
     this.paintLinks(ctx, now, true)
+    if (this.infra && !this.hall && this.inView(this.infra.room)) this.paintInfraFloor(ctx, now, motion)
     const objects: { y: number; paint(): void }[] = []
     const add = (id: string, state: string, p: Point, time = 0, y = p.y) => objects.push({ y, paint: () => { this.art.paint(ctx, id, state, p, time) } })
     const frameTime = motion ? Math.floor(now / 300) * 300 : 0
@@ -446,19 +462,13 @@ export class OfficeEngine {
         if (node.kind === 'user') {
           const throwing = this.effects.active.find(a => a.from === node.id && carrierPhase(a, now).phase === 'throw')
           add('agent.user', throwing ? 'throw:front' : 'idle:front', p, throwing ? now - throwing.startedAt : frameTime)
-        } else {
-          const active = this.connected && now - (this.machineActivity.get(node.id) ?? -Infinity) < 4000
-          add('object.machine', active ? 'active' : node.state === 'offline' ? 'off' : 'idle', { x: p.x, y: p.y + 28 }, frameTime)
-          if (active) objects.push({ y: Infinity, paint: () => this.art.overlay(ctx, 'waves', { x: p.x, y: p.y - 10, phase: motion ? Math.floor(now / 200) % 3 : 0 }) })
         }
       }
-      if (this.layout.server) for (let i = 0; i < 3; i++) {
-        const hot = [...this.machineActivity.values()].some(at => now - at < 4000)
-        add('object.rack', this.connected && hot ? 'hot' : 'idle', { x: this.layout.server.x + 30 + i * 20, y: -122 }, frameTime + (motion ? i * 300 : 0))
-      }
+      if (this.infra && this.inView(this.infra.room)) this.addInfra(ctx, objects, add, now, frameTime, motion)
     }
     objects.sort((a, b) => a.y - b.y).forEach(o => o.paint())
     this.art.paintFront(ctx, this.sceneLayout)
+    if (this.infra && !this.hall && this.inView(this.infra.room)) this.paintInfraLabels(ctx)
     this.paintLinks(ctx, now, false); this.paintCarriers(ctx, now)
     for (const a of this.state.agents) {
       if (this.hall && a.departmentId !== this.hall) continue
@@ -479,6 +489,62 @@ export class OfficeEngine {
     }
     const samples = this.performance.samples; samples.push(performance.now() - started); if (samples.length > 300) samples.shift(); this.performance.frames++
     if (this.performance.frames % 30 === 0) this.performance.p95 = [...samples].sort((a, b) => a - b)[Math.floor(samples.length * 0.95)] ?? 0
+  }
+  private machineActive(id: string, now: number) { return this.connected && now - (this.machineActivity.get(id) ?? -Infinity) < 4000 }
+  /** Machines room floor: cables first, then the device shelf on the wall. */
+  private paintInfraFloor(ctx: CanvasRenderingContext2D, now: number, motion: boolean) {
+    const s = this.infra!, theme = this.art.theme
+    const active = new Set(s.machines.filter(m => this.machineActive(m.id, now)).map(m => m.id))
+    this.infraCables ??= cablePaths(s)
+    paintCables(ctx, this.infraCables, { theme, motion, now, active, onlineDevices: this.connected && s.devices.some(d => d.online) })
+    if (s.shelf) {
+      ctx.fillStyle = theme === 'neon' ? '#3a4466' : '#8a5a3a'; ctx.fillRect(s.shelf.x, s.shelf.y, s.shelf.width, 3)
+      ctx.fillStyle = theme === 'neon' ? '#222a44' : '#5e3b26'; ctx.fillRect(s.shelf.x, s.shelf.y + 3, s.shelf.width, 1)
+      for (const d of s.devices) paintDevice(ctx, { ...d, online: this.connected && d.online }, theme)
+    }
+  }
+  /** Stations, the bridge racks, this computer and remote agents, depth-sorted with the rest of the office. */
+  private addInfra(ctx: CanvasRenderingContext2D, objects: { y: number; paint(): void }[], add: (id: string, state: string, p: Point, time?: number, y?: number) => void, now: number, frameTime: number, motion: boolean) {
+    const s = this.infra!
+    add('object.desk.head', 'on', s.home, frameTime)
+    if (s.bridge) for (let i = 0; i < 2; i++) {
+      const hot = s.machines.some(m => m.tone === 'bridge' && this.machineActive(m.id, now))
+      add('object.rack', this.connected && hot ? 'hot' : 'idle', { x: s.bridge.x - 10 + i * 20, y: s.bridge.y }, frameTime + (motion ? i * 300 : 0))
+    }
+    for (const m of s.machines) {
+      const active = this.machineActive(m.id, now)
+      add('object.machine', active ? 'active' : 'idle', m.anchor, frameTime)
+      if (m.offline || !this.connected) objects.push({ y: m.anchor.y + 0.5, paint: () => { ctx.fillStyle = '#10131a'; ctx.fillRect(m.anchor.x - 15, m.anchor.y - 30, 18, 11) } })
+      if (active) objects.push({ y: Infinity, paint: () => this.art.overlay(ctx, 'waves', { x: m.anchor.x, y: m.anchor.y - 40, phase: motion ? Math.floor(now / 200) % 3 : 0 }) })
+      const agents = m.node.remoteAgents ?? []
+      m.agents.forEach((p, i) => {
+        const a = agents[i], state = this.connected ? remoteState(a.status) : 'unknown'
+        add(`agent.${a.kind}`, `${state}:back`, p, motion && state === 'working' ? now : 0, p.y)
+        if (this.connected && (state === 'blocked' || state === 'done')) objects.push({ y: Infinity, paint: () => this.art.overlay(ctx, 'bubble', { x: p.x + 9, y: p.y - 40, symbol: state === 'done' ? 'ok' : '?', phase: motion ? Math.floor(now / 440) % 2 : 0 }) })
+      })
+    }
+  }
+  /** Signs on top: machine roles with their route light, this computer, the bridge, device names and the legend. */
+  private paintInfraLabels(ctx: CanvasRenderingContext2D) {
+    const s = this.infra!, theme = this.art.theme, neon = theme === 'neon', ink = neon ? '#dffbff' : '#4a2e1f', dim = neon ? '#8a93a8' : '#7a6a58'
+    paintPlaque(ctx, this.art, t('This computer'), s.homeLabel.x, s.homeLabel.y, null, 90)
+    if (s.bridge && s.bridgeLabel) paintPlaque(ctx, this.art, t('Bridge'), s.bridgeLabel.x, s.bridgeLabel.y, routeColor(theme, this.connected ? 'lan' : 'standby'))
+    for (const d of s.devices) paintText(ctx, this.art, d.name, d.anchor.x, d.anchor.y + 11, d.online && this.connected ? ink : dim, 30, true)
+    if (s.hiddenDevices > 0 && s.shelf) paintText(ctx, this.art, `+${s.hiddenDevices}`, s.shelf.x + s.shelf.width + 4, s.shelf.y - 8, ink)
+    for (const m of s.machines) {
+      const tone = this.connected ? m.tone : 'standby'
+      paintPlaque(ctx, this.art, m.node.purpose || m.node.name, m.label.x, m.label.y, routeColor(theme, tone))
+      const more = (m.node.remoteAgents?.length ?? 0) - m.agents.length
+      if (more > 0) paintText(ctx, this.art, `+${more}`, m.anchor.x + 30, m.anchor.y + 2, ink)
+      if (m.offline && this.connected) paintText(ctx, this.art, t('not answering'), m.anchor.x, m.anchor.y + (m.agents.length ? 22 : 6), routeColor(theme, 'down'), 96, true)
+    }
+    let x = s.legend.x
+    for (const kind of s.legendKinds) {
+      const text = legendText(kind), width = this.art.ready ? this.art.measure(text) : text.length * 4
+      if (x + 13 + width > s.room.x + s.room.width - 20) break
+      ctx.fillStyle = routeColor(theme, kind); ctx.fillRect(x, s.legend.y + 1, 10, 3)
+      paintText(ctx, this.art, text, x + 13, s.legend.y, ink); x += 13 + width + 10
+    }
   }
   dispose() {
     this.disposed = true; this.themeRequest++; this.loop.dispose(); this.resizeObserver.disconnect(); this.effects.clear(); this.routes.clear(); this.cableGeometry.clear(); this.linkPaths.clear(); this.machineActivity.clear(); this.world = null

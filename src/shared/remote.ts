@@ -1,3 +1,5 @@
+import type { AgentStatus } from './types'
+
 /** Drover browser/main contract. RPC method names match the preload API names.
  * JSON only: Uint8Array terminal frame data is sent as number[] on the wire.
  * Native/local-only calls fail with error.code = not_available_remotely.
@@ -48,7 +50,7 @@ export function remoteUsesProxy(settings: Pick<RemoteAccessSettings, 'remotePubl
 /** Explicit allowlist. Includes send-style preload calls: browser invokes them as RPC. */
 export const REMOTE_METHOD_CHANNELS = {
   init: 'app:init', setSettings: 'settings:set',
-  machinesStatus: 'machines:status',
+  machinesStatus: 'machines:status', machineAgents: 'machines:agents',
   request: 'herdr:request', sessions: 'herdr:sessions', startServer: 'herdr:start-server',
   reconnect: 'herdr:reconnect', herdrVersion: 'herdr:version', agentKinds: 'agents:kinds',
   limits: 'limits:get', refreshLimits: 'limits:refresh', previewServers: 'preview:servers',
@@ -120,11 +122,22 @@ export interface RemoteStatus extends RemoteAccessSettings {
   connectedDevices: number
   error?: string
 }
+export type RemoteDeviceKind = 'phone' | 'tablet' | 'desktop' | 'other'
+export interface RemoteWebDevice { id: string; name: string; lastSeenAt: number; online: boolean; kind: RemoteDeviceKind }
+/** Safe read-only roster. IDs are opaque; no hosts, paths, credentials or control methods. */
+export interface RemoteMachineAgents {
+  id: string
+  name: string
+  state: 'online'
+  agents: { id: string; name: string; kind: string; status: AgentStatus }[]
+}
+export interface RemoteMachineAgentsApi { machineAgents(): Promise<RemoteMachineAgents[]> }
 export interface RemoteDevice {
   id: string
   name: string
   createdAt: number
   lastUsedAt: number
+  kind?: RemoteDeviceKind
 }
 export interface RemotePairingCode { code: string; expiresAt: number; url: string }
 /** Additional methods exposed by desktop window.herdr; management is desktop-only. */

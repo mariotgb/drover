@@ -47,6 +47,8 @@ function machineCodeText(error: MachineError, machine?: Pick<Machine, 'name'> & 
       : t('{name} reached the bridge. Confirm its key to finish.', { name })
     case 'revocation_pending': return withDetail(t('The new agents key is in use, but the old one is still on {name} because it is offline. Drover removes it when {name} is back.', { name }), error.detail)
     case 'key_not_installed': return t('The agents key is not on this machine yet.')
+    case 'invalid_usage': return t('This list of agents could not be saved. Pick between 1 and 200 agents.')
+    case 'machine_disabled': return t('{name} is turned off in Drover, so it is not checked and agents do not use it.', { name })
     case 'permission_denied': return t('This user lacks the rights needed. Use an administrator account.')
     case 'unsupported_os': return t('This operating system is not supported for a bridge. Use Debian 12+ or Ubuntu 22.04+.')
     case 'existing_bridge_invalid': return withDetail(t('A bridge was set up earlier on this computer, but its settings could not be read.'), error.detail)
@@ -200,12 +202,14 @@ export function initialSteps(ids: BridgeStepId[], caddy = true): BridgeProgress[
 export type PendingConnect = 'checking' | 'reachable' | 'unreachable'
 type StatusLike = { state: string; error?: MachineError; checks?: { tcp?: boolean } }
 export function pendingConnect(status: StatusLike): PendingConnect | null {
+  // A turned-off machine (machine_disabled) is never "not connected": it is simply off.
   if (status.error?.code !== 'key_not_installed') return null
   if (status.state === 'checking') return 'checking'
   if (status.state === 'online' || status.checks?.tcp === true) return 'reachable'
   if (status.state === 'offline' || status.checks?.tcp === false) return 'unreachable'
   return 'checking'
 }
+export const isTurnedOff = (m: { enabled?: boolean; status: { error?: MachineError } }) => m.enabled === false || m.status.error?.code === 'machine_disabled'
 export function pendingConnectLabel(p: PendingConnect): string {
   return p === 'reachable' ? t('Not connected') : p === 'unreachable' ? t('Unreachable') : t('Checking now…')
 }

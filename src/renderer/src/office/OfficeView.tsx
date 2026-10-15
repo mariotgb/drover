@@ -1,9 +1,9 @@
 import '../styles/office.css'
 import './hud.css'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react'
-import { Check, ChevronLeft, ChevronRight, Crosshair, Link2, List, Maximize, MessageSquare, Search, Send, Terminal, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Crosshair, Eye, Link2, List, Maximize, MessageSquare, Search, Send, Terminal, X } from 'lucide-react'
 import { t } from '../i18n'
-import type { OfficeAgent, OfficeState, OfficeStatus, OfficeUpdate } from '@shared/office'
+import type { OfficeAgent, OfficeExternalNode, OfficeState, OfficeStatus, OfficeUpdate } from '@shared/office'
 import { useModel, useStore, watchBoard } from '../store'
 import { isDarkTheme, onAppearanceChange } from '../appearance'
 import { officeBridge } from './api'
@@ -20,6 +20,12 @@ export interface OfficeViewProps { active: boolean; onOpen(paneId: string, mode?
 const AgentPortrait = memo(function AgentPortrait({ agent, engine, revision }: { agent: OfficeAgent; engine: RefObject<OfficeEngine | null>; revision: unknown }) {
   const canvas = useRef<HTMLCanvasElement>(null)
   useEffect(() => { if (canvas.current) engine.current?.portrait(agent.paneId, canvas.current) }, [agent.paneId, agent.kind, agent.role, engine, revision])
+  return <span className="office-member-face"><canvas ref={canvas} width={32} height={48} aria-hidden="true" /></span>
+})
+type RemoteAgent = NonNullable<OfficeExternalNode['remoteAgents']>[number]
+const RemotePortrait = memo(function RemotePortrait({ kind, engine, revision }: { kind: string; engine: RefObject<OfficeEngine | null>; revision: unknown }) {
+  const canvas = useRef<HTMLCanvasElement>(null)
+  useEffect(() => { if (canvas.current) engine.current?.remotePortrait(kind, canvas.current) }, [kind, engine, revision])
   return <span className="office-member-face"><canvas ref={canvas} width={32} height={48} aria-hidden="true" /></span>
 })
 export function OfficeView({ active, onOpen }: OfficeViewProps) {
@@ -127,6 +133,15 @@ export function OfficeView({ active, onOpen }: OfficeViewProps) {
       terminals: showTerminals && !status ? state?.seats.filter(s => s.departmentId === department.id && s.terminal && s.paneId && (!query || `${department.name} ${s.paneId}`.toLocaleLowerCase().includes(query))) ?? [] : []
     })) ?? []
   }, [state, projectPreferences, search, hall, status, showTerminals, lang, connected])
+  // Agents on herdr machines: listed read-only under their machine; they live on that machine, not in a hall.
+  const machines = useMemo(() => {
+    if (hall) return []
+    const query = search.trim().toLocaleLowerCase()
+    return (state?.externalNodes ?? []).filter(n => n.kind === 'machine' && n.remoteAgents?.length).map(machine => ({
+      machine,
+      agents: machine.remoteAgents!.filter(a => (!status || (connected ? a.status : 'disconnect') === status) && (!query || `${machine.name} ${machine.purpose ?? ''} ${a.name} ${kindLabel(a.kind)} ${statusLabel(connected ? a.status : 'disconnect')}`.toLocaleLowerCase().includes(query)))
+    })).filter(m => m.agents.length)
+  }, [state?.externalNodes, hall, search, status, connected, lang])
   const cardAgent = state?.agents.find(a => a.paneId === selected), hoverAgent = state?.agents.find(a => a.paneId === hovered)
   const counts = connected ? state?.statusCounts ?? { working: 0, blocked: 0, done: 0, idle: 0, unknown: 0, disconnect: 0 } : { working: 0, blocked: 0, done: 0, idle: 0, unknown: 0, disconnect: state?.agents.length ?? 0 }
 
@@ -169,7 +184,7 @@ export function OfficeView({ active, onOpen }: OfficeViewProps) {
             <button type="button" className="office-btn" aria-pressed={showList} aria-controls="office-agent-list" onClick={() => setShowList(v => !v)}><List size={14} />{officeText('Team')}</button>
           </div>
         </header>
-        {showList && <OfficeTeam departments={departments} total={state?.agents.length ?? 0} counts={counts} status={status} setStatus={setStatus} search={search} setSearch={setSearch} importance={projectPreferences.importance} selected={selected} selectAgent={selectAgent} engine={engine} portraitRevision={`${dark}:${lang}:${portraitRevision}`} connected={connected} active={visible} actions={actions} onOpen={onOpen} />}
+        {showList && <OfficeTeam departments={departments} machines={machines} total={state?.agents.length ?? 0} counts={counts} status={status} setStatus={setStatus} search={search} setSearch={setSearch} importance={projectPreferences.importance} selected={selected} selectAgent={selectAgent} engine={engine} portraitRevision={`${dark}:${lang}:${portraitRevision}`} connected={connected} active={visible} actions={actions} onOpen={onOpen} />}
         <OfficeJournal data={data} hall={hall} active={visible} lang={lang} />
         <aside className="office-panel office-map" aria-label={officeText('Map')}>
           <h2>{officeText('Map')}</h2>
@@ -243,13 +258,14 @@ const OfficeJournal = memo(function OfficeJournal({ data, hall, active, lang }: 
 })
 interface TeamProps {
   departments: { department: OfficeState['departments'][number]; agents: OfficeAgent[]; terminals: OfficeState['seats'] }[]
+  machines: { machine: OfficeExternalNode; agents: RemoteAgent[] }[]
   total: number; counts: OfficeState['statusCounts']; status: OfficeStatus | null
   setStatus: React.Dispatch<React.SetStateAction<OfficeStatus | null>>
   search: string; setSearch(value: string): void; importance: Map<string, import('@shared/projects').ProjectImportance>
   selected: string | null; selectAgent(value: string | null): void; engine: RefObject<OfficeEngine | null>; portraitRevision: string
   connected: boolean; active: boolean; actions(agent: OfficeAgent): React.ReactNode; onOpen: OfficeViewProps['onOpen']
 }
-const OfficeTeam = memo(function OfficeTeam({ departments, total, counts, status, setStatus, search, setSearch, importance, selected, selectAgent, engine, portraitRevision, connected, active, actions, onOpen }: TeamProps) {
+const OfficeTeam = memo(function OfficeTeam({ departments, machines, total, counts, status, setStatus, search, setSearch, importance, selected, selectAgent, engine, portraitRevision, connected, active, actions, onOpen }: TeamProps) {
   return <aside id="office-agent-list" className="office-panel office-team" aria-label={officeText('Team')}>
           <h2 className="office-team-head">{officeText('Team')} <span>{total}</span></h2>
           <div className="office-filters" role="group" aria-label={officeText('Status filter')}>
@@ -266,7 +282,16 @@ const OfficeTeam = memo(function OfficeTeam({ departments, total, counts, status
               <span className="office-member-event"><EventAge at={a.lastEventAt} active={active} /></span>
               {(selected === a.paneId || !opensChat(a)) && actions(a)}
             </li>)}{terminals.map(s => <li key={s.id} className="office-member office-terminal"><Terminal size={16} /><span>{t('Terminal')}</span><button type="button" className="office-btn" disabled={!connected} onClick={() => onOpen(s.paneId!, 'terminal')}>{t('Open terminal')}</button></li>)}</ul>
+          </section>)}
+          {machines.map(({ machine, agents }) => <section key={machine.id} aria-label={machine.name} className="office-team-machine">
+            <h3 className="office-team-dept" title={t('View only. Open these agents in Drover on your computer.')}><span>{machine.purpose ? `${machine.name} · ${machine.purpose}` : machine.name}</span><span><Eye size={11} aria-label={t('view only')} /> {agents.length}</span></h3>
+            <ul className="office-agents">{agents.map(a => <li key={a.id} className="office-member office-remote">
+              <span className="office-member-select" aria-label={`${a.name} · ${machine.name}`}>
+                <RemotePortrait kind={a.kind} engine={engine} revision={portraitRevision} />
+                <span className="office-agent-text"><strong className="office-member-name">{a.name}</strong><span className="office-member-meta">{kindLabel(a.kind)} · {machine.name}</span><span className={`office-member-status st-${connected ? a.status : 'disconnect'}`}><span className="office-mark" aria-hidden="true" />{statusLabel(connected ? a.status : 'disconnect')}</span></span>
+              </span>
+            </li>)}</ul>
           </section>)}</div>
-          {!departments.some(d => d.agents.length || d.terminals.length) && <p>{officeText('No matching agents')}</p>}
+          {!departments.some(d => d.agents.length || d.terminals.length) && !machines.length && <p>{officeText('No matching agents')}</p>}
         </aside>
 })

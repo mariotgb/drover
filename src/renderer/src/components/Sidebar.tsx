@@ -316,12 +316,13 @@ export const ThreadRow = memo(function ThreadRow({ thread: th, nested, showProje
           {th.pane.bypass && <ShieldOff size={12} className="bypass-icon" aria-label={t('Skip permission prompts')}><title>{t('Skip permission prompts')}</title></ShieldOff>}
           {th.pane.restore_state === 'failed' ? <span className="pill pill-failed">{t('did not start')}</span>
             : th.pane.restore_state === 'starting' ? <span className="pill pill-starting">{t('starting')}</span>
-            : th.status === 'blocked' && <span className="pill pill-blocked">{th.pane.agent_question ? t('question') : t('input')}</span>}
+            : th.status === 'blocked' ? <span className="pill pill-blocked">{th.pane.agent_question ? t('question') : t('input')}</span>
+            : th.kind && th.status === 'unknown' && <span className="pill pill-unknown" title={t('Unknown status')}>{t('status unknown')}</span>}
         </div>
         <div className="thread-sub">{showProject ? `${th.workspace.label} · ${th.subtitle}` : th.subtitle}</div>
       </div>
       <div className="thread-status">
-        {th.kind && th.status !== 'idle' && th.status !== 'unknown' && <StatusDot status={th.status} size={8} />}
+        {th.kind && th.status !== 'idle' && <StatusDot status={th.status} size={8} />}
       </div>
       <button
         type="button"

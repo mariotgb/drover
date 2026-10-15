@@ -1,6 +1,6 @@
 import { isAbsolute, join } from 'node:path'
 import { isIP } from 'node:net'
-import type { BridgeForward, Machine, MachineDraft, MachinePermissions, MachinesState, ProjectMachinePolicy, SessionCleanupResult } from '@shared/machines'
+import type { MachineUsage, BridgeForward, Machine, MachineDraft, MachinePermissions, MachinesState, ProjectMachinePolicy, SessionCleanupResult } from '@shared/machines'
 import { MachinesFailure, privateRead, privateWrite } from './ssh'
 
 export interface StoredMachines {
@@ -10,6 +10,8 @@ export interface StoredMachines {
   agentsKey: MachinesState['agentsKey']
   projectMachinePolicies?: Record<string, ProjectMachinePolicy>
   installed: string[]
+  /** Separate from bridge administration/tunnel ownership; pending grants also need cleanup. */
+  agentsInstallations?: Record<string, { version: 1; state: 'pending' | 'installed' | 'legacy'; agentsPublicKeys: string[]; managementPublicKey?: string }>
   /** An issued installer may have installed a key before host confirmation. */
   issuedInstallers: string[]
   /** Old public keys needing removal from offline machines; never private keys. */
@@ -54,6 +56,22 @@ export function publicAddress(host: string): boolean {
   return false
 }
 
+/** Normalized copy; throws invalid_usage. Names are case-sensitive; duplicates dropped. */
+export function validUsage(usage: MachineUsage): MachineUsage {
+  const fail = () => { throw new MachinesFailure('invalid_usage', 'Choose who can use this machine: all agents, lead/orchestrator/DevOps, or 1–200 selected agents.') }
+  if (!usage || typeof usage !== 'object' || !['all', 'roles', 'agents'].includes(usage.mode)) fail()
+  if (usage.mode !== 'agents') return { mode: usage.mode, agents: [] }
+  if (!Array.isArray(usage.agents) || !usage.agents.length || usage.agents.length > 200) fail()
+  const seen = new Set<string>(), agents: MachineUsage['agents'] = []
+  for (const a of usage.agents) {
+    if (!a || typeof a.project !== 'string' || !a.project.startsWith('/') || a.project.length > 1024 || /[\r\n\0]/.test(a.project)
+      || typeof a.name !== 'string' || !a.name.trim() || a.name.length > 128 || /[\r\n\0]/.test(a.name)) fail()
+    const key = JSON.stringify([a.project, a.name])
+    if (!seen.has(key)) { seen.add(key); agents.push({ project: a.project, name: a.name }) }
+  }
+  return { mode: 'agents', agents }
+}
+
 export class MachinesStore {
   readonly file: string
   constructor(userData: string) { this.file = join(userData, 'machines.json') }
@@ -62,6 +80,7 @@ export class MachinesStore {
     if (raw === null) return { version: 1, machines: [], bridgeMachineId: null, agentsKey: null, installed: [], issuedInstallers: [], revocations: {}, credentialRemovals: {} }
     try {
       const data: StoredMachines = JSON.parse(raw)
+      data.agentsInstallations ??= {}
       data.issuedInstallers ??= []
       data.credentialRemovals ??= {}
       data.bridgeConnections ??= {}
@@ -76,6 +95,7 @@ export class MachinesStore {
       for (const machine of data.machines) {
         validateDraft(machine.kind === 'direct' ? { kind: 'direct', name: machine.name, host: machine.host!, port: machine.port!, user: machine.user } : { kind: 'bridged', name: machine.name, os: machine.os! })
         validatePermissions(machine.permissions)
+        if (machine.usage !== undefined) machine.usage = validUsage(machine.usage)
         if (machine.purpose !== undefined && (typeof machine.purpose !== 'string' || machine.purpose.length > 500 || /[\r\n\0]/.test(machine.purpose))) throw new Error('Invalid machine purpose')
         if (machine.routes !== undefined) {
           if (!Array.isArray(machine.routes) || machine.routes.length > 3 || new Set(machine.routes.map(r => r.kind)).size !== machine.routes.length) throw new Error('Invalid routes')
@@ -111,6 +131,10 @@ export class MachinesStore {
         if (connection.managed !== undefined && typeof connection.managed !== 'boolean') throw new Error('Invalid bridge management state')
         if (connection.adminManaged !== undefined && typeof connection.adminManaged !== 'boolean') throw new Error('Invalid administrator ownership')
         if (connection.installerOrigin !== undefined) { const url = new URL(connection.installerOrigin); if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('Invalid installer URL') }
+      }
+      if (!data.agentsInstallations || typeof data.agentsInstallations !== 'object' || Array.isArray(data.agentsInstallations)) throw new Error('Invalid agents installation ownership')
+      for (const [id, grant] of Object.entries(data.agentsInstallations)) {
+        if (!ids.has(id) || !grant || grant.version !== 1 || !['pending', 'installed', 'legacy'].includes(grant.state) || !Array.isArray(grant.agentsPublicKeys) || [...grant.agentsPublicKeys, ...(grant.managementPublicKey ? [grant.managementPublicKey] : [])].some(key => typeof key !== 'string' || !/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: [^\r\n]*)?$/.test(key))) throw new Error('Invalid agents installation ownership')
       }
       if (!Array.isArray(data.issuedInstallers) || data.issuedInstallers.some(id => !ids.has(id))) throw new Error('Invalid installer')
       for (const [id, keys] of Object.entries(data.revocations)) if (!ids.has(id) || !Array.isArray(keys) || keys.some(key => typeof key !== 'string' || !/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}/.test(key))) throw new Error('Invalid revocation')

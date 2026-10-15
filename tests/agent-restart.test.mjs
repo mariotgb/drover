@@ -10,6 +10,18 @@ const dir = mkdtempSync(join(tmpdir(), 'drover-restart-test-'))
 const file = join(dir, 'restart.cjs')
 await build({ entryPoints: ['src/main/agentRestart.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: file, alias: { '@shared': join(process.cwd(), 'src/shared') }, logLevel: 'silent' })
 const { restartArgs, AgentRestartService } = createRequire(import.meta.url)(file)
+const launchFile = join(dir, 'machine-launch.cjs')
+await build({ entryPoints: ['src/main/machines/launch.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: launchFile, logLevel: 'silent' })
+const { machineLaunchArgs } = createRequire(import.meta.url)(launchFile)
+
+test('Claude bypass resume sends the generated Machines pointer without shell-rejected newlines', () => {
+  const sessionId = '919db459-0000-4000-8000-000000000001'
+  const pointer = "Before using machines, read /tmp/MACHINES.md.\nMachine configuration requests use '/tmp/drover-machines'."
+  const argv = machineLaunchArgs('claude', restartArgs('claude', [], sessionId, {}, true), pointer)
+  assert.deepEqual(argv, ['--append-system-prompt', pointer.replace('\n', ' '), '--resume', sessionId, '--dangerously-skip-permissions'])
+  assert.ok(argv.every(arg => !/[\r\n\t]/.test(arg)))
+  assert.equal(readFileSync('src/main/index.ts', 'utf8').includes("`${pointer ?? ''}\\nMachine configuration"), false)
+})
 
 test('Claude resumes the same conversation with model/effort and toggles permissions', () => {
   const old = ['old prompt', '--resume', 'old-session', '--model', 'haiku', '--effort=low', '--permission-mode', 'bypassPermissions', '--dangerously-skip-permissions', '--add-dir', '/extra']
